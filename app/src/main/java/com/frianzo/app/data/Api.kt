@@ -48,6 +48,8 @@ data class FeedData(
 )
 
 data class MeData(val id: String?, val username: String?, val displayName: String?)
+/** Backend /api/auth/me returns { user: {...} }, not bare fields. */
+data class MeResponse(val user: MeData?)
 data class NativeConfigData(val clientId: String)
 data class GoogleNativeRequest(val idToken: String, val nonce: String, val deviceToken: String? = null)
 data class GoogleNativeData(val user: MeData?, val isNewUser: Boolean = false, val deviceToken: String?)
@@ -70,7 +72,7 @@ interface FrianzoApi {
     suspend fun verifyEmailCode(@Body req: EmailVerifyRequest): Envelope<EmailVerifyData>
 
     @GET("api/auth/me")
-    suspend fun me(): Envelope<MeData>
+    suspend fun me(): Envelope<MeResponse>
 
     /** Public feed (optionalAuth): works logged-out, and personalised when logged in.
      *  Backend page size is 5; pagination is by offset. */
