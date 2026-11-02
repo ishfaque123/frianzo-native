@@ -262,7 +262,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             Spacer(Modifier.height(12.dp))
             Text(it, color = MaterialTheme.colorScheme.error, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
-        if (busy) { Spacer(Modifier.height(12.dp)); CircularProgressIndicator(color = androidx.compose.ui.graphics.Color.White) }
+        if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading(color = androidx.compose.ui.graphics.Color.White) }
 
         Spacer(Modifier.height(28.dp))
         Text(
@@ -431,7 +431,7 @@ fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
             if (error != null) Text(error!!, modifier = Modifier.padding(16.dp))
             if (loading) {
                 Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+                    DotsLoading()
                 }
             } else if (hasMore) {
                 OutlinedButton(onClick = { loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)) {

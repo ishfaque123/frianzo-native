@@ -118,7 +118,7 @@ fun ReelsScreen(api2: FrianzoApi2) {
         }
         item {
             if (error != null) Text(error!!, Modifier.padding(16.dp))
-            if (loading) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            if (loading) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
             else if (hasMore) OutlinedButton(onClick = { load() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) { Text("Load more reels") }
         }
     }
@@ -168,7 +168,7 @@ fun CreatePostScreen(api2: FrianzoApi2, onPosted: () -> Unit) {
             }
         }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(28.dp)) { Text("Post") }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it) }
-        if (busy) { Spacer(Modifier.height(12.dp)); CircularProgressIndicator() }
+        if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
     }
 }
 
@@ -459,7 +459,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 }
                 Text("Posts", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
             } ?: run {
-                if (error != null) Text(error!!, Modifier.padding(16.dp)) else Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                if (error != null) Text(error!!, Modifier.padding(16.dp)) else Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { DotsLoading() }
             }
         }
         items(posts, key = { it.id }) { post ->

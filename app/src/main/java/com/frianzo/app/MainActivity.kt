@@ -36,7 +36,7 @@ class MainActivity : ComponentActivity() {
                 val state by session.state.collectAsState()
                 when (state) {
                     is AuthState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                        CircularProgressIndicator()
+                        DotsLoading()
                     }
                     is AuthState.LoggedIn -> {
                         val user = (state as AuthState.LoggedIn).user
