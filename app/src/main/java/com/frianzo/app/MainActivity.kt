@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.frianzo.app.data.*
 import com.frianzo.app.ui.*
@@ -26,7 +27,7 @@ class MainActivity : ComponentActivity() {
         val api = createApi(applicationContext, cookieJar)
         val api2 = createApi2(applicationContext, cookieJar)
         setContent {
-            MaterialTheme {
+            FrianzoTheme {
                 val session: SessionViewModel = viewModel(factory = sessionViewModelFactory(api))
                 val state by session.state.collectAsState()
                 when (state) {
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
 private enum class Tab { FEED, REELS, CREATE, CHAT, NOTIFS, SEARCH, PROFILE }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?) {
     var tab by remember { mutableStateOf(Tab.FEED) }
@@ -54,15 +56,43 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?) {
     var feedRefresh by remember { mutableStateOf(0) }
 
     Scaffold(
+        // Web header: white bar, blue F logo + bold blue "Frianzo" wordmark.
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        FrianzoLogo(32.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "Frianzo",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = FrianzoBlue,
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = androidx.compose.ui.graphics.Color.White),
+            )
+        },
+        containerColor = FrianzoPageBackground,
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(selected = tab == Tab.FEED, onClick = { tab = Tab.FEED; openChat = null; openProfile = null }, label = { Text("Feed") }, icon = { Text("🏠") })
-                NavigationBarItem(selected = tab == Tab.REELS, onClick = { tab = Tab.REELS; openChat = null; openProfile = null }, label = { Text("Reels") }, icon = { Text("▶") })
-                NavigationBarItem(selected = tab == Tab.CREATE, onClick = { tab = Tab.CREATE; openChat = null; openProfile = null }, label = { Text("Post") }, icon = { Text("+") })
-                NavigationBarItem(selected = tab == Tab.CHAT, onClick = { tab = Tab.CHAT; openChat = null; openProfile = null }, label = { Text("Chat") }, icon = { Text("💬") })
-                NavigationBarItem(selected = tab == Tab.NOTIFS, onClick = { tab = Tab.NOTIFS; openChat = null; openProfile = null }, label = { Text("Alerts") }, icon = { Text("🔔") })
-                NavigationBarItem(selected = tab == Tab.SEARCH, onClick = { tab = Tab.SEARCH; openChat = null; openProfile = null }, label = { Text("Search") }, icon = { Text("🔍") })
-                NavigationBarItem(selected = tab == Tab.PROFILE, onClick = { tab = Tab.PROFILE; openChat = null; openProfile = null }, label = { Text("Profile") }, icon = { Text("👤") })
+            // Web bottom nav: white bar, active tab blue, inactive tabs grey.
+            NavigationBar(
+                containerColor = androidx.compose.ui.graphics.Color.White,
+            ) {
+                val navColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = FrianzoBlue,
+                    selectedTextColor = FrianzoBlue,
+                    unselectedIconColor = FrianzoTextSecondary,
+                    unselectedTextColor = FrianzoTextSecondary,
+                    indicatorColor = FrianzoBlueTint,
+                )
+                NavigationBarItem(selected = tab == Tab.FEED, onClick = { tab = Tab.FEED; openChat = null; openProfile = null }, label = { Text("Feed") }, icon = { Text("🏠") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.REELS, onClick = { tab = Tab.REELS; openChat = null; openProfile = null }, label = { Text("Reels") }, icon = { Text("▶") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.CREATE, onClick = { tab = Tab.CREATE; openChat = null; openProfile = null }, label = { Text("Post") }, icon = { Text("+") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.CHAT, onClick = { tab = Tab.CHAT; openChat = null; openProfile = null }, label = { Text("Chat") }, icon = { Text("💬") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.NOTIFS, onClick = { tab = Tab.NOTIFS; openChat = null; openProfile = null }, label = { Text("Alerts") }, icon = { Text("🔔") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.SEARCH, onClick = { tab = Tab.SEARCH; openChat = null; openProfile = null }, label = { Text("Search") }, icon = { Text("🔍") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.PROFILE, onClick = { tab = Tab.PROFILE; openChat = null; openProfile = null }, label = { Text("Profile") }, icon = { Text("👤") }, colors = navColors)
             }
         },
     ) { padding ->
