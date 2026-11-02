@@ -8,6 +8,19 @@ android {
     namespace = "com.frianzo.app"
     compileSdk = 35
 
+    // Stable signing: passwords/alias come ONLY from CI environment
+    // variables (GitHub Secrets). Nothing secret is in this file.
+    // The keystore file itself is restored by the workflow from the
+    // ANDROID_KEYSTORE_BASE64 secret and is never committed.
+    signingConfigs {
+        create("release") {
+            storeFile = file("frianzo-release.keystore")
+            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+        }
+    }
+
     defaultConfig {
         // A NEW app id namespace is used for this app.
         // The Play app keeps its own id; do not publish this app under
@@ -23,6 +36,7 @@ android {
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

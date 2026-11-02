@@ -29,15 +29,19 @@ class SessionViewModel(private val api: FrianzoApi) : ViewModel() {
                 val res = api.me()
                 _state.value = if (res.success) AuthState.LoggedIn(res.data?.user)
                     else AuthState.LoggedOut
-            } catch (_: Exception) {
-                // Feed is public, so a failed /me must not block the app:
-                // treat as logged out and let the feed load anyway.
-                _state.value = AuthState.LoggedOut
+            } catch (e: Exception) {
+                // PERMANENT FIX for H5: a network failure is NOT "logged
+                // out". Previously every IOException dropped a logged-in
+                // user to the login screen with no retry. Now it is an
+                // Error state with a Retry button (MainActivity), while a
+                // clean unauthenticated /me response still means LoggedOut.
+                _state.value = AuthState.Error(e.message ?: "Network error. Check your connection and retry.")
             }
         }
     }
 
     fun markLoggedIn(user: MeData?) { _state.value = AuthState.LoggedIn(user) }
+    fun markLoggedOut() { _state.value = AuthState.LoggedOut }
     fun markError(message: String) { _state.value = AuthState.Error(message) }
 }
 
@@ -55,3 +59,5 @@ fun deviceToken(context: Context): String {
     }
     return token
 }
+
+

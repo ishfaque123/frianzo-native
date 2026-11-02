@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.ui.text.withStyle
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import android.content.Intent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -35,11 +37,11 @@ import java.util.Base64
  *  No posting, liking, commenting, reels or chat yet — those are later steps. */
 
 @Composable
-fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Unit) {
+fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: PersistentCookieJar? = null, onLoggedIn: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var email by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
+    var code by rememberSaveable { mutableStateOf("") }
     var codeSent by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -125,6 +127,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
                             GoogleNativeRequest(googleIdToken, nonce, deviceToken(context))
                         )
                         if (!login.success) throw Exception(login.error?.message ?: "Google login failed")
+                        login.data?.token?.let { cookieJar?.saveAuthToken(it) }
                         session.markLoggedIn(login.data?.user)
                         onLoggedIn()
                     } catch (e: GetCredentialCancellationException) {
@@ -239,10 +242,20 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
         ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium) }
         if (codeSent) {
             Spacer(Modifier.height(8.dp))
-            TextButton(
-                enabled = !busy,
-                onClick = { codeSent = false; code = ""; message = null },
-            ) { Text("Change email", color = loginGrey) }
+            Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+                TextButton(enabled = !busy, onClick = {
+                    busy = true
+                    scope.launch {
+                        try {
+                            val res = api.requestEmailCode(EmailCodeRequest(email.trim()))
+                            if (!res.success) throw Exception(res.error?.message ?: "Could not resend code")
+                            message = "Code sent again to your email."
+                        } catch (e: Exception) { fail(e, "Could not resend code") }
+                        finally { busy = false }
+                    }
+                }) { Text("Resend code", color = loginGrey) }
+                TextButton(enabled = !busy, onClick = { codeSent = false; code = ""; message = null }) { Text("Change email", color = loginGrey) }
+            }
         }
 
         message?.let {
@@ -302,12 +315,15 @@ private fun randomNonce(): String {
 }
 
 @Composable
-fun FeedScreen(api: FrianzoApi) {
+fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
+    val context = LocalContext.current
     var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
     var offset by remember { mutableStateOf(0) }
     var hasMore by remember { mutableStateOf(true) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var likedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var commentPost by remember { mutableStateOf<Post?>(null) }
     val scope = rememberCoroutineScope()
 
     fun loadMore() {
@@ -328,11 +344,21 @@ fun FeedScreen(api: FrianzoApi) {
 
     LaunchedEffect(Unit) { loadMore() }
 
+    // Comments dialog for one post (FB-like: read + add, counts update).
+    commentPost?.let { post ->
+        PostCommentsDialog(api2, post,
+            onClose = { commentPost = null },
+            onCountChange = { newCount ->
+                posts = posts.map { if (it.id == post.id) it.copy(commentCount = newCount) else it }
+            })
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(FrianzoPageBackground),
         contentPadding = PaddingValues(vertical = 8.dp),
     ) {
         items(posts, key = { it.id }) { post ->
+            val liked = post.id in likedIds
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
@@ -357,22 +383,49 @@ fun FeedScreen(api: FrianzoApi) {
                     HorizontalDivider(color = FrianzoBorder)
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Favorite, contentDescription = "Likes", modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("${post.likeCount}", style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.width(12.dp))
-                        Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.width(12.dp))
-                        Icon(Icons.Filled.Share, contentDescription = "Shares", modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("${post.shareCount}", style = MaterialTheme.typography.bodySmall)
+                        // Like toggles via POST /api/posts/{id}/reaction
+                        // {type:"like"} (same endpoint as web); a second tap
+                        // removes the reaction, and the server count wins.
+                        TextButton(onClick = {
+                            scope.launch {
+                                try {
+                                    val r = api2.setReaction(post.id, mapOf("type" to "like"))
+                                    if (r.success && r.data != null) {
+                                        val counts = r.data.reactionCounts
+                                        val newLike = counts?.get("like") ?: post.likeCount
+                                        posts = posts.map { if (it.id == post.id) it.copy(likeCount = newLike) else it }
+                                        likedIds = if (r.data.myReaction != null) likedIds + post.id else likedIds - post.id
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }) {
+                            Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("${post.likeCount}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        TextButton(onClick = { commentPost = post }) {
+                            Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        // Share opens the Android share sheet with the real
+                        // post link. It deliberately does NOT call
+                        // POST /api/posts/{id}/share, which on the backend
+                        // creates a repost, not a share link.
+                        TextButton(onClick = {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, "https://frianzo.online/post/${post.id}")
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share post"))
+                        }) {
+                            Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("${post.shareCount}", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
-            // Load the next 5-post page when the list end is reached is handled
-            // by the button below; infinite auto-scroll is a later step.
         }
         item {
             if (error != null) Text(error!!, modifier = Modifier.padding(16.dp))
@@ -384,11 +437,66 @@ fun FeedScreen(api: FrianzoApi) {
                 OutlinedButton(onClick = { loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)) {
                     Text("Load more")
                 }
-            } else if (posts.isNotEmpty()) {
+            } else if (posts.isEmpty()) {
+                Text("No posts yet", modifier = Modifier.padding(16.dp))
+            } else {
                 Text("No more posts", modifier = Modifier.padding(16.dp))
             }
         }
     }
+}
+
+@Composable
+private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, onClose: () -> Unit, onCountChange: (Int) -> Unit) {
+    var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
+    var draft by rememberSaveable { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    fun load() {
+        scope.launch {
+            try {
+                val res = api2.postComments(post.id)
+                if (res.success && res.data != null) comments = res.data.comments
+                else error = res.error?.message
+            } catch (e: Exception) { error = e.message }
+        }
+    }
+    LaunchedEffect(post.id) { load() }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Comments") },
+        text = {
+            Column {
+                LazyColumn(Modifier.fillMaxWidth().height(320.dp)) {
+                    items(comments, key = { it.id }) { c ->
+                        Column(Modifier.padding(vertical = 6.dp)) {
+                            Text(c.author?.displayName ?: c.author?.username ?: "User", style = MaterialTheme.typography.titleMedium)
+                            Text(c.content ?: "", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        HorizontalDivider()
+                    }
+                    if (comments.isEmpty() && error == null) item { Text("No comments yet") }
+                    if (error != null) item { Text(error!!) }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(value = draft, onValueChange = { draft = it }, label = { Text("Write a comment") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                if (draft.isBlank()) { error = "Type a comment first"; return@Button }
+                val text = draft; draft = ""
+                scope.launch {
+                    try {
+                        val res = api2.addPostComment(post.id, CommentCreateRequest(text))
+                        if (res.success) { load(); onCountChange(post.commentCount + 1) }
+                        else error = res.error?.message
+                    } catch (e: Exception) { error = e.message; draft = text }
+                }
+            }) { Text("Send") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
+    )
 }
 
 fun dummyContextUsage(@Suppress("UNUSED_PARAMETER") context: Context) = Unit

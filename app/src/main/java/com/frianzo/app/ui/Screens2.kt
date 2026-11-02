@@ -24,6 +24,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.frianzo.app.data.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.saveable.rememberSaveable
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
@@ -36,6 +38,7 @@ fun ReelsScreen(api2: FrianzoApi2) {
     var reels by remember { mutableStateOf<List<Reel>>(emptyList()) }
     var offset by remember { mutableStateOf(0) }
     var hasMore by remember { mutableStateOf(true) }
+    var viewedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -46,9 +49,17 @@ fun ReelsScreen(api2: FrianzoApi2) {
             try {
                 val res = api2.reelFeed(offset)
                 if (res.success && res.data != null) {
-                    reels = reels + res.data.reels
+                    // PERMANENT FIX for H2: the backend has no exclude
+                    // param and re-ranks on every page, so offset pages
+                    // can repeat reels. Dedupe by id client-side so a
+                    // reel already shown is never shown twice, and trust
+                    // the backend hasMore instead of isNotEmpty (a page
+                    // that exactly fills the page size used to show
+                    // "Load more" once more, then an empty page).
+                    val seen = reels.map { it.id }.toSet()
+                    reels = reels + res.data.reels.filter { it.id !in seen }
                     offset += res.data.reels.size
-                    hasMore = res.data.reels.isNotEmpty()
+                    hasMore = res.data.hasMore
                 } else error = res.error?.message ?: "Reels failed"
             } catch (e: Exception) { error = e.message ?: "Reels failed" }
             finally { loading = false }
@@ -77,8 +88,15 @@ fun ReelsScreen(api2: FrianzoApi2) {
                             factory = { ctx -> VideoView(ctx).apply { setVideoURI(Uri.parse(reel.videoUrl)) } },
                             modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable {
                                 playing = !playing
+                                // A real watch, not a fake "Viewed" button:
+                                // record once when playback actually starts.
+                                if (playing && reel.id !in viewedIds) {
+                                    viewedIds = viewedIds + reel.id
+                                    scope.launch { try { api2.recordReelView(reel.id, mapOf("watchSec" to 1)) } catch (_: Exception) {} }
+                                }
                             },
                             update = { view -> if (playing) view.start() else view.pause() },
+                            onRelease = { view -> view.stopPlayback() },
                         )
                     } else {
                         reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))) }
@@ -94,10 +112,6 @@ fun ReelsScreen(api2: FrianzoApi2) {
                         }) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("$likes") } }
                         Spacer(Modifier.width(8.dp))
                         Text("${reel.commentCount} comments")
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = {
-                            scope.launch { try { api2.recordReelView(reel.id, mapOf("watchSec" to 1)) } catch (_: Exception) {} }
-                        }) { Text("Viewed") }
                     }
                 }
             }
@@ -114,7 +128,7 @@ fun ReelsScreen(api2: FrianzoApi2) {
 @Composable
 fun CreatePostScreen(api2: FrianzoApi2, onPosted: () -> Unit) {
     val context = LocalContext.current
-    var text by remember { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
     var imageUri by remember { mutableStateOf<Uri?>(null) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -132,13 +146,18 @@ fun CreatePostScreen(api2: FrianzoApi2, onPosted: () -> Unit) {
             scope.launch {
                 try {
                     var part: MultipartBody.Part? = null
+                    var tmpFile: File? = null
                     if (imageUri != null) {
                         val input = context.contentResolver.openInputStream(imageUri!!)!!
                         val tmp = File(context.cacheDir, "post_upload.jpg")
+                        tmpFile = tmp
                         tmp.outputStream().use { out -> input.copyTo(out) }
                         part = MultipartBody.Part.createFormData("image", tmp.name, tmp.asRequestBody("image/jpeg".toMediaTypeOrNull()))
                     }
                     val res = api2.createPost(text.toRequestBody("text/plain".toMediaTypeOrNull()), part)
+                    // Temp upload file is cache-only; delete it after use
+                    // instead of leaving post_upload.jpg behind forever.
+                    try { tmpFile?.delete() } catch (_: Exception) {}
                     if (!res.success) throw Exception(res.error?.message ?: "Post failed")
                     message = "Posted"
                     onPosted()
@@ -181,25 +200,40 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
             HorizontalDivider()
         }
         if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
+        if (list.isEmpty() && error == null) item { Text("No chats yet", Modifier.padding(16.dp)) }
     }
 }
 
 @Composable
 fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, myId: String?) {
     var messages by remember { mutableStateOf<List<ConversationMessage>>(emptyList()) }
-    var draft by remember { mutableStateOf("") }
+    var draft by rememberSaveable { mutableStateOf("") }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var sendError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    fun load() {
-        scope.launch {
+    // PERMANENT FIX for H3: poll every 5s while the thread is open, so
+    // incoming messages appear without leaving and re-opening the thread.
+    // The loop is tied to LaunchedEffect, so it stops when the thread closes.
+    LaunchedEffect(conversationId) {
+        while (true) {
             try {
                 val res = api2.messages(conversationId)
                 // Backend already returns messages chronological (old -> new);
                 // reverse once so newest-first pairs with reverseLayout below.
-                if (res.success && res.data != null) messages = res.data.messages.reversed()
-            } catch (_: Exception) {}
+                if (res.success && res.data != null) { messages = res.data.messages.reversed(); loadError = null }
+                else loadError = res.error?.message
+            } catch (e: Exception) { loadError = e.message }
+            delay(5000)
         }
     }
-    LaunchedEffect(conversationId) { load() }
+    fun load() {
+        scope.launch {
+            try {
+                val res = api2.messages(conversationId)
+                if (res.success && res.data != null) messages = res.data.messages.reversed()
+            } catch (e: Exception) { loadError = e.message }
+        }
+    }
     Column(Modifier.fillMaxSize().background(FrianzoPageBackground)) {
         Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
@@ -212,13 +246,20 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 }
             }
         }
+        loadError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
+        sendError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
         Row(Modifier.background(Color.White).padding(8.dp)) {
             OutlinedTextField(value = draft, onValueChange = { draft = it }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(28.dp))
             Spacer(Modifier.width(8.dp))
             Button(shape = RoundedCornerShape(28.dp), onClick = {
+                // M3 fix: an empty draft used to be sent, rejected 400
+                // by the backend, and silently restored — now it is
+                // blocked with a visible message and nothing is sent.
+                if (draft.isBlank()) { sendError = "Type a message first"; return@Button }
+                sendError = null
                 val text = draft; draft = ""
                 scope.launch {
-                    try { api2.sendMessage(conversationId, SendMessageRequest(text)); load() } catch (_: Exception) { draft = text }
+                    try { api2.sendMessage(conversationId, SendMessageRequest(text)); load() } catch (e: Exception) { draft = text; sendError = e.message }
                 }
             }) { Text("Send") }
         }
@@ -226,6 +267,22 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
 }
 
 // ---------- NOTIFICATIONS ----------
+/** M1 fix: raw type codes ("reel_like", blank actor) rendered as
+ * " reel_like". Map known types to plain words and fall back to the
+ * type with underscores replaced, never a blank headline. */
+private fun notificationTitle(n: NotificationItem): String {
+    val actor = n.actor?.displayName ?: n.actor?.username ?: "Someone"
+    val action = when (n.type) {
+        "post_like", "reel_like" -> "liked your post"
+        "post_comment", "reel_comment", "comment" -> "commented on your post"
+        "follow" -> "started following you"
+        "new_device_login" -> "signed in from a new device"
+        "message" -> "sent you a message"
+        else -> (n.type ?: "notification").replace("_", " ")
+    }
+    return "$actor $action"
+}
+
 @Composable
 fun NotificationsScreen(api2: FrianzoApi2) {
     var items by remember { mutableStateOf<List<NotificationItem>>(emptyList()) }
@@ -248,8 +305,8 @@ fun NotificationsScreen(api2: FrianzoApi2) {
         LazyColumn(Modifier.weight(1f)) {
             items(items, key = { it.id }) { n ->
                 ListItem(
-                    headlineContent = { Text("${n.actor?.displayName ?: n.actor?.username ?: ""} ${n.type ?: ""}", style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text(n.detail ?: "", style = MaterialTheme.typography.bodySmall) },
+                    headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium) },
+                    supportingContent = { Text(n.detail ?: n.createdAt ?: "", style = MaterialTheme.typography.bodySmall) },
                     leadingContent = { FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
                     trailingContent = { if (!n.read) Badge(containerColor = FrianzoBadgeRed) { Text("new") } },
                     colors = ListItemDefaults.colors(containerColor = Color.White),
@@ -260,6 +317,7 @@ fun NotificationsScreen(api2: FrianzoApi2) {
                 HorizontalDivider()
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
+            if (items.isEmpty() && error == null) item { Text("No notifications yet", Modifier.padding(16.dp)) }
         }
     }
 }
@@ -267,8 +325,9 @@ fun NotificationsScreen(api2: FrianzoApi2) {
 // ---------- SEARCH (users) + PROFILE ----------
 @Composable
 fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
-    var q by remember { mutableStateOf("") }
+    var q by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var searchError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().background(FrianzoPageBackground)) {
         OutlinedTextField(
@@ -278,13 +337,17 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
             shape = RoundedCornerShape(12.dp),
         )
         Button(onClick = {
+            if (q.isBlank()) { searchError = "Type a name to search"; results = emptyList(); return@Button }
+            searchError = null
             scope.launch {
                 try {
                     val res = api2.searchUsers(q)
                     if (res.success && res.data != null) results = res.data.users
-                } catch (_: Exception) {}
+                } catch (e: Exception) { searchError = e.message }
             }
         }, modifier = Modifier.padding(horizontal = 16.dp), shape = RoundedCornerShape(28.dp)) { Text("Search") }
+        searchError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
+        if (results.isEmpty() && searchError == null && q.isNotBlank()) Text("No people found", Modifier.padding(16.dp))
         LazyColumn {
             items(results, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
@@ -336,7 +399,7 @@ fun countryDisplayName(raw: String?): String? {
 }
 
 @Composable
-fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
+fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
     var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
     var following by remember { mutableStateOf(false) }
@@ -375,6 +438,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
                         Text(listOfNotNull(p.city, countryDisplayName(p.country)).joinToString(", "), style = MaterialTheme.typography.bodySmall)
                     }
                 }
+                if (username == null && onLogout != null) {
+                    OutlinedButton(onClick = onLogout, modifier = Modifier.padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Log out") }
+                }
                 if (username != null && p.id != null && p.id != myId) {
                     Button(onClick = {
                         scope.launch {
@@ -386,6 +452,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
                     }, modifier = Modifier.padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(28.dp)) { Text(if (following) "Following" else "Follow") }
                 }
                 Spacer(Modifier.height(12.dp))
+                if (p.isPrivate && username != null && !following) {
+                    Text("This account is private", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
+                }
                 Text("Posts", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
             } ?: run {
                 if (error != null) Text(error!!, Modifier.padding(16.dp)) else Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }

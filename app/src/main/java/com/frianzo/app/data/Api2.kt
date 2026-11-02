@@ -157,7 +157,12 @@ interface FrianzoApi2 {
 }
 
 fun createApi2(context: android.content.Context, cookieJar: PersistentCookieJar): FrianzoApi2 {
-    val client = okhttp3.OkHttpClient.Builder().cookieJar(cookieJar).build()
+    // MUST carry the same Origin interceptor as createApi (see Api.kt):
+    // without it every Api2 POST 403s with MISSING_ORIGIN.
+    val client = okhttp3.OkHttpClient.Builder()
+        .cookieJar(cookieJar)
+        .addInterceptor(originInterceptor())
+        .build()
     return retrofit2.Retrofit.Builder()
         .baseUrl(BASE_URL)
         .client(client)
@@ -165,3 +170,5 @@ fun createApi2(context: android.content.Context, cookieJar: PersistentCookieJar)
         .build()
         .create(FrianzoApi2::class.java)
 }
+
+
