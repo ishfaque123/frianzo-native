@@ -1,9 +1,11 @@
 name: Build APK
 
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 
 jobs:
   build:
@@ -35,7 +37,7 @@ jobs:
         run: cp app/build/outputs/apk/release/app-release.apk frianzo.apk
       - name: Show signing SHA-1
         run: |
-          keytool -printcert -jarfile frianzo.apk | grep -i SHA1:
+          keytool -printcert -jarfile frianzo.apk | grep -i -E "SHA1|SHA-1" || true
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
