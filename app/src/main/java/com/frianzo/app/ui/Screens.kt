@@ -361,7 +361,7 @@ fun FeedScreen(api: FrianzoApi) {
                         Spacer(Modifier.width(4.dp))
                         Text("${post.likeCount}", style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.width(12.dp))
-                        Icon(Icons.Filled.ChatBubble, contentDescription = "Comments", modifier = Modifier.size(16.dp))
+                        Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.width(12.dp))
