@@ -349,7 +349,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
                     val uname = res.data.user.username
                     if (uname != null) {
                         val pr = api2.userPosts(uname)
-                        if (pr.success && pr.data != null) posts = pr.data.posts
+                        if (pr.success && pr.data != null) posts = pr.data.posts ?: emptyList()
                     }
                     if (res.data.user.id != null && res.data.user.id != myId) {
                         val fs = api2.followStatus(res.data.user.id)
@@ -401,3 +401,4 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
         }
     }
 }
+
