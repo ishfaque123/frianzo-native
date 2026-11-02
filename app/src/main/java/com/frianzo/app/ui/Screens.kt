@@ -10,6 +10,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.ui.text.withStyle
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -227,11 +228,11 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
         Text(
             text = androidx.compose.ui.text.buildAnnotatedString {
                 append("By continuing with an account located in ")
-                androidx.compose.ui.text.withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Pakistan") }
+                withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Pakistan") }
                 append(", you agree to Frianzo's ")
-                androidx.compose.ui.text.withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Terms of Service") }
+                withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Terms of Service") }
                 append(" and acknowledge that you have read our ")
-                androidx.compose.ui.text.withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Privacy Policy") }
+                withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Privacy Policy") }
                 append(".")
             },
             style = MaterialTheme.typography.bodySmall,
