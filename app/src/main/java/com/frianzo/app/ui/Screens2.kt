@@ -156,7 +156,7 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
         item { Text("Chats", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp)) }
         items(list, key = { it.id }) { c ->
             val other = c.otherUser
-            val last = c.messages?.firstOrNull()?.content ?: ""
+            val last = c.lastMessage?.content ?: c.messages?.firstOrNull()?.content ?: ""
             ListItem(
                 headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat") },
                 supportingContent = { Text(last) },
@@ -178,7 +178,9 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         scope.launch {
             try {
                 val res = api2.messages(conversationId)
-                if (res.success && res.data != null) messages = res.data.reversed()
+                // Backend already returns messages chronological (old -> new);
+                // reverse once so newest-first pairs with reverseLayout below.
+                if (res.success && res.data != null) messages = res.data.messages.reversed()
             } catch (_: Exception) {}
         }
     }
@@ -186,7 +188,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     Column(Modifier.fillMaxSize()) {
         Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
-            items(messages.reversed(), key = { it.id ?: "" }) { m ->
+            items(messages, key = { it.id ?: "" }) { m ->
                 val mine = m.senderId == myId
                 Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
                     Surface(color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
@@ -290,16 +292,16 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
         scope.launch {
             try {
                 val res = if (username == null) api2.myProfile() else api2.publicProfile(username)
-                if (res.success && res.data != null) {
-                    profile = res.data
-                    val uname = res.data.username
+                if (res.success && res.data?.user != null) {
+                    profile = res.data.user
+                    val uname = res.data.user.username
                     if (uname != null) {
                         val pr = api2.userPosts(uname)
                         if (pr.success && pr.data != null) posts = pr.data.posts
                     }
-                    if (res.data.id != null && res.data.id != myId) {
-                        val fs = api2.followStatus(res.data.id)
-                        if (fs.success && fs.data != null) following = fs.data.following || fs.data.isFollowing
+                    if (res.data.user.id != null && res.data.user.id != myId) {
+                        val fs = api2.followStatus(res.data.user.id)
+                        if (fs.success && fs.data != null) following = fs.data.status == "following" || fs.data.status == "friends"
                     }
                 } else error = res.error?.message
             } catch (e: Exception) { error = e.message }
