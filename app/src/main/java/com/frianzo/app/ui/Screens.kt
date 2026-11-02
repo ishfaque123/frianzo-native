@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -22,6 +23,11 @@ import android.content.Intent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
@@ -359,6 +365,11 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
     var loading by mutableStateOf(false); private set
     var error by mutableStateOf<String?>(null); private set
     var likedIds by mutableStateOf<Set<String>>(emptySet()); private set
+    // Live reaction type per post ("like", "love", "haha", "wow", "sad", "angry").
+    // Post model carries no myReaction field, so this map is the local source.
+    var reactionByPost by mutableStateOf<Map<String, String>>(emptyMap()); private set
+
+    fun hidePost(postId: String) { posts = posts.filterNot { it.id == postId } }
 
     fun loadMore() {
         if (loading || !hasMore) return
@@ -385,17 +396,53 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
         posts = posts.map { if (it.id == postId) it.copy(commentCount = newCount) else it }
     }
 
-    fun toggleLike(post: Post) {
+    fun toggleLike(post: Post) { setReaction(post, "like") }
+
+    /**
+     * Live reaction behaviour: optimistic instant update, server sync wins,
+     * revert on failure, in-flight taps ignored. Tap on the SAME reaction
+     * again sends that type again (existing backend behaviour: it toggles
+     * the reaction off, myReaction becomes null). Switching reaction keeps
+     * the total count flat; adding +1; removing -1. Reaction type strings
+     * are the web client's ("like","love","haha","wow","sad","angry");
+     * no new endpoint is used — POST /api/posts/{id}/reaction only.
+     */
+    private val reactionInFlight = mutableSetOf<String>()
+    fun setReaction(post: Post, type: String) {
+        if (post.id in reactionInFlight) return
+        reactionInFlight += post.id
+        val prevLiked = likedIds
+        val prevReactions = reactionByPost
+        val prevPosts = posts
+        val current = reactionByPost[post.id]
+        val removing = current == type
+        val switching = current != null && !removing
+        val delta = when { removing -> -1; switching -> 0; else -> 1 }
+        likedIds = if (removing) likedIds - post.id else likedIds + post.id
+        reactionByPost = if (removing) reactionByPost - post.id else reactionByPost + (post.id to type)
+        posts = posts.map { if (it.id == post.id) it.copy(likeCount = (it.likeCount + delta).coerceAtLeast(0)) else it }
         viewModelScope.launch {
             try {
-                val r = api2.setReaction(post.id, mapOf("type" to "like"))
+                val r = api2.setReaction(post.id, mapOf("type" to type))
                 if (r.success && r.data != null) {
                     val counts = r.data.reactionCounts
-                    val newLike = counts?.get("like") ?: post.likeCount
-                    posts = posts.map { if (it.id == post.id) it.copy(likeCount = newLike) else it }
-                    likedIds = if (r.data.myReaction != null) likedIds + post.id else likedIds - post.id
+                    if (counts != null) {
+                        val total = counts.values.sum()
+                        posts = posts.map { if (it.id == post.id) it.copy(likeCount = total) else it }
+                    }
+                    if (r.data.myReaction != null) {
+                        likedIds = likedIds + post.id
+                        reactionByPost = reactionByPost + (post.id to r.data.myReaction)
+                    } else {
+                        likedIds = likedIds - post.id
+                        reactionByPost = reactionByPost - post.id
+                    }
+                } else {
+                    likedIds = prevLiked; reactionByPost = prevReactions; posts = prevPosts
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                likedIds = prevLiked; reactionByPost = prevReactions; posts = prevPosts
+            } finally { reactionInFlight -= post.id }
         }
     }
 }
@@ -405,18 +452,19 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewMode
     override fun <T : ViewModel> create(modelClass: Class<T>): T = FeedViewModel(api, api2) as T
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onAuthor: (String) -> Unit = {}) {
+fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val posts = vm.posts
     val hasMore = vm.hasMore
     val loading = vm.loading
     val error = vm.error
     val likedIds = vm.likedIds
     var commentPost by remember { mutableStateOf<Post?>(null) }
+    var sharePost by remember { mutableStateOf<Post?>(null) }
     var storyInfo by remember { mutableStateOf<String?>(null) }
-    // Web-parity: own avatar for the composer row (api2 GET /api/users/me,
-    // already used by ProfileScreen). Falls back to the empty avatar circle.
     var myAvatar by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         try {
@@ -424,10 +472,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             if (me.success && me.data?.user != null) myAvatar = me.data.user.profilePictureUrl
         } catch (_: Exception) {}
     }
-    // Web-parity Follow buttons: per-author follow status, fetched once per
-    // author via the existing GET /api/follows/{id}/status (same endpoint
-    // ProfileScreen uses). Map value: true = following/self (hide button),
-    // false = not following (show Follow), absent = not checked yet.
+    // Per-author follow status, fetched once per author (existing endpoint).
     var followStates by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     val followScope = rememberCoroutineScope()
     LaunchedEffect(posts) {
@@ -446,26 +491,18 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         }
     }
     val listState = rememberLazyListState()
-
-    // PERF: auto load-more near the end of the list, so the user no longer
-    // waits for a manual "Load more" tap after every 5-post page (backend
-    // page size is 5). The manual button stays as a fallback below.
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
             .collect { idx ->
-                // Read vm.posts here, not the composable-captured `posts`:
-                // the collect lambda outlives recomposition, so the captured
-                // list would go stale and auto load-more would never fire.
                 if (idx != null && vm.posts.isNotEmpty() && idx >= vm.posts.size - 3) vm.loadMore()
             }
     }
-
-    // Comments dialog for one post (FB-like: read + add, counts update).
     commentPost?.let { post ->
         PostCommentsDialog(vm.api2, post,
             onClose = { commentPost = null },
             onCountChange = { newCount -> vm.updateCommentCount(post.id, newCount) })
     }
+    sharePost?.let { post -> PostShareSheet(vm, post, onClose = { sharePost = null }, onOpenChat = onOpenChat) }
     storyInfo?.let { name ->
         AlertDialog(
             onDismissRequest = { storyInfo = null },
@@ -478,21 +515,15 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize().background(FrianzoPageBackground),
-        contentPadding = PaddingValues(vertical = 8.dp),
     ) {
-        // (1) Web-parity composer row: own avatar + "What's on your mind?"
-        // pill + + button. Both open the existing Post (CREATE) tab.
+        // Composer row (flat, live layout): avatar + pill -> Post screen.
+        // The + button opens the Post screen too, where photo pick lives;
+        // live opens a system picker first, but that picker cannot hand a
+        // file to the separate Post tab, so a picker here would be a dead
+        // target. Post-screen photo pick is the working equivalent.
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-            ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+            Column(Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     FrianzoAvatar(myAvatar, 40.dp)
                     Spacer(Modifier.width(10.dp))
                     Box(
@@ -511,34 +542,23 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     }
                 }
             }
+            Spacer(Modifier.height(8.dp))
         }
-        // (2) Web-parity stories row. NO stories endpoint exists in Api/Api2
-        // (verified: zero "stories" references), so NO endpoint is invented:
-        // "Your story" + distinct feed authors' avatars as placeholders that
-        // open nothing yet. Real story viewing needs a backend endpoint first.
+        // Stories row (flat): Your story -> Post screen (works); other
+        // authors -> dialog (no stories endpoint exists in Api/Api2, none
+        // invented). Every circle is tappable; none is a dead target.
         item {
             val storyAuthors = posts.mapNotNull { it.author }.distinctBy { it.id ?: it.username }.take(8)
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-            ) {
+            Column(Modifier.fillMaxWidth().background(Color.White).padding(vertical = 12.dp)) {
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { onCreatePost() }) {
                             Box(contentAlignment = Alignment.BottomEnd) {
-                                Box(
-                                    Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint),
-                                    contentAlignment = Alignment.Center,
-                                ) { FrianzoAvatar(myAvatar, 56.dp) }
-                                Box(
-                                    Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue),
-                                    contentAlignment = Alignment.Center,
-                                ) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = androidx.compose.ui.graphics.Color.White) }
+                                Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) { FrianzoAvatar(myAvatar, 56.dp) }
+                                Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
                             }
                             Spacer(Modifier.height(4.dp))
                             Text("Your story", fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
@@ -546,182 +566,137 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     }
                     items(storyAuthors) { author ->
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { storyInfo = author.displayName ?: author.username ?: "User" }) {
-                            Box(
-                                Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue),
-                                contentAlignment = Alignment.Center,
-                            ) { FrianzoAvatar(author.profilePictureUrl, 56.dp) }
+                            Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { FrianzoAvatar(author.profilePictureUrl, 56.dp) }
                             Spacer(Modifier.height(4.dp))
-                            Text(
-                                (author.displayName ?: author.username ?: "User").substringBefore(" "),
-                                fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false,
-                            )
+                            Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
                         }
                     }
                 }
             }
+            Spacer(Modifier.height(8.dp))
         }
         items(posts, key = { it.id }) { post ->
             val liked = post.id in likedIds
+            val myReaction = vm.reactionByPost[post.id]
             var menuExpanded by remember { mutableStateOf(false) }
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-            ) {
-                Column {
-                    // FB header: avatar left, name (16sp bold) + time
-                    // (12sp grey) below it, 3-dot menu at the right edge.
-                    // The menu icon is placement only: no menu actions are
-                    // wired yet, so it is a plain Icon, not a dead button.
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(Modifier.clickable { post.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(post.author?.profilePictureUrl, 40.dp) }
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f).clickable { post.author?.username?.let { onAuthor(it) } }) {
-                            Text(
-                                post.author?.displayName ?: post.author?.username ?: "User",
-                                fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false,
-                            )
-                            val time = feedTime(post.createdAt)
-                            Text(
-                                if (time.isNotBlank()) time else "@${post.author?.username ?: ""}",
-                                fontSize = 12.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false,
-                            )
-                        }
-                        // (3) Web-parity Follow button: only for authors the user does
-                        // not follow, never for own posts. Uses the existing
-                        // POST /api/follows/{userId} (same as ProfileScreen).
-                        val authorId = post.author?.id
-                        if (authorId != null && authorId != myId && followStates[authorId] == false) {
-                            OutlinedButton(
-                                onClick = {
-                                    followScope.launch {
-                                        try {
-                                            val r = vm.api2.toggleFollow(authorId)
-                                            if (r.success && r.data != null) {
-                                                followStates = followStates + (authorId to (r.data.following || r.data.isFollowing))
-                                            }
-                                        } catch (_: Exception) {}
-                                    }
-                                },
-                                modifier = Modifier.height(36.dp),
-                                shape = RoundedCornerShape(28.dp),
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                            ) { Text("Follow", fontSize = 14.sp, color = FrianzoBlue) }
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Box {
-                            IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary) }
-                            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                                if (post.author?.username != null) {
-                                    DropdownMenuItem(text = { Text("View profile") }, onClick = { menuExpanded = false; post.author?.username?.let { onAuthor(it) } })
+            var pickerPost by remember { mutableStateOf(false) }
+            // Flat full-width card, live layout: white section + 8dp grey gap.
+            // No rounded shadow card. Text and photo taps are NOT nested
+            // inside any parent clickable, so action buttons below can
+            // never be swallowed by a card tap handler.
+            Column(Modifier.fillMaxWidth().background(Color.White)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.clickable { post.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(post.author?.profilePictureUrl, 40.dp) }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f).clickable { post.author?.username?.let { onAuthor(it) } }) {
+                        Text(post.author?.displayName ?: post.author?.username ?: "User", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        val time = feedTime(post.createdAt)
+                        Text(if (time.isNotBlank()) time else "@${post.author?.username ?: ""}", fontSize = 12.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
+                    }
+                    val authorId = post.author?.id
+                    if (authorId != null && authorId != myId && followStates[authorId] == false) {
+                        OutlinedButton(
+                            onClick = {
+                                followScope.launch {
+                                    try {
+                                        val r = vm.api2.toggleFollow(authorId)
+                                        if (r.success && r.data != null) followStates = followStates + (authorId to (r.data.following || r.data.isFollowing))
+                                    } catch (_: Exception) {}
                                 }
-                                DropdownMenuItem(text = { Text("Share post") }, onClick = {
-                                    menuExpanded = false
-                                    val intent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, "https://frianzo.online/post/${post.id}")
-                                    }
-                                    context.startActivity(Intent.createChooser(intent, "Share post"))
-                                })
-                                DropdownMenuItem(text = { Text("Comments") }, onClick = { menuExpanded = false; commentPost = post })
+                            },
+                            modifier = Modifier.height(36.dp),
+                            shape = RoundedCornerShape(28.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                        ) { Text("Follow", fontSize = 13.sp, color = FrianzoBlue) }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary) }
+                        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                            if (post.author?.username != null) {
+                                DropdownMenuItem(text = { Text("View profile") }, onClick = { menuExpanded = false; post.author?.username?.let { onAuthor(it) } })
                             }
+                            DropdownMenuItem(text = { Text("Copy link") }, onClick = {
+                                menuExpanded = false
+                                clipboard.setText(AnnotatedString("https://frianzo.online/post/${post.id}"))
+                            })
+                            DropdownMenuItem(text = { Text("Share") }, onClick = { menuExpanded = false; sharePost = post })
+                            DropdownMenuItem(text = { Text("Comments") }, onClick = { menuExpanded = false; commentPost = post })
+                            // Hide removes the post from this feed only.
+                            // Report / Edit / Delete / Pin are NOT listed:
+                            // no verified endpoint exists for them in Api2.
+                            DropdownMenuItem(text = { Text("Hide post") }, onClick = { menuExpanded = false; vm.hidePost(post.id) })
                         }
                     }
-                    // FB body: text first, then a FULL-WIDTH photo (no side
-                    // padding, no rounded inset — the old card shrank photos
-                    // inside 12dp + 16dp of padding).
-                    post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp)) }
-                    post.imageUrl?.let {
-                        Spacer(Modifier.height(10.dp))
-                        AsyncImage(model = ImageRequest.Builder(context).data(it).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().clickable { commentPost = post })
-                    }
-                    // FB counts row: likes left, comments/shares right, 14sp.
+                    // Always-visible Hide X, live layout.
+                    IconButton(onClick = { vm.hidePost(post.id) }) { Icon(Icons.Filled.Close, contentDescription = "Hide", modifier = Modifier.size(20.dp), tint = FrianzoTextSecondary) }
+                }
+                // Text tap -> comments dialog (no post-detail screen exists
+                // in the app yet, so this is the working tap target).
+                post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp).clickable { commentPost = post }) }
+                post.imageUrl?.let {
                     Spacer(Modifier.height(10.dp))
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                            contentDescription = null, modifier = Modifier.size(16.dp),
-                            tint = if (liked) FrianzoBlue else FrianzoTextSecondary,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("${post.likeCount}", fontSize = 14.sp, color = FrianzoTextSecondary)
+                    AsyncImage(model = ImageRequest.Builder(context).data(it).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().clickable { commentPost = post })
+                }
+                Spacer(Modifier.height(10.dp))
+                // Counts row, live style: 12sp, reaction icon + total left,
+                // comments/shares right. Only shown when any count > 0.
+                if (post.likeCount > 0 || post.commentCount > 0 || post.shareCount > 0) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (post.likeCount > 0) {
+                            Icon(reactionIcon(myReaction), contentDescription = null, modifier = Modifier.size(16.dp), tint = reactionColor(myReaction))
+                            Spacer(Modifier.width(4.dp))
+                            Text("${post.likeCount}", fontSize = 12.sp, color = FrianzoTextSecondary)
+                        }
                         Spacer(Modifier.weight(1f))
                         val rightParts = buildList {
                             if (post.commentCount > 0) add("${post.commentCount} comments")
                             if (post.shareCount > 0) add("${post.shareCount} shares")
                         }
-                        if (rightParts.isNotEmpty()) {
-                            Text(rightParts.joinToString(" · "), fontSize = 14.sp, color = FrianzoTextSecondary)
-                        }
+                        if (rightParts.isNotEmpty()) Text(rightParts.joinToString(" · "), fontSize = 12.sp, color = FrianzoTextSecondary)
                     }
                     Spacer(Modifier.height(8.dp))
-                    HorizontalDivider(color = FrianzoBorder)
-                    // FB action row: 3 EQUAL buttons, each 48dp tall,
-                    // 14sp text + 20dp icon, centred. This replaces the old
-                    // left-aligned cramped icon+count cluster.
-                    Row(Modifier.fillMaxWidth()) {
-                        // Like toggles via POST /api/posts/{id}/reaction
-                        // {type:"like"} (same endpoint as web); a second tap
-                        // removes the reaction, and the server count wins.
-                        TextButton(
+                }
+                HorizontalDivider(color = FrianzoBorder)
+                // Icon-only action row, live style: three flex-1 buttons.
+                // Like is a thumbs-up (NOT a heart — heart is reels-only on
+                // live). Tap toggles; 400ms long-press opens the picker.
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    Box(
+                        Modifier.weight(1f).height(48.dp).combinedClickable(
                             onClick = { vm.toggleLike(post) },
-                            modifier = Modifier.weight(1f).height(48.dp),
-                        ) {
-                            Icon(
-                                if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                                contentDescription = "Like", modifier = Modifier.size(20.dp),
-                                tint = if (liked) FrianzoBlue else FrianzoTextSecondary,
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text("Like", fontSize = 14.sp, color = if (liked) FrianzoBlue else FrianzoTextSecondary)
-                        }
-                        TextButton(
-                            onClick = { commentPost = post },
-                            modifier = Modifier.weight(1f).height(48.dp),
-                        ) {
-                            Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(20.dp), tint = FrianzoTextSecondary)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Comment", fontSize = 14.sp, color = FrianzoTextSecondary)
-                        }
-                        // Share opens the Android share sheet with the real
-                        // post link. It deliberately does NOT call
-                        // POST /api/posts/{id}/share, which on the backend
-                        // creates a repost, not a share link.
-                        TextButton(
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_TEXT, "https://frianzo.online/post/${post.id}")
-                                }
-                                context.startActivity(Intent.createChooser(intent, "Share post"))
-                            },
-                            modifier = Modifier.weight(1f).height(48.dp),
-                        ) {
-                            Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(20.dp), tint = FrianzoTextSecondary)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Share", fontSize = 14.sp, color = FrianzoTextSecondary)
-                        }
+                            onLongClick = { pickerPost = true },
+                        ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.ThumbUp, contentDescription = "Like",
+                            modifier = Modifier.size(28.dp),
+                            tint = if (liked) FrianzoBlue else FrianzoTextSecondary,
+                        )
+                    }
+                    Box(Modifier.weight(1f).height(48.dp).clickable { commentPost = post }, contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary)
+                    }
+                    Box(Modifier.weight(1f).height(48.dp).clickable { sharePost = post }, contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary)
                     }
                 }
+                if (pickerPost) {
+                    ReactionPickerRow(
+                        onPick = { type -> pickerPost = false; vm.setReaction(post, type) },
+                        onDismiss = { pickerPost = false },
+                    )
+                }
             }
+            Spacer(Modifier.height(8.dp))
         }
         item {
             if (error != null) Text(error!!, modifier = Modifier.padding(16.dp))
             if (loading) {
-                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                    DotsLoading()
-                }
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
             } else if (hasMore) {
-                OutlinedButton(onClick = { vm.loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)) {
-                    Text("Load more")
-                }
+                OutlinedButton(onClick = { vm.loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) { Text("Load more") }
             } else if (posts.isEmpty()) {
                 Text("No posts yet", modifier = Modifier.padding(16.dp))
             } else {
@@ -730,6 +705,114 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         }
     }
 }
+
+private data class ReactionOption(val type: String, val label: String, val icon: ImageVector, val color: Color)
+
+private fun reactionOptions(): List<ReactionOption> = listOf(
+    ReactionOption("like", "Like", Icons.Outlined.ThumbUp, Color(0xFF2563EB)),
+    ReactionOption("love", "Love", Icons.Filled.Favorite, Color(0xFFDC2626)),
+    ReactionOption("haha", "Haha", Icons.Filled.SentimentSatisfied, Color(0xFFCA8A04)),
+    ReactionOption("wow", "Wow", Icons.Filled.SentimentVerySatisfied, Color(0xFFCA8A04)),
+    ReactionOption("sad", "Sad", Icons.Filled.SentimentDissatisfied, Color(0xFFCA8A04)),
+    ReactionOption("angry", "Angry", Icons.Filled.SentimentVeryDissatisfied, Color(0xFFEA580C)),
+)
+
+private fun reactionIcon(type: String?): ImageVector =
+    reactionOptions().firstOrNull { it.type == type }?.icon ?: Icons.Outlined.ThumbUp
+
+private fun reactionColor(type: String?): Color =
+    reactionOptions().firstOrNull { it.type == type }?.color ?: FrianzoTextSecondary
+
+@Composable
+private fun ReactionPickerRow(onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+        reactionOptions().forEach { opt ->
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onPick(opt.type) }) {
+                Icon(opt.icon, contentDescription = opt.label, modifier = Modifier.size(40.dp), tint = opt.color)
+                Text(opt.label, fontSize = 11.sp, color = FrianzoTextSecondary)
+            }
+        }
+        TextButton(onClick = onDismiss) { Text("Close") }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, onOpenChat: (String, String) -> Unit) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var copied by remember { mutableStateOf(false) }
+    var dmBusy by remember { mutableStateOf(false) }
+    val link = "https://frianzo.online/post/${post.id}"
+    ModalBottomSheet(onDismissRequest = onClose) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text(link, fontSize = 14.sp, color = FrianzoTextSecondary)
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = {
+                clipboard.setText(AnnotatedString(link)); copied = true
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (copied) "Copied!" else "Copy link") }
+            Spacer(Modifier.height(12.dp))
+            // Tiles that all work via real intents / API. Repost is NOT
+            // offered: no share/repost endpoint exists in Api2, and the
+            // old share endpoint creates a backend repost, not a link.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                ShareTile("WhatsApp") {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://wa.me/?text=" + android.net.Uri.encode(link))))
+                }
+                ShareTile("Facebook") {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link))))
+                }
+                ShareTile("SMS") {
+                    context.startActivity(Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("sms:?body=" + android.net.Uri.encode(link))))
+                }
+                ShareTile("More") {
+                    val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, link) }
+                    context.startActivity(Intent.createChooser(intent, "Share post"))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            // Frianzo DM: creates a conversation with the author (existing
+            // endpoint) and opens the thread. Hidden when author id unknown.
+            val authorId = post.author?.id
+            if (authorId != null) {
+                TextButton(
+                    enabled = !dmBusy,
+                    onClick = {
+                        dmBusy = true
+                        scope.launch {
+                            try {
+                                val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId))
+                                val convId = res.data?.id
+                                if (convId != null) {
+                                    onClose()
+                                    onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User")
+                                }
+                            } catch (_: Exception) {}
+                            dmBusy = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Send in Frianzo DM") }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun ShareTile(label: String, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onClick() }.padding(8.dp)) {
+        Box(Modifier.size(56.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(24.dp), tint = FrianzoBlue)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(label, fontSize = 11.sp, color = FrianzoTextSecondary)
+    }
+}
+
 
 @Composable
 private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, onClose: () -> Unit, onCountChange: (Int) -> Unit) {

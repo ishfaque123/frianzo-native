@@ -176,7 +176,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             when {
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId) { openChat = null }
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name })
-                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onAuthor = { username -> openProfile = username })
+                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
                 tab == Tab.REELS -> ReelsScreen(api2) { username -> openProfile = username }
                 tab == Tab.CREATE -> CreatePostScreen(api2) { feedVm.refresh(); tab = Tab.FEED }
                 tab == Tab.CHAT -> ChatListScreen(api2) { id, name -> openChat = id to name }
