@@ -7,8 +7,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -403,7 +406,7 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewMode
 }
 
 @Composable
-fun FeedScreen(vm: FeedViewModel) {
+fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}) {
     val context = LocalContext.current
     val posts = vm.posts
     val hasMore = vm.hasMore
@@ -411,6 +414,36 @@ fun FeedScreen(vm: FeedViewModel) {
     val error = vm.error
     val likedIds = vm.likedIds
     var commentPost by remember { mutableStateOf<Post?>(null) }
+    // Web-parity: own avatar for the composer row (api2 GET /api/users/me,
+    // already used by ProfileScreen). Falls back to the empty avatar circle.
+    var myAvatar by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        try {
+            val me = vm.api2.myProfile()
+            if (me.success && me.data?.user != null) myAvatar = me.data.user.profilePictureUrl
+        } catch (_: Exception) {}
+    }
+    // Web-parity Follow buttons: per-author follow status, fetched once per
+    // author via the existing GET /api/follows/{id}/status (same endpoint
+    // ProfileScreen uses). Map value: true = following/self (hide button),
+    // false = not following (show Follow), absent = not checked yet.
+    var followStates by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    val followScope = rememberCoroutineScope()
+    LaunchedEffect(posts) {
+        for (post in posts) {
+            val aid = post.author?.id ?: continue
+            if (aid in followStates) continue
+            followScope.launch {
+                try {
+                    val fs = vm.api2.followStatus(aid)
+                    if (fs.success && fs.data != null) {
+                        val st = fs.data.status
+                        followStates = followStates + (aid to (st == "following" || st == "friends" || st == "self"))
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
     val listState = rememberLazyListState()
 
     // PERF: auto load-more near the end of the list, so the user no longer
@@ -438,6 +471,86 @@ fun FeedScreen(vm: FeedViewModel) {
         modifier = Modifier.fillMaxSize().background(FrianzoPageBackground),
         contentPadding = PaddingValues(vertical = 8.dp),
     ) {
+        // (1) Web-parity composer row: own avatar + "What's on your mind?"
+        // pill + + button. Both open the existing Post (CREATE) tab.
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FrianzoAvatar(myAvatar, 40.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Box(
+                        Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(28.dp))
+                            .background(FrianzoPageBackground).clickable { onCreatePost() },
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Text("What's on your mind?", fontSize = 15.sp, color = FrianzoTextSecondary, modifier = Modifier.padding(horizontal = 16.dp))
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Box(
+                        Modifier.size(40.dp).clip(CircleShape).background(FrianzoBlueTint).clickable { onCreatePost() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = "Create post", modifier = Modifier.size(24.dp), tint = FrianzoBlue)
+                    }
+                }
+            }
+        }
+        // (2) Web-parity stories row. NO stories endpoint exists in Api/Api2
+        // (verified: zero "stories" references), so NO endpoint is invented:
+        // "Your story" + distinct feed authors' avatars as placeholders that
+        // open nothing yet. Real story viewing needs a backend endpoint first.
+        item {
+            val storyAuthors = posts.mapNotNull { it.author }.distinctBy { it.id ?: it.username }.take(8)
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            ) {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    item {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
+                            Box(contentAlignment = Alignment.BottomEnd) {
+                                Box(
+                                    Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint),
+                                    contentAlignment = Alignment.Center,
+                                ) { FrianzoAvatar(myAvatar, 56.dp) }
+                                Box(
+                                    Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue),
+                                    contentAlignment = Alignment.Center,
+                                ) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = androidx.compose.ui.graphics.Color.White) }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text("Your story", fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
+                        }
+                    }
+                    items(storyAuthors) { author ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
+                            Box(
+                                Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue),
+                                contentAlignment = Alignment.Center,
+                            ) { FrianzoAvatar(author.profilePictureUrl, 56.dp) }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                (author.displayName ?: author.username ?: "User").substringBefore(" "),
+                                fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false,
+                            )
+                        }
+                    }
+                }
+            }
+        }
         items(posts, key = { it.id }) { post ->
             val liked = post.id in likedIds
             Card(
@@ -467,6 +580,28 @@ fun FeedScreen(vm: FeedViewModel) {
                                 if (time.isNotBlank()) time else "@${post.author?.username ?: ""}",
                                 fontSize = 12.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false,
                             )
+                        }
+                        // (3) Web-parity Follow button: only for authors the user does
+                        // not follow, never for own posts. Uses the existing
+                        // POST /api/follows/{userId} (same as ProfileScreen).
+                        val authorId = post.author?.id
+                        if (authorId != null && authorId != myId && followStates[authorId] == false) {
+                            OutlinedButton(
+                                onClick = {
+                                    followScope.launch {
+                                        try {
+                                            val r = vm.api2.toggleFollow(authorId)
+                                            if (r.success && r.data != null) {
+                                                followStates = followStates + (authorId to (r.data.following || r.data.isFollowing))
+                                            }
+                                        } catch (_: Exception) {}
+                                    }
+                                },
+                                modifier = Modifier.height(36.dp),
+                                shape = RoundedCornerShape(28.dp),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                            ) { Text("Follow", fontSize = 14.sp, color = FrianzoBlue) }
+                            Spacer(Modifier.width(8.dp))
                         }
                         Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary)
                     }
@@ -624,4 +759,5 @@ private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, onClose: () -> Uni
 }
 
 fun dummyContextUsage(@Suppress("UNUSED_PARAMETER") context: Context) = Unit
+
 
