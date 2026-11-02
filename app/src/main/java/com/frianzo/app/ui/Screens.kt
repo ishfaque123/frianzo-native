@@ -2,6 +2,8 @@ package com.frianzo.app.ui
 
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
@@ -36,31 +38,57 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
+    // Dark login look from the real web login screenshot: dark slate page,
+    // white wordmark, dark outlined Google button, white email button.
+    val loginBg = androidx.compose.ui.graphics.Color(0xFF1E293B)
+    val loginFieldBg = androidx.compose.ui.graphics.Color(0xFF2B3648)
+    val loginBorder = androidx.compose.ui.graphics.Color(0xFF475569)
+    val loginGrey = androidx.compose.ui.graphics.Color(0xFF94A3B8)
+    val loginBlue = androidx.compose.ui.graphics.Color(0xFF3B82F6)
+
     fun fail(e: Exception, fallback: String) {
         message = e.message ?: fallback
         busy = false
     }
 
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = androidx.compose.ui.graphics.Color.White,
+        unfocusedTextColor = androidx.compose.ui.graphics.Color.White,
+        focusedContainerColor = loginFieldBg,
+        unfocusedContainerColor = loginFieldBg,
+        disabledContainerColor = loginFieldBg,
+        focusedBorderColor = loginBorder,
+        unfocusedBorderColor = loginBorder,
+        focusedPlaceholderColor = loginGrey,
+        unfocusedPlaceholderColor = loginGrey,
+        cursorColor = androidx.compose.ui.graphics.Color.White,
+    )
+
     Column(
         modifier = Modifier.fillMaxSize()
-            .background(androidx.compose.ui.graphics.Color.White)
-            .padding(24.dp),
+            .background(loginBg)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Web landing style: real blue-F logo, bold blue wordmark, tagline.
-        FrianzoLogo(88.dp)
-        Spacer(Modifier.height(16.dp))
-        Text("Frianzo", style = MaterialTheme.typography.displayMedium)
-        Spacer(Modifier.height(4.dp))
+        // Official blue-F logo, bold white wordmark, grey tagline (web login).
+        FrianzoLogo(96.dp)
+        Spacer(Modifier.height(20.dp))
         Text(
-            "Connect. Share. Discover.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = FrianzoTextSecondary,
+            "Frianzo",
+            style = MaterialTheme.typography.displayMedium,
+            color = androidx.compose.ui.graphics.Color.White,
         )
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Share your moments with friends",
+            style = MaterialTheme.typography.bodyMedium,
+            color = loginGrey,
+        )
+        Spacer(Modifier.height(36.dp))
 
-        Button(
+        OutlinedButton(
             enabled = !busy,
             onClick = {
                 busy = true
@@ -98,25 +126,59 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
                     } finally { busy = false }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
-        ) { Text("Continue with Google") }
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = loginFieldBg,
+                contentColor = androidx.compose.ui.graphics.Color.White,
+            ),
+            border = androidx.compose.foundation.BorderStroke(1.dp, loginBorder),
+        ) {
+            // Simplified Google "G" mark: no official multicolour G asset exists
+            // in the native repo, so a white disc with a blue G is used.
+            Box(
+                modifier = Modifier.size(24.dp)
+                    .background(androidx.compose.ui.graphics.Color.White, androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "G",
+                    color = FrianzoBlue,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = androidx.compose.ui.graphics.Color.White)
+        }
 
-        Spacer(Modifier.height(16.dp))
-        Text("Or login with email code", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(24.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            HorizontalDivider(color = loginBorder, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(12.dp))
+            Text("OR", style = MaterialTheme.typography.bodySmall, color = loginGrey)
+            Spacer(Modifier.width(12.dp))
+            HorizontalDivider(color = loginBorder, modifier = Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(24.dp))
+
         OutlinedTextField(
             value = email, onValueChange = { email = it },
-            label = { Text("Email") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            placeholder = { Text("Enter your email") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+            colors = fieldColors,
         )
         if (codeSent) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = code, onValueChange = { code = it },
-                label = { Text("6-digit code from email") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                placeholder = { Text("Enter 6-digit verification code") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = fieldColors,
             )
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         Button(
             enabled = !busy && email.isNotBlank(),
             onClick = {
@@ -140,12 +202,50 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
                     finally { busy = false }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
-        ) { Text(if (codeSent) "Verify code" else "Send code") }
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = androidx.compose.ui.graphics.Color.White,
+                contentColor = androidx.compose.ui.graphics.Color(0xFF0F172A),
+            ),
+        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium) }
+        if (codeSent) {
+            Spacer(Modifier.height(8.dp))
+            TextButton(
+                enabled = !busy,
+                onClick = { codeSent = false; code = ""; message = null },
+            ) { Text("Change email", color = loginGrey) }
+        }
 
-        message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = MaterialTheme.colorScheme.error) }
-        if (busy) { Spacer(Modifier.height(12.dp)); CircularProgressIndicator() }
+        message?.let {
+            Spacer(Modifier.height(12.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        }
+        if (busy) { Spacer(Modifier.height(12.dp)); CircularProgressIndicator(color = androidx.compose.ui.graphics.Color.White) }
+
+        Spacer(Modifier.height(28.dp))
+        Text(
+            text = androidx.compose.ui.text.buildAnnotatedString {
+                append("By continuing with an account located in ")
+                androidx.compose.ui.text.withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Pakistan") }
+                append(", you agree to Frianzo's ")
+                androidx.compose.ui.text.withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Terms of Service") }
+                append(" and acknowledge that you have read our ")
+                androidx.compose.ui.text.withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Privacy Policy") }
+                append(".")
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = loginGrey,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+        Spacer(Modifier.height(28.dp))
+        Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+            Text("About", style = MaterialTheme.typography.bodySmall, color = loginGrey)
+            Text("   ·   ", style = MaterialTheme.typography.bodySmall, color = loginGrey)
+            Text("Privacy", style = MaterialTheme.typography.bodySmall, color = loginGrey)
+            Text("   ·   ", style = MaterialTheme.typography.bodySmall, color = loginGrey)
+            Text("Terms", style = MaterialTheme.typography.bodySmall, color = loginGrey)
+        }
     }
 }
 
