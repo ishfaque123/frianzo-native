@@ -1,7 +1,10 @@
 package com.frianzo.app.ui
 
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -39,12 +42,23 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize()
+            .background(androidx.compose.ui.graphics.Color.White)
+            .padding(24.dp),
         verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Web landing style: real blue-F logo, bold blue wordmark, tagline.
+        FrianzoLogo(88.dp)
+        Spacer(Modifier.height(16.dp))
         Text("Frianzo", style = MaterialTheme.typography.displayMedium)
-        Text("Connect. Share. Discover.", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Connect. Share. Discover.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = FrianzoTextSecondary,
+        )
+        Spacer(Modifier.height(28.dp))
 
         Button(
             enabled = !busy,
@@ -84,21 +98,22 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
                     } finally { busy = false }
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
         ) { Text("Continue with Google") }
 
         Spacer(Modifier.height(16.dp))
         Text("Or login with email code", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(
             value = email, onValueChange = { email = it },
-            label = { Text("Email") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+            label = { Text("Email") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
         )
         if (codeSent) {
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = code, onValueChange = { code = it },
                 label = { Text("6-digit code from email") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                modifier = Modifier.fillMaxWidth(), singleLine = true, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -125,7 +140,8 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
                     finally { busy = false }
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
         ) { Text(if (codeSent) "Verify code" else "Send code") }
 
         message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = MaterialTheme.colorScheme.error) }
@@ -166,35 +182,36 @@ fun FeedScreen(api: FrianzoApi) {
 
     LaunchedEffect(Unit) { loadMore() }
 
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        item {
-            Text(
-                "Frianzo Feed", style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(16.dp),
-            )
-        }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().background(FrianzoPageBackground),
+        contentPadding = PaddingValues(vertical = 8.dp),
+    ) {
         items(posts, key = { it.id }) { post ->
-            Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Column(Modifier.padding(12.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            ) {
+                Column(Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        AsyncImage(
-                            model = post.author?.profilePictureUrl, contentDescription = null,
-                            modifier = Modifier.size(40.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
+                        FrianzoAvatar(post.author?.profilePictureUrl, 40.dp)
+                        Spacer(Modifier.width(10.dp))
                         Column {
-                            Text(post.author?.displayName ?: post.author?.username ?: "User")
+                            Text(post.author?.displayName ?: post.author?.username ?: "User", style = MaterialTheme.typography.titleMedium)
                             Text("@${post.author?.username ?: ""}", style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    post.content?.let { Spacer(Modifier.height(8.dp)); Text(it) }
+                    post.content?.let { Spacer(Modifier.height(10.dp)); Text(it, style = MaterialTheme.typography.bodyMedium) }
                     post.imageUrl?.let {
-                        Spacer(Modifier.height(8.dp))
-                        AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(10.dp))
+                        AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)))
                     }
+                    Spacer(Modifier.height(10.dp))
+                    HorizontalDivider(color = FrianzoBorder)
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "${post.likeCount} likes  •  ${post.commentCount} comments  •  ${post.shareCount} shares",
+                        "♥ ${post.likeCount}  •  💬 ${post.commentCount}  •  ↗ ${post.shareCount}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -209,7 +226,7 @@ fun FeedScreen(api: FrianzoApi) {
                     CircularProgressIndicator()
                 }
             } else if (hasMore) {
-                Button(onClick = { loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                OutlinedButton(onClick = { loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)) {
                     Text("Load more")
                 }
             } else if (posts.isNotEmpty()) {
