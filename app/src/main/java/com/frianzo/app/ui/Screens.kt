@@ -280,11 +280,11 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         Text(
             text = androidx.compose.ui.text.buildAnnotatedString {
                 append("By continuing with an account located in ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Pakistan") }
+                withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Pakistan") }
                 append(", you agree to Frianzo's ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Terms of Service") }
+                withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Terms of Service") }
                 append(" and acknowledge that you have read our ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = loginBlue, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Privacy Policy") }
+                withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Privacy Policy") }
                 append(".")
             },
             style = MaterialTheme.typography.bodySmall,
@@ -406,7 +406,7 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewMode
 }
 
 @Composable
-fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}) {
+fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onAuthor: (String) -> Unit = {}) {
     val context = LocalContext.current
     val posts = vm.posts
     val hasMore = vm.hasMore
@@ -414,6 +414,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     val error = vm.error
     val likedIds = vm.likedIds
     var commentPost by remember { mutableStateOf<Post?>(null) }
+    var storyInfo by remember { mutableStateOf<String?>(null) }
     // Web-parity: own avatar for the composer row (api2 GET /api/users/me,
     // already used by ProfileScreen). Falls back to the empty avatar circle.
     var myAvatar by remember { mutableStateOf<String?>(null) }
@@ -464,6 +465,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         PostCommentsDialog(vm.api2, post,
             onClose = { commentPost = null },
             onCountChange = { newCount -> vm.updateCommentCount(post.id, newCount) })
+    }
+    storyInfo?.let { name ->
+        AlertDialog(
+            onDismissRequest = { storyInfo = null },
+            title = { Text("Stories") },
+            text = { Text("$name's story will open here in a future update. Stories viewing is not in this build yet.") },
+            confirmButton = { TextButton(onClick = { storyInfo = null }) { Text("OK") } },
+        )
     }
 
     LazyColumn(
@@ -520,7 +529,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { onCreatePost() }) {
                             Box(contentAlignment = Alignment.BottomEnd) {
                                 Box(
                                     Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint),
@@ -536,7 +545,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         }
                     }
                     items(storyAuthors) { author ->
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { storyInfo = author.displayName ?: author.username ?: "User" }) {
                             Box(
                                 Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue),
                                 contentAlignment = Alignment.Center,
@@ -553,6 +562,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         }
         items(posts, key = { it.id }) { post ->
             val liked = post.id in likedIds
+            var menuExpanded by remember { mutableStateOf(false) }
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
@@ -568,9 +578,9 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        FrianzoAvatar(post.author?.profilePictureUrl, 40.dp)
+                        Box(Modifier.clickable { post.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(post.author?.profilePictureUrl, 40.dp) }
                         Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
+                        Column(Modifier.weight(1f).clickable { post.author?.username?.let { onAuthor(it) } }) {
                             Text(
                                 post.author?.displayName ?: post.author?.username ?: "User",
                                 fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false,
@@ -603,7 +613,23 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             ) { Text("Follow", fontSize = 14.sp, color = FrianzoBlue) }
                             Spacer(Modifier.width(8.dp))
                         }
-                        Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary)
+                        Box {
+                            IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary) }
+                            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                                if (post.author?.username != null) {
+                                    DropdownMenuItem(text = { Text("View profile") }, onClick = { menuExpanded = false; post.author?.username?.let { onAuthor(it) } })
+                                }
+                                DropdownMenuItem(text = { Text("Share post") }, onClick = {
+                                    menuExpanded = false
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, "https://frianzo.online/post/${post.id}")
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Share post"))
+                                })
+                                DropdownMenuItem(text = { Text("Comments") }, onClick = { menuExpanded = false; commentPost = post })
+                            }
+                        }
                     }
                     // FB body: text first, then a FULL-WIDTH photo (no side
                     // padding, no rounded inset — the old card shrank photos
@@ -611,7 +637,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp)) }
                     post.imageUrl?.let {
                         Spacer(Modifier.height(10.dp))
-                        AsyncImage(model = ImageRequest.Builder(context).data(it).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
+                        AsyncImage(model = ImageRequest.Builder(context).data(it).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().clickable { commentPost = post })
                     }
                     // FB counts row: likes left, comments/shares right, 14sp.
                     Spacer(Modifier.height(10.dp))

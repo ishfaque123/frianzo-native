@@ -34,7 +34,8 @@ import java.io.File
 
 // ---------- REELS: vertical list, tap video to play/pause, like + view ----------
 @Composable
-fun ReelsScreen(api2: FrianzoApi2) {
+fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
+    val context = LocalContext.current
     var reels by remember { mutableStateOf<List<Reel>>(emptyList()) }
     var offset by remember { mutableStateOf(0) }
     var hasMore by remember { mutableStateOf(true) }
@@ -65,6 +66,8 @@ fun ReelsScreen(api2: FrianzoApi2) {
             finally { loading = false }
         }
     }
+    var reelComment by remember { mutableStateOf<Reel?>(null) }
+    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, onClose = { reelComment = null }) }
     LaunchedEffect(Unit) { load() }
     LazyColumn(Modifier.fillMaxSize().background(FrianzoPageBackground), contentPadding = PaddingValues(vertical = 8.dp)) {
         items(reels, key = { it.id }) { reel ->
@@ -73,7 +76,7 @@ fun ReelsScreen(api2: FrianzoApi2) {
             var playing by remember { mutableStateOf(false) }
             Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { reel.author?.username?.let { onAuthor(it) } }) {
                         FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
                         Spacer(Modifier.width(10.dp))
                         Column {
@@ -125,7 +128,14 @@ fun ReelsScreen(api2: FrianzoApi2) {
                             }
                         }) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("$likes") } }
                         Spacer(Modifier.width(8.dp))
-                        Text("${reel.commentCount} comments")
+                        TextButton(onClick = { reelComment = reel }) { Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("${reel.commentCount}") }
+                        TextButton(onClick = {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_TEXT, "https://frianzo.online/reel/${reel.id}")
+                            }
+                            context.startActivity(android.content.Intent.createChooser(intent, "Share reel"))
+                        }) { Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Share") }
                     }
                 }
             }
@@ -136,6 +146,59 @@ fun ReelsScreen(api2: FrianzoApi2) {
             else if (hasMore) OutlinedButton(onClick = { load() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) { Text("Load more reels") }
         }
     }
+}
+
+
+// ---------- REEL COMMENTS: read + add via existing api2 reelComments endpoints ----------
+@Composable
+private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, onClose: () -> Unit) {
+    var comments by remember { mutableStateOf<List<ReelComment>>(emptyList()) }
+    var draft by rememberSaveable { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    fun load() {
+        scope.launch {
+            try {
+                val res = api2.reelComments(reel.id)
+                if (res.success && res.data != null) comments = res.data.comments else error = res.error?.message
+            } catch (e: Exception) { error = e.message }
+        }
+    }
+    LaunchedEffect(reel.id) { load() }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Comments") },
+        text = {
+            Column {
+                LazyColumn(Modifier.fillMaxWidth().height(320.dp)) {
+                    items(comments, key = { it.id }) { c ->
+                        Column(Modifier.padding(vertical = 6.dp)) {
+                            Text(c.author?.displayName ?: c.author?.username ?: "User", style = MaterialTheme.typography.titleMedium)
+                            Text(c.content ?: "", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        HorizontalDivider()
+                    }
+                    if (comments.isEmpty() && error == null) item { Text("No comments yet") }
+                    if (error != null) item { Text(error!!) }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(value = draft, onValueChange = { draft = it }, label = { Text("Write a comment") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                if (draft.isBlank()) { error = "Type a comment first"; return@Button }
+                val text = draft; draft = ""
+                scope.launch {
+                    try {
+                        val res = api2.addReelComment(reel.id, CommentCreateRequest(text))
+                        if (res.success) load() else error = res.error?.message
+                    } catch (e: Exception) { error = e.message; draft = text }
+                }
+            }) { Text("Send") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
+    )
 }
 
 // ---------- CREATE POST: text + optional photo ----------
@@ -221,7 +284,7 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
 }
 
 @Composable
-fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, myId: String?) {
+fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, myId: String?, onBack: () -> Unit = {}) {
     var messages by remember { mutableStateOf<List<ConversationMessage>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -251,7 +314,10 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         }
     }
     Column(Modifier.fillMaxSize().background(FrianzoPageBackground)) {
-        Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("Back") }
+            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 16.dp))
+        }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
             items(messages, key = { it.id ?: "" }) { m ->
                 val mine = m.senderId == myId
@@ -300,7 +366,7 @@ private fun notificationTitle(n: NotificationItem): String {
 }
 
 @Composable
-fun NotificationsScreen(api2: FrianzoApi2) {
+fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
     var items by remember { mutableStateOf<List<NotificationItem>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -328,6 +394,7 @@ fun NotificationsScreen(api2: FrianzoApi2) {
                     colors = ListItemDefaults.colors(containerColor = Color.White),
                     modifier = Modifier.clickable {
                         scope.launch { try { api2.markNotificationRead(n.id); load() } catch (_: Exception) {} }
+                        n.actor?.username?.let { onAuthor(it) }
                     },
                 )
                 HorizontalDivider()
@@ -415,7 +482,7 @@ fun countryDisplayName(raw: String?): String? {
 }
 
 @Composable
-fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null) {
+fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
     var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
     var following by remember { mutableStateOf(false) }
@@ -441,6 +508,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
         }
     }
     LazyColumn(Modifier.fillMaxSize().background(FrianzoPageBackground)) {
+        if (username != null && onBack != null) {
+            item { TextButton(onClick = onBack, modifier = Modifier.padding(horizontal = 8.dp)) { Text("Back") } }
+        }
         item {
             profile?.let { p ->
                 p.coverPhotoUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().height(180.dp)) }
@@ -458,14 +528,27 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     OutlinedButton(onClick = onLogout, modifier = Modifier.padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Log out") }
                 }
                 if (username != null && p.id != null && p.id != myId) {
-                    Button(onClick = {
-                        scope.launch {
-                            try {
-                                val r = api2.toggleFollow(p.id)
-                                if (r.success && r.data != null) following = r.data.following || r.data.isFollowing
-                            } catch (_: Exception) {}
+                    Row(Modifier.padding(horizontal = 16.dp)) {
+                        Button(onClick = {
+                            scope.launch {
+                                try {
+                                    val r = api2.toggleFollow(p.id)
+                                    if (r.success && r.data != null) following = r.data.following || r.data.isFollowing
+                                } catch (_: Exception) {}
+                            }
+                        }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text(if (following) "Following" else "Follow") }
+                        if (onOpenChat != null) {
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(onClick = {
+                                scope.launch {
+                                    try {
+                                        val r = api2.createConversation(CreateConversationRequest(p.id))
+                                        if (r.success && r.data != null) onOpenChat(r.data.id, p.displayName ?: p.username ?: "")
+                                    } catch (_: Exception) {}
+                                }
+                            }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Message") }
                         }
-                    }, modifier = Modifier.padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(28.dp)) { Text(if (following) "Following" else "Follow") }
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
                 if (p.isPrivate && username != null && !following) {

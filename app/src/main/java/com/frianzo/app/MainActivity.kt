@@ -174,13 +174,13 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when {
-                openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId)
-                openProfile != null -> ProfileScreen(api2, openProfile, myId, null)
-                tab == Tab.FEED -> FeedScreen(feedVm, myId) { tab = Tab.CREATE }
-                tab == Tab.REELS -> ReelsScreen(api2)
+                openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId) { openChat = null }
+                openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name })
+                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onAuthor = { username -> openProfile = username })
+                tab == Tab.REELS -> ReelsScreen(api2) { username -> openProfile = username }
                 tab == Tab.CREATE -> CreatePostScreen(api2) { feedVm.refresh(); tab = Tab.FEED }
                 tab == Tab.CHAT -> ChatListScreen(api2) { id, name -> openChat = id to name }
-                tab == Tab.NOTIFS -> NotificationsScreen(api2)
+                tab == Tab.NOTIFS -> NotificationsScreen(api2) { username -> openProfile = username }
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
                 tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout)
             }
