@@ -14,25 +14,27 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      # ubuntu-latest already ships an Android SDK (ANDROID_HOME set by the
-      # runner image). The previous android-actions/setup-android@v3 step
-      # failed in seconds before any build started, so it is dropped;
-      # sdkmanager installs exactly the platform/build-tools this project
-      # needs (compileSdk 35) instead.
       - name: Install Android platform 35 and build-tools
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
-      # Files uploaded via the GitHub web UI lose the executable bit, so
-      # ./gradlew fails instantly with "Permission denied". chmod first.
-      - name: Build debug APK
+      - name: Restore stable signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > app/frianzo-release.keystore
+      - name: Build release APK stable-signed
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --stacktrace
-      - name: Rename APK to frianzo.apk
-        run: cp app/build/outputs/apk/debug/app-debug.apk frianzo.apk
+          ./gradlew :app:assembleRelease --stacktrace
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk frianzo.apk
+      - name: Show signing SHA-1
+        run: keytool -printcert -jarfile frianzo.apk | grep -i SHA1:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
