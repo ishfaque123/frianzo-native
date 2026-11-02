@@ -12,6 +12,9 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import coil.request.ImageRequest
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -127,12 +130,20 @@ fun FrianzoLogo(size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier
 /** Circular avatar like the web feed: photo if present, light-blue circle otherwise. */
 @Composable
 fun FrianzoAvatar(model: String?, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
+    // PERF: decode the avatar at its display size (e.g. 40dp -> ~100px)
+    // instead of decoding the full upload, and crossfade in. This cuts
+    // decode memory/time per avatar. It does NOT shrink the download
+    // itself: the backend serves no avatar-thumbnail URL to the native
+    // app (Author has only profilePictureUrl), so a smaller download
+    // needs a backend thumbnail field first.
+    val context = LocalContext.current
+    val px = with(LocalDensity.current) { size.roundToPx() }
     Box(
         modifier = modifier.size(size).clip(CircleShape)
             .background(FrianzoBlueTint),
     ) {
         AsyncImage(
-            model = model,
+            model = ImageRequest.Builder(context).data(model).size(px, px).crossfade(true).build(),
             contentDescription = null,
             modifier = Modifier.size(size).clip(CircleShape),
             contentScale = ContentScale.Crop,

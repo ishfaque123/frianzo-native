@@ -33,6 +33,12 @@ import retrofit2.HttpException
 import com.frianzo.app.data.*
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import kotlinx.coroutines.launch
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import androidx.compose.foundation.lazy.rememberLazyListState
+import kotlinx.coroutines.flow.collect
+import coil.request.ImageRequest
 import java.security.SecureRandom
 import java.util.Base64
 
@@ -335,22 +341,26 @@ private fun feedTime(createdAt: String?): String {
     } catch (_: Exception) { createdAt.take(10) }
 }
 
-@Composable
-fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
-    val context = LocalContext.current
-    var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
-    var offset by remember { mutableStateOf(0) }
-    var hasMore by remember { mutableStateOf(true) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var likedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var commentPost by remember { mutableStateOf<Post?>(null) }
-    val scope = rememberCoroutineScope()
+
+/**
+ * PERF: feed state lives in a ViewModel, not in FeedScreen's remember{}.
+ * Previously every tab switch destroyed FeedScreen, so returning to Feed
+ * refetched page 1 from scratch. Now posts survive tab switches, and the
+ * same instance is created at app start so the first feed page loads in
+ * PARALLEL with Session /me instead of after it (see MainActivity).
+ */
+class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewModel() {
+    var posts by mutableStateOf<List<Post>>(emptyList()); private set
+    var offset by mutableStateOf(0); private set
+    var hasMore by mutableStateOf(true); private set
+    var loading by mutableStateOf(false); private set
+    var error by mutableStateOf<String?>(null); private set
+    var likedIds by mutableStateOf<Set<String>>(emptySet()); private set
 
     fun loadMore() {
         if (loading || !hasMore) return
         loading = true
-        scope.launch {
+        viewModelScope.launch {
             try {
                 val res = api.feed(offset)
                 if (res.success && res.data != null) {
@@ -363,18 +373,68 @@ fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
         }
     }
 
-    LaunchedEffect(Unit) { loadMore() }
+    fun refresh() {
+        posts = emptyList(); offset = 0; hasMore = true; error = null
+        loadMore()
+    }
+
+    fun updateCommentCount(postId: String, newCount: Int) {
+        posts = posts.map { if (it.id == postId) it.copy(commentCount = newCount) else it }
+    }
+
+    fun toggleLike(post: Post) {
+        viewModelScope.launch {
+            try {
+                val r = api2.setReaction(post.id, mapOf("type" to "like"))
+                if (r.success && r.data != null) {
+                    val counts = r.data.reactionCounts
+                    val newLike = counts?.get("like") ?: post.likeCount
+                    posts = posts.map { if (it.id == post.id) it.copy(likeCount = newLike) else it }
+                    likedIds = if (r.data.myReaction != null) likedIds + post.id else likedIds - post.id
+                }
+            } catch (_: Exception) {}
+        }
+    }
+}
+
+fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T = FeedViewModel(api, api2) as T
+}
+
+@Composable
+fun FeedScreen(vm: FeedViewModel) {
+    val context = LocalContext.current
+    val posts = vm.posts
+    val hasMore = vm.hasMore
+    val loading = vm.loading
+    val error = vm.error
+    val likedIds = vm.likedIds
+    var commentPost by remember { mutableStateOf<Post?>(null) }
+    val listState = rememberLazyListState()
+
+    // PERF: auto load-more near the end of the list, so the user no longer
+    // waits for a manual "Load more" tap after every 5-post page (backend
+    // page size is 5). The manual button stays as a fallback below.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+            .collect { idx ->
+                // Read vm.posts here, not the composable-captured `posts`:
+                // the collect lambda outlives recomposition, so the captured
+                // list would go stale and auto load-more would never fire.
+                if (idx != null && vm.posts.isNotEmpty() && idx >= vm.posts.size - 3) vm.loadMore()
+            }
+    }
 
     // Comments dialog for one post (FB-like: read + add, counts update).
     commentPost?.let { post ->
-        PostCommentsDialog(api2, post,
+        PostCommentsDialog(vm.api2, post,
             onClose = { commentPost = null },
-            onCountChange = { newCount ->
-                posts = posts.map { if (it.id == post.id) it.copy(commentCount = newCount) else it }
-            })
+            onCountChange = { newCount -> vm.updateCommentCount(post.id, newCount) })
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize().background(FrianzoPageBackground),
         contentPadding = PaddingValues(vertical = 8.dp),
     ) {
@@ -416,7 +476,7 @@ fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
                     post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp)) }
                     post.imageUrl?.let {
                         Spacer(Modifier.height(10.dp))
-                        AsyncImage(model = it, contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
+                        AsyncImage(model = ImageRequest.Builder(context).data(it).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
                     }
                     // FB counts row: likes left, comments/shares right, 14sp.
                     Spacer(Modifier.height(10.dp))
@@ -450,19 +510,7 @@ fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
                         // {type:"like"} (same endpoint as web); a second tap
                         // removes the reaction, and the server count wins.
                         TextButton(
-                            onClick = {
-                                scope.launch {
-                                    try {
-                                        val r = api2.setReaction(post.id, mapOf("type" to "like"))
-                                        if (r.success && r.data != null) {
-                                            val counts = r.data.reactionCounts
-                                            val newLike = counts?.get("like") ?: post.likeCount
-                                            posts = posts.map { if (it.id == post.id) it.copy(likeCount = newLike) else it }
-                                            likedIds = if (r.data.myReaction != null) likedIds + post.id else likedIds - post.id
-                                        }
-                                    } catch (_: Exception) {}
-                                }
-                            },
+                            onClick = { vm.toggleLike(post) },
                             modifier = Modifier.weight(1f).height(48.dp),
                         ) {
                             Icon(
@@ -510,7 +558,7 @@ fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
                     DotsLoading()
                 }
             } else if (hasMore) {
-                OutlinedButton(onClick = { loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)) {
+                OutlinedButton(onClick = { vm.loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)) {
                     Text("Load more")
                 }
             } else if (posts.isEmpty()) {

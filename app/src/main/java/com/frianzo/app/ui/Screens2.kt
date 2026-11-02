@@ -83,21 +83,35 @@ fun ReelsScreen(api2: FrianzoApi2) {
                     }
                     reel.caption?.let { Text(it) }
                     Spacer(Modifier.height(8.dp))
-                    if (reel.videoUrl != null) {
+                    // PERF: previously EVERY reel card created a VideoView and
+                    // called setVideoURI on composition, so opening Reels
+                    // started downloading video headers for all visible
+                    // reels at once. Now only a thumbnail/play button is
+                    // shown until the user taps; the VideoView (and its
+                    // download) is created only for the reel being played.
+                    if (reel.videoUrl != null && playing) {
                         AndroidView(
                             factory = { ctx -> VideoView(ctx).apply { setVideoURI(Uri.parse(reel.videoUrl)) } },
-                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable {
-                                playing = !playing
+                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable { playing = false },
+                            update = { view -> view.start() },
+                            onRelease = { view -> view.stopPlayback() },
+                        )
+                    } else if (reel.videoUrl != null) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black).clickable {
+                                playing = true
                                 // A real watch, not a fake "Viewed" button:
                                 // record once when playback actually starts.
-                                if (playing && reel.id !in viewedIds) {
+                                if (reel.id !in viewedIds) {
                                     viewedIds = viewedIds + reel.id
                                     scope.launch { try { api2.recordReelView(reel.id, mapOf("watchSec" to 1)) } catch (_: Exception) {} }
                                 }
                             },
-                            update = { view -> if (playing) view.start() else view.pause() },
-                            onRelease = { view -> view.stopPlayback() },
-                        )
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
+                            Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(64.dp))
+                        }
                     } else {
                         reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))) }
                     }

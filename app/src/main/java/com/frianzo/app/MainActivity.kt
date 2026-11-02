@@ -36,6 +36,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             FrianzoTheme {
                 val session: SessionViewModel = viewModel(factory = sessionViewModelFactory(api))
+                // PERF: the feed ViewModel is created here (Activity scope),
+                // not inside the Feed tab, so (a) its first page starts
+                // loading IN PARALLEL with Session /me instead of after it,
+                // and (b) it survives tab switches (see FeedViewModel).
+                val feedVm: FeedViewModel = viewModel(factory = feedViewModelFactory(api, api2))
+                LaunchedEffect(Unit) { feedVm.loadMore() }
                 val state by session.state.collectAsState()
                 when (state) {
                     is AuthState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -43,7 +49,7 @@ class MainActivity : ComponentActivity() {
                     }
                     is AuthState.LoggedIn -> {
                         val user = (state as AuthState.LoggedIn).user
-                        AppShell(api, api2, user?.id, cookieJar, session)
+                        AppShell(api, api2, user?.id, cookieJar, session, feedVm)
                     }
                     is AuthState.Error -> {
                         // Network failure on /me is not "logged out": show the
@@ -70,11 +76,10 @@ private data class NavDef(val tabValue: Tab, val label: String, val icon: androi
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJar: PersistentCookieJar, session: SessionViewModel) {
+private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJar: PersistentCookieJar, session: SessionViewModel, feedVm: FeedViewModel) {
     var tab by remember { mutableStateOf(Tab.FEED) }
     var openChat by remember { mutableStateOf<Pair<String, String>?>(null) }
     var openProfile by remember { mutableStateOf<String?>(null) }
-    var feedRefresh by remember { mutableStateOf(0) }
     var unread by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
@@ -171,9 +176,9 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             when {
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId)
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null)
-                tab == Tab.FEED -> key(feedRefresh) { FeedScreen(api, api2) }
+                tab == Tab.FEED -> FeedScreen(feedVm)
                 tab == Tab.REELS -> ReelsScreen(api2)
-                tab == Tab.CREATE -> CreatePostScreen(api2) { feedRefresh++; tab = Tab.FEED }
+                tab == Tab.CREATE -> CreatePostScreen(api2) { feedVm.refresh(); tab = Tab.FEED }
                 tab == Tab.CHAT -> ChatListScreen(api2) { id, name -> openChat = id to name }
                 tab == Tab.NOTIFS -> NotificationsScreen(api2)
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
