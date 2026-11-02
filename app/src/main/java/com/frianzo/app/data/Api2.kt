@@ -36,6 +36,8 @@ data class Comment(
 data class CommentsData(val comments: List<Comment>)
 data class CommentCreateRequest(val content: String)
 data class PostCreateData(val post: Post?)
+/** Backend GET /api/posts/{id} returns { post }, not a bare post. (Currently unused in UI.) */
+data class PostResponse(val post: Post?)
 
 // ---------- Chat ----------
 data class ConversationUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?)
@@ -44,8 +46,11 @@ data class Conversation(
     val id: String,
     val otherUser: ConversationUser?,
     val messages: List<ConversationMessage>? = null,
+    /** Backend list returns lastMessage (singular), not a messages array. */
+    val lastMessage: ConversationMessage? = null,
     val unreadCount: Int = 0,
 )
+data class MessagesData(val messages: List<ConversationMessage>)
 data class CreateConversationRequest(val userId: String)
 data class CreateConversationData(val id: String)
 data class SendMessageRequest(val content: String)
@@ -82,6 +87,10 @@ data class PublicProfile(
 )
 data class SearchUsersData(val users: List<PublicProfile>)
 data class FollowData(val following: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String?)
+/** Backend GET /api/follows/{id}/status returns { status: "none"|"following"|"follow_back"|"friends"|"self" }. */
+data class FollowStatusData(val status: String?)
+/** Backend GET /api/users/me and /api/users/{username} return { user: {...} }, not bare fields. */
+data class ProfileResponse(val user: PublicProfile?)
 
 interface FrianzoApi2 {
     // Reels (auth required)
@@ -104,7 +113,7 @@ interface FrianzoApi2 {
         @Part image: MultipartBody.Part?,
     ): Envelope<PostCreateData>
     @GET("api/posts/{id}")
-    suspend fun postById(@Path("id") id: String): Envelope<Post>
+    suspend fun postById(@Path("id") id: String): Envelope<PostResponse>
     @POST("api/posts/{id}/reaction")
     suspend fun setReaction(@Path("id") id: String, @Body body: Map<String, String>): Envelope<ReactionData>
     @GET("api/comments/{postId}")
@@ -118,7 +127,7 @@ interface FrianzoApi2 {
     @POST("api/messages/conversations")
     suspend fun createConversation(@Body body: CreateConversationRequest): Envelope<CreateConversationData>
     @GET("api/messages/conversations/{id}/messages")
-    suspend fun messages(@Path("id") id: String): Envelope<List<ConversationMessage>>
+    suspend fun messages(@Path("id") id: String): Envelope<MessagesData>
     @POST("api/messages/conversations/{id}/messages")
     suspend fun sendMessage(@Path("id") id: String, @Body body: SendMessageRequest): Envelope<ConversationMessage>
 
@@ -134,9 +143,9 @@ interface FrianzoApi2 {
 
     // Profile / search / follow
     @GET("api/users/me")
-    suspend fun myProfile(): Envelope<PublicProfile>
+    suspend fun myProfile(): Envelope<ProfileResponse>
     @GET("api/users/{username}")
-    suspend fun publicProfile(@Path("username") username: String): Envelope<PublicProfile>
+    suspend fun publicProfile(@Path("username") username: String): Envelope<ProfileResponse>
     @GET("api/users/search")
     suspend fun searchUsers(@Query("q") q: String): Envelope<SearchUsersData>
     @GET("api/posts/user/{username}")
@@ -144,7 +153,7 @@ interface FrianzoApi2 {
     @POST("api/follows/{userId}")
     suspend fun toggleFollow(@Path("userId") userId: String): Envelope<FollowData>
     @GET("api/follows/{userId}/status")
-    suspend fun followStatus(@Path("userId") userId: String): Envelope<FollowData>
+    suspend fun followStatus(@Path("userId") userId: String): Envelope<FollowStatusData>
 }
 
 fun createApi2(context: android.content.Context, cookieJar: PersistentCookieJar): FrianzoApi2 {
