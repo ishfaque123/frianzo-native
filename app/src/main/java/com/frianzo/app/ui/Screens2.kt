@@ -92,7 +92,7 @@ fun ReelsScreen(api2: FrianzoApi2) {
         item {
             if (error != null) Text(error!!, Modifier.padding(16.dp))
             if (loading) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            else if (hasMore) Button(onClick = { load() }, Modifier.fillMaxWidth().padding(16.dp)) { Text("Load more reels") }
+            else if (hasMore) Button(onClick = { load() }, modifier = Modifier.fillMaxWidth().padding(16.dp)) { Text("Load more reels") }
         }
     }
 }
@@ -132,7 +132,7 @@ fun CreatePostScreen(api2: FrianzoApi2, onPosted: () -> Unit) {
                 } catch (e: Exception) { message = e.message ?: "Post failed" }
                 finally { busy = false }
             }
-        }, Modifier.fillMaxWidth()) { Text("Post") }
+        }, modifier = Modifier.fillMaxWidth()) { Text("Post") }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it) }
         if (busy) { Spacer(Modifier.height(12.dp)); CircularProgressIndicator() }
     }
@@ -266,7 +266,7 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
                     if (res.success && res.data != null) results = res.data.users
                 } catch (_: Exception) {}
             }
-        }, Modifier.padding(horizontal = 16.dp)) { Text("Search") }
+        }, modifier = Modifier.padding(horizontal = 16.dp)) { Text("Search") }
         LazyColumn {
             items(results, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
@@ -329,7 +329,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
                                 if (r.success && r.data != null) following = r.data.following || r.data.isFollowing
                             } catch (_: Exception) {}
                         }
-                    }, Modifier.padding(horizontal = 16.dp)) { Text(if (following) "Following" else "Follow") }
+                    }, modifier = Modifier.padding(horizontal = 16.dp)) { Text(if (following) "Following" else "Follow") }
                 }
                 Spacer(Modifier.height(12.dp))
                 Text("Posts", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
