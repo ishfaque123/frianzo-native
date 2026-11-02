@@ -18,8 +18,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import coil.compose.AsyncImage
+import retrofit2.HttpException
 import com.frianzo.app.data.*
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import kotlinx.coroutines.launch
@@ -48,7 +51,9 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
     val loginBlue = androidx.compose.ui.graphics.Color(0xFF3B82F6)
 
     fun fail(e: Exception, fallback: String) {
-        message = e.message ?: fallback
+        // Never show Retrofit's bare "HTTP 403": map an HttpException to the
+        // backend's own error code/message from the response body instead.
+        message = if (e is HttpException) httpErrorMessage(e) else e.message ?: fallback
         busy = false
     }
 
@@ -120,8 +125,28 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
                         if (!login.success) throw Exception(login.error?.message ?: "Google login failed")
                         session.markLoggedIn(login.data?.user)
                         onLoggedIn()
+                    } catch (e: GetCredentialCancellationException) {
+                        // User backed out of the picker: distinct from a failure.
+                        fail(Exception("Google sign-in cancelled. Tap again to try."), "Google sign-in failed")
+                    } catch (e: NoCredentialException) {
+                        // Kept as its own case, but it is NOT the observed bug:
+                        // the picker DOES show Gmail accounts, so a post-selection
+                        // failure is not a missing-account case.
+                        fail(Exception("No Google account is available for sign-in on this phone."), "Google sign-in failed")
                     } catch (e: GetCredentialException) {
-                        fail(Exception("Google sign-in cancelled or unavailable"), "Google sign-in failed")
+                        // Post-selection failure: the picker showed accounts and
+                        // the user chose one, yet getCredential still threw.
+                        // That points at Google Cloud setup, not at the account:
+                        // the server client id comes from native-config at
+                        // runtime (never hard-coded) and the nonce sent to
+                        // Google is the same one sent to the backend, so a
+                        // mismatch between the app's package/signing key and
+                        // the registered Android OAuth client is the remaining
+                        // suspect — that check is parent-side (Google Cloud),
+                        // not fixable from this app code. Email code still works.
+                        fail(Exception("Google sign-in failed after you chose your account. Please try again, or use email code for now."), "Google sign-in failed")
+                    } catch (e: HttpException) {
+                        fail(e, "Google sign-in failed")
                     } catch (e: Exception) {
                         fail(e, "Google sign-in failed")
                     } finally { busy = false }
@@ -250,6 +275,24 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
     }
 }
 
+/**
+ * Map a Retrofit HttpException to the backend's own error instead of the
+ * bare "HTTP 403" Retrofit puts in Exception.message. Backend errors look
+ * like {"success":false,"error":{"code":"MISSING_ORIGIN","message":"..."}},
+ * so extract code/message from the error body when present.
+ */
+private fun httpErrorMessage(e: HttpException): String {
+    val body = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+    val code = body?.let { Regex("\"code\"\\s*:\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
+    val msg = body?.let { Regex("\"message\"\\s*:\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
+    return when {
+        msg != null && code != null -> "$msg ($code)"
+        code != null -> "$code (HTTP ${e.code()})"
+        msg != null -> msg
+        else -> "HTTP ${e.code()}"
+    }
+}
+
 private fun randomNonce(): String {
     val bytes = ByteArray(32)
     SecureRandom().nextBytes(bytes)
@@ -338,3 +381,4 @@ fun FeedScreen(api: FrianzoApi) {
 }
 
 fun dummyContextUsage(@Suppress("UNUSED_PARAMETER") context: Context) = Unit
+

@@ -6,6 +6,7 @@ import com.google.gson.annotations.SerializedName
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -113,8 +114,20 @@ class PersistentCookieJar(context: Context) : CookieJar {
 
 fun createApi(context: Context, cookieJar: PersistentCookieJar): FrianzoApi {
     val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
+    // Backend verifyOrigin rejects requests with no Origin header
+    // (403 MISSING_ORIGIN). A native app sends no Origin by default, so
+    // set the website origin on EVERY request — this blocked email OTP
+    // POSTs and would block the Google native POST too.
+    val originInterceptor = Interceptor { chain ->
+        chain.proceed(
+            chain.request().newBuilder()
+                .header("Origin", "https://frianzo.online")
+                .build()
+        )
+    }
     val client = OkHttpClient.Builder()
         .cookieJar(cookieJar)
+        .addInterceptor(originInterceptor)
         .addInterceptor(logging)
         .build()
     return Retrofit.Builder()
@@ -124,3 +137,4 @@ fun createApi(context: Context, cookieJar: PersistentCookieJar): FrianzoApi {
         .build()
         .create(FrianzoApi::class.java)
 }
+
