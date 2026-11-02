@@ -298,6 +298,41 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
     }
 }
 
+// Country display, matching the web app (vynzo-frontend src/lib/countries.ts):
+// the backend stores User.country in mixed form — a 2-letter code from
+// IP auto-detect at profile setup (e.g. "PK") or a full name from Settings
+// (e.g. "Pakistan") — so the profile must map codes to real names before
+// showing them, never show a bare code like "PK". Unknown values are shown
+// as-is, never dropped.
+private val COUNTRY_NAMES = mapOf(
+    "PK" to "Pakistan", "IN" to "India", "BD" to "Bangladesh",
+    "AF" to "Afghanistan", "SA" to "Saudi Arabia",
+    "AE" to "United Arab Emirates", "QA" to "Qatar", "KW" to "Kuwait",
+    "OM" to "Oman", "BH" to "Bahrain", "TR" to "Turkey",
+    "GB" to "United Kingdom", "US" to "United States", "CA" to "Canada",
+    "AU" to "Australia", "DE" to "Germany", "FR" to "France",
+    "IT" to "Italy", "ES" to "Spain", "NL" to "Netherlands",
+    "CN" to "China", "JP" to "Japan", "KR" to "South Korea",
+    "MY" to "Malaysia", "ID" to "Indonesia", "TH" to "Thailand",
+    "PH" to "Philippines", "SG" to "Singapore", "LK" to "Sri Lanka",
+    "NP" to "Nepal", "IR" to "Iran", "IQ" to "Iraq", "EG" to "Egypt",
+    "ZA" to "South Africa", "NG" to "Nigeria", "KE" to "Kenya",
+    "BR" to "Brazil", "MX" to "Mexico", "RU" to "Russia",
+)
+
+fun countryDisplayName(raw: String?): String? {
+    val trimmed = raw?.trim().orEmpty()
+    if (trimmed.isEmpty()) return null
+    val upper = trimmed.uppercase()
+    if (upper == "USA" || upper == "AMERICA") return "United States"
+    if (upper == "UAE") return "United Arab Emirates"
+    if (upper == "UK") return "United Kingdom"
+    COUNTRY_NAMES[upper]?.let { return it }
+    // Already a full name (any case): return the canonical web spelling.
+    COUNTRY_NAMES.values.firstOrNull { it.equals(trimmed, ignoreCase = true) }?.let { return it }
+    return trimmed
+}
+
 @Composable
 fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
@@ -335,7 +370,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
                         Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge)
                         Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall)
                         p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                        Text(listOfNotNull(p.city, p.country).joinToString(", "), style = MaterialTheme.typography.bodySmall)
+                        Text(listOfNotNull(p.city, countryDisplayName(p.country)).joinToString(", "), style = MaterialTheme.typography.bodySmall)
                     }
                 }
                 if (username != null && p.id != null && p.id != myId) {
