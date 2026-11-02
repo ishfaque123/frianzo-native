@@ -27,7 +27,7 @@ class SessionViewModel(private val api: FrianzoApi) : ViewModel() {
         viewModelScope.launch {
             try {
                 val res = api.me()
-                _state.value = if (res.success) AuthState.LoggedIn(res.data)
+                _state.value = if (res.success) AuthState.LoggedIn(res.data?.user)
                     else AuthState.LoggedOut
             } catch (_: Exception) {
                 // Feed is public, so a failed /me must not block the app:
