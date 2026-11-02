@@ -20,6 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
@@ -314,6 +317,24 @@ private fun randomNonce(): String {
     return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 }
 
+
+// FB-style relative time: "5m", "3h", "2d", else yyyy-MM-dd. Raw ISO
+// timestamps must never be shown to the user.
+private fun feedTime(createdAt: String?): String {
+    if (createdAt.isNullOrBlank()) return ""
+    return try {
+        val instant = java.time.Instant.parse(createdAt)
+        val mins = java.time.Duration.between(instant, java.time.Instant.now()).toMinutes()
+        when {
+            mins < 1 -> "Just now"
+            mins < 60 -> "${mins}m"
+            mins < 24 * 60 -> "${mins / 60}h"
+            mins < 7 * 24 * 60 -> "${mins / (24 * 60)}d"
+            else -> createdAt.take(10)
+        }
+    } catch (_: Exception) { createdAt.take(10) }
+}
+
 @Composable
 fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
     val context = LocalContext.current
@@ -365,63 +386,118 @@ fun FeedScreen(api: FrianzoApi, api2: FrianzoApi2) {
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
             ) {
-                Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    // FB header: avatar left, name (16sp bold) + time
+                    // (12sp grey) below it, 3-dot menu at the right edge.
+                    // The menu icon is placement only: no menu actions are
+                    // wired yet, so it is a plain Icon, not a dead button.
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         FrianzoAvatar(post.author?.profilePictureUrl, 40.dp)
                         Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(post.author?.displayName ?: post.author?.username ?: "User", style = MaterialTheme.typography.titleMedium)
-                            Text("@${post.author?.username ?: ""}", style = MaterialTheme.typography.bodySmall)
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                post.author?.displayName ?: post.author?.username ?: "User",
+                                fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false,
+                            )
+                            val time = feedTime(post.createdAt)
+                            Text(
+                                if (time.isNotBlank()) time else "@${post.author?.username ?: ""}",
+                                fontSize = 12.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false,
+                            )
                         }
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary)
                     }
-                    post.content?.let { Spacer(Modifier.height(10.dp)); Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    // FB body: text first, then a FULL-WIDTH photo (no side
+                    // padding, no rounded inset — the old card shrank photos
+                    // inside 12dp + 16dp of padding).
+                    post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp)) }
                     post.imageUrl?.let {
                         Spacer(Modifier.height(10.dp))
-                        AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)))
+                        AsyncImage(model = it, contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
                     }
+                    // FB counts row: likes left, comments/shares right, 14sp.
                     Spacer(Modifier.height(10.dp))
-                    HorizontalDivider(color = FrianzoBorder)
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            contentDescription = null, modifier = Modifier.size(16.dp),
+                            tint = if (liked) FrianzoBlue else FrianzoTextSecondary,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("${post.likeCount}", fontSize = 14.sp, color = FrianzoTextSecondary)
+                        Spacer(Modifier.weight(1f))
+                        val rightParts = buildList {
+                            if (post.commentCount > 0) add("${post.commentCount} comments")
+                            if (post.shareCount > 0) add("${post.shareCount} shares")
+                        }
+                        if (rightParts.isNotEmpty()) {
+                            Text(rightParts.joinToString(" · "), fontSize = 14.sp, color = FrianzoTextSecondary)
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    HorizontalDivider(color = FrianzoBorder)
+                    // FB action row: 3 EQUAL buttons, each 48dp tall,
+                    // 14sp text + 20dp icon, centred. This replaces the old
+                    // left-aligned cramped icon+count cluster.
+                    Row(Modifier.fillMaxWidth()) {
                         // Like toggles via POST /api/posts/{id}/reaction
                         // {type:"like"} (same endpoint as web); a second tap
                         // removes the reaction, and the server count wins.
-                        TextButton(onClick = {
-                            scope.launch {
-                                try {
-                                    val r = api2.setReaction(post.id, mapOf("type" to "like"))
-                                    if (r.success && r.data != null) {
-                                        val counts = r.data.reactionCounts
-                                        val newLike = counts?.get("like") ?: post.likeCount
-                                        posts = posts.map { if (it.id == post.id) it.copy(likeCount = newLike) else it }
-                                        likedIds = if (r.data.myReaction != null) likedIds + post.id else likedIds - post.id
-                                    }
-                                } catch (_: Exception) {}
-                            }
-                        }) {
-                            Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("${post.likeCount}", style = MaterialTheme.typography.bodySmall)
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    try {
+                                        val r = api2.setReaction(post.id, mapOf("type" to "like"))
+                                        if (r.success && r.data != null) {
+                                            val counts = r.data.reactionCounts
+                                            val newLike = counts?.get("like") ?: post.likeCount
+                                            posts = posts.map { if (it.id == post.id) it.copy(likeCount = newLike) else it }
+                                            likedIds = if (r.data.myReaction != null) likedIds + post.id else likedIds - post.id
+                                        }
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(48.dp),
+                        ) {
+                            Icon(
+                                if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                contentDescription = "Like", modifier = Modifier.size(20.dp),
+                                tint = if (liked) FrianzoBlue else FrianzoTextSecondary,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Like", fontSize = 14.sp, color = if (liked) FrianzoBlue else FrianzoTextSecondary)
                         }
-                        TextButton(onClick = { commentPost = post }) {
-                            Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
+                        TextButton(
+                            onClick = { commentPost = post },
+                            modifier = Modifier.weight(1f).height(48.dp),
+                        ) {
+                            Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(20.dp), tint = FrianzoTextSecondary)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Comment", fontSize = 14.sp, color = FrianzoTextSecondary)
                         }
                         // Share opens the Android share sheet with the real
                         // post link. It deliberately does NOT call
                         // POST /api/posts/{id}/share, which on the backend
                         // creates a repost, not a share link.
-                        TextButton(onClick = {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "https://frianzo.online/post/${post.id}")
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share post"))
-                        }) {
-                            Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("${post.shareCount}", style = MaterialTheme.typography.bodySmall)
+                        TextButton(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, "https://frianzo.online/post/${post.id}")
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Share post"))
+                            },
+                            modifier = Modifier.weight(1f).height(48.dp),
+                        ) {
+                            Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(20.dp), tint = FrianzoTextSecondary)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Share", fontSize = 14.sp, color = FrianzoTextSecondary)
                         }
                     }
                 }

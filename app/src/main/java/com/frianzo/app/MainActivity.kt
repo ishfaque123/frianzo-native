@@ -5,12 +5,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.frianzo.app.data.*
 import com.frianzo.app.ui.*
@@ -62,6 +65,8 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Tab { FEED, REELS, CREATE, CHAT, NOTIFS, SEARCH, PROFILE }
+
+private data class NavDef(val tabValue: Tab, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val badge: Int = 0)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -118,32 +123,47 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         },
         containerColor = FrianzoPageBackground,
         bottomBar = {
-            // Web bottom nav: white bar, active tab blue, inactive tabs grey.
-            // Icons come from material-icons-extended (declared in
-            // app/build.gradle.kts): Chat/ChatBubble live ONLY there, not
-            // in the core set — that missing dependency broke builds
-            // #31/#32/#33. Do NOT remove the extended dependency.
-            NavigationBar(
-                containerColor = androidx.compose.ui.graphics.Color.White,
-            ) {
-                val navColors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = FrianzoBlue,
-                    selectedTextColor = FrianzoBlue,
-                    unselectedIconColor = FrianzoTextSecondary,
-                    unselectedTextColor = FrianzoTextSecondary,
-                    indicatorColor = FrianzoBlueTint,
-                )
-                NavigationBarItem(selected = tab == Tab.FEED, onClick = { tab = Tab.FEED; openChat = null; openProfile = null }, label = { Text("Feed") }, icon = { Icon(Icons.Filled.Home, contentDescription = "Feed") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.REELS, onClick = { tab = Tab.REELS; openChat = null; openProfile = null }, label = { Text("Reels") }, icon = { Icon(Icons.Filled.PlayArrow, contentDescription = "Reels") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.CREATE, onClick = { tab = Tab.CREATE; openChat = null; openProfile = null }, label = { Text("Post") }, icon = { Icon(Icons.Filled.Add, contentDescription = "Post") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.CHAT, onClick = { tab = Tab.CHAT; openChat = null; openProfile = null }, label = { Text("Chat") }, icon = { Icon(Icons.Filled.Chat, contentDescription = "Chat") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.NOTIFS, onClick = { tab = Tab.NOTIFS; openChat = null; openProfile = null }, label = { Text("Alerts") }, icon = {
-                    BadgedBox(badge = { if (unread > 0) Badge(containerColor = FrianzoBadgeRed) { Text("$unread") } }) {
-                        Icon(Icons.Filled.Notifications, contentDescription = "Alerts")
+            // FB-style custom bottom bar (NOT NavigationBar): NavigationBarItem
+            // gives each of 7 items too little width, so "Reels"/"Alerts"/
+            // "Search"/"Profile" wrapped across two lines in the video.
+            // This Row gives every item equal weight, a 24dp icon and an
+            // 11sp label forced to one line with no soft wrap, so no label
+            // can ever wrap. All 7 destinations are kept: removing one
+            // would break navigation (Post, Chat, Alerts are core).
+            Surface(color = androidx.compose.ui.graphics.Color.White, tonalElevation = 3.dp) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    val defs = listOf(
+                        NavDef(Tab.FEED, "Feed", Icons.Filled.Home),
+                        NavDef(Tab.REELS, "Reels", Icons.Filled.PlayArrow),
+                        NavDef(Tab.CREATE, "Post", Icons.Filled.Add),
+                        NavDef(Tab.CHAT, "Chat", Icons.Filled.Chat),
+                        NavDef(Tab.NOTIFS, "Alerts", Icons.Filled.Notifications, unread),
+                        NavDef(Tab.SEARCH, "Search", Icons.Filled.Search),
+                        NavDef(Tab.PROFILE, "Profile", Icons.Filled.Person),
+                    )
+                    defs.forEach { def ->
+                        val selected = tab == def.tabValue
+                        val color = if (selected) FrianzoBlue else FrianzoTextSecondary
+                        Column(
+                            Modifier.weight(1f).clickable { tab = def.tabValue; openChat = null; openProfile = null },
+                            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                        ) {
+                            Box(contentAlignment = androidx.compose.ui.Alignment.TopEnd) {
+                                Icon(def.icon, contentDescription = def.label, tint = color, modifier = Modifier.size(24.dp))
+                                if (def.badge > 0) {
+                                    Badge(containerColor = FrianzoBadgeRed, modifier = Modifier.offset(x = 8.dp, y = (-4).dp)) {
+                                        Text("${def.badge}", fontSize = 9.sp)
+                                    }
+                                }
+                            }
+                            Text(
+                                def.label, fontSize = 11.sp, maxLines = 1, softWrap = false,
+                                color = color,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            )
+                        }
                     }
-                }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.SEARCH, onClick = { tab = Tab.SEARCH; openChat = null; openProfile = null }, label = { Text("Search") }, icon = { Icon(Icons.Filled.Search, contentDescription = "Search") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.PROFILE, onClick = { tab = Tab.PROFILE; openChat = null; openProfile = null }, label = { Text("Profile") }, icon = { Icon(Icons.Filled.Person, contentDescription = "Profile") }, colors = navColors)
+                }
             }
         },
     ) { padding ->
