@@ -148,10 +148,11 @@ fun CreatePostScreen(api2: FrianzoApi2, onPosted: () -> Unit) {
                     var part: MultipartBody.Part? = null
                     var tmpFile: File? = null
                     if (imageUri != null) {
-                        val input = context.contentResolver.openInputStream(imageUri!!)!!
+                        val input = context.contentResolver.openInputStream(imageUri)
+                            ?: throw Exception("Could not read the selected photo")
                         val tmp = File(context.cacheDir, "post_upload.jpg")
                         tmpFile = tmp
-                        tmp.outputStream().use { out -> input.copyTo(out) }
+                        input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
                         part = MultipartBody.Part.createFormData("image", tmp.name, tmp.asRequestBody("image/jpeg".toMediaTypeOrNull()))
                     }
                     val res = api2.createPost(text.toRequestBody("text/plain".toMediaTypeOrNull()), part)

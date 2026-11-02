@@ -119,8 +119,10 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         containerColor = FrianzoPageBackground,
         bottomBar = {
             // Web bottom nav: white bar, active tab blue, inactive tabs grey.
-            // All icons are core Material icons (Chat (core set only), which
-            // lives only in material-icons-extended and broke build #31).
+            // Icons come from material-icons-extended (declared in
+            // app/build.gradle.kts): Chat/ChatBubble live ONLY there, not
+            // in the core set — that missing dependency broke builds
+            // #31/#32/#33. Do NOT remove the extended dependency.
             NavigationBar(
                 containerColor = androidx.compose.ui.graphics.Color.White,
             ) {
