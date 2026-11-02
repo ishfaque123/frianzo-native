@@ -272,7 +272,7 @@ fun FeedScreen(api: FrianzoApi) {
             try {
                 val res = api.feed(offset)
                 if (res.success && res.data != null) {
-                    posts = posts + res.data.posts
+                    posts = posts + (res.data.posts ?: emptyList())
                     offset = res.data.nextOffset
                     hasMore = res.data.hasMore
                 } else error = res.error?.message ?: "Feed failed"

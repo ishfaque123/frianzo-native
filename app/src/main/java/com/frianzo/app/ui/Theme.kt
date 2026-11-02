@@ -1,6 +1,5 @@
 package com.frianzo.app.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -11,18 +10,16 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.frianzo.app.R
 
 /**
  * Frianzo web-app branding, matched to frianzo.online (see the web audit):
@@ -103,15 +100,27 @@ fun FrianzoTheme(content: @Composable () -> Unit) {
     )
 }
 
-/** Official blue-F launcher icon, shown at [size] with web-style rounded corners. */
+/** Blue-F logo tile drawn in code (NOT the launcher icon resource):
+ * R.mipmap.ic_launcher is an adaptive-icon XML on API 26+, and Compose
+ * painterResource cannot draw an AdaptiveIconDrawable — it throws at
+ * composition time, which crashed startup on both the login screen and
+ * the app header. Drawing the tile here keeps the launcher icon untouched
+ * (home-screen icon and app name are unchanged) while startup can never
+ * crash on the logo resource again. */
 @Composable
 fun FrianzoLogo(size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
-    Image(
-        painter = painterResource(R.mipmap.ic_launcher),
-        contentDescription = "Frianzo",
-        modifier = modifier.size(size).clip(RoundedCornerShape(20.dp)),
-        contentScale = ContentScale.Crop,
-    )
+    Box(
+        modifier = modifier.size(size).clip(RoundedCornerShape((size.value * 0.22f).dp))
+            .background(FrianzoBlue),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.material3.Text(
+            "F",
+            color = androidx.compose.ui.graphics.Color.White,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = (size.value * 0.55f).sp,
+        )
+    }
 }
 
 /** Circular avatar like the web feed: photo if present, light-blue circle otherwise. */

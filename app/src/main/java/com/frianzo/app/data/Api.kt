@@ -42,7 +42,9 @@ data class Post(
 )
 
 data class FeedData(
-    val posts: List<Post>,
+    // Nullable on purpose: Gson can inject null for an empty/missing list,
+    // and `posts + null` would crash the feed on startup. Callers use ?: emptyList().
+    val posts: List<Post>? = null,
     val hasMore: Boolean = false,
     val nextOffset: Int = 0,
 )
