@@ -57,6 +57,13 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // PERMANENT FIX for builds #31 and #32: ChatBubble and Chat are
+    // BOTH in material-icons-extended, not in the core icons set.
+    // Guessing another "core" icon failed twice, so the extended set
+    // is now a real dependency (version managed by the compose BOM
+    // above, no version pinned here). This also covers any other
+    // extended-only icon used in future UI work.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
