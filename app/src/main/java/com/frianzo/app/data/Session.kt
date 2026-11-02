@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
 
 sealed class AuthState {
     data object Loading : AuthState()
@@ -29,6 +30,13 @@ class SessionViewModel(private val api: FrianzoApi) : ViewModel() {
                 val res = api.me()
                 _state.value = if (res.success) AuthState.LoggedIn(res.data?.user)
                     else AuthState.LoggedOut
+            } catch (e: HttpException) {
+                // 401-on-start fix: a clean unauthenticated /me (HTTP 401)
+                // is NOT an error — it simply means "not logged in", so go
+                // straight to the login screen (MainActivity else-branch).
+                // Any other HTTP status still shows the Error screen.
+                _state.value = if (e.code() == 401) AuthState.LoggedOut
+                    else AuthState.Error(e.message ?: "HTTP ${e.code()}")
             } catch (e: Exception) {
                 // PERMANENT FIX for H5: a network failure is NOT "logged
                 // out". Previously every IOException dropped a logged-in
@@ -59,5 +67,4 @@ fun deviceToken(context: Context): String {
     }
     return token
 }
-
 
