@@ -1,4 +1,4 @@
-name: Build native prototype APK
+name: Build APK
 
 on:
   push:
@@ -34,5 +34,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: frianzo-native-prototype-debug
+          name: frianzo-debug
           path: app/build/outputs/apk/debug/app-debug.apk
