@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,7 +91,7 @@ fun ReelsScreen(api2: FrianzoApi2) {
                                     if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount }
                                 } catch (_: Exception) {}
                             }
-                        }) { Text(if (liked) "♥ $likes" else "♡ $likes") }
+                        }) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("$likes") } }
                         Spacer(Modifier.width(8.dp))
                         Text("${reel.commentCount} comments")
                         Spacer(Modifier.width(8.dp))
@@ -123,7 +125,7 @@ fun CreatePostScreen(api2: FrianzoApi2, onPosted: () -> Unit) {
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("What's on your mind?") }, modifier = Modifier.fillMaxWidth().height(140.dp), shape = RoundedCornerShape(12.dp))
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = { picker.launch("image/*") }) { Text(if (imageUri == null) "Add photo (optional)" else "Photo selected ✓") }
+        OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = { picker.launch("image/*") }) { Row(verticalAlignment = Alignment.CenterVertically) { if (imageUri != null) { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)) }; Text(if (imageUri == null) "Add photo (optional)" else "Photo selected") } }
         Spacer(Modifier.height(12.dp))
         Button(enabled = !busy && (text.isNotBlank() || imageUri != null), onClick = {
             busy = true
@@ -138,7 +140,7 @@ fun CreatePostScreen(api2: FrianzoApi2, onPosted: () -> Unit) {
                     }
                     val res = api2.createPost(text.toRequestBody("text/plain".toMediaTypeOrNull()), part)
                     if (!res.success) throw Exception(res.error?.message ?: "Post failed")
-                    message = "Posted ✓"
+                    message = "Posted"
                     onPosted()
                 } catch (e: Exception) { message = e.message ?: "Post failed" }
                 finally { busy = false }
@@ -395,7 +397,15 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?) {
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     post.imageUrl?.let { Spacer(Modifier.height(8.dp)); AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))) }
                     Spacer(Modifier.height(8.dp))
-                    Text("♥ ${post.likeCount}  •  💬 ${post.commentCount}", style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Favorite, contentDescription = "Likes", modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("${post.likeCount}", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.width(12.dp))
+                    Icon(Icons.Filled.ChatBubble, contentDescription = "Comments", modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
+                }
                 }
             }
         }

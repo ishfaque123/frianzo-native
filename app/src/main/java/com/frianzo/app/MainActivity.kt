@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -86,13 +88,13 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?) {
                     unselectedTextColor = FrianzoTextSecondary,
                     indicatorColor = FrianzoBlueTint,
                 )
-                NavigationBarItem(selected = tab == Tab.FEED, onClick = { tab = Tab.FEED; openChat = null; openProfile = null }, label = { Text("Feed") }, icon = { Text("🏠") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.REELS, onClick = { tab = Tab.REELS; openChat = null; openProfile = null }, label = { Text("Reels") }, icon = { Text("▶") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.CREATE, onClick = { tab = Tab.CREATE; openChat = null; openProfile = null }, label = { Text("Post") }, icon = { Text("+") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.CHAT, onClick = { tab = Tab.CHAT; openChat = null; openProfile = null }, label = { Text("Chat") }, icon = { Text("💬") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.NOTIFS, onClick = { tab = Tab.NOTIFS; openChat = null; openProfile = null }, label = { Text("Alerts") }, icon = { Text("🔔") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.SEARCH, onClick = { tab = Tab.SEARCH; openChat = null; openProfile = null }, label = { Text("Search") }, icon = { Text("🔍") }, colors = navColors)
-                NavigationBarItem(selected = tab == Tab.PROFILE, onClick = { tab = Tab.PROFILE; openChat = null; openProfile = null }, label = { Text("Profile") }, icon = { Text("👤") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.FEED, onClick = { tab = Tab.FEED; openChat = null; openProfile = null }, label = { Text("Feed") }, icon = { Icon(Icons.Filled.Home, contentDescription = "Feed") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.REELS, onClick = { tab = Tab.REELS; openChat = null; openProfile = null }, label = { Text("Reels") }, icon = { Icon(Icons.Filled.PlayArrow, contentDescription = "Reels") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.CREATE, onClick = { tab = Tab.CREATE; openChat = null; openProfile = null }, label = { Text("Post") }, icon = { Icon(Icons.Filled.Add, contentDescription = "Post") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.CHAT, onClick = { tab = Tab.CHAT; openChat = null; openProfile = null }, label = { Text("Chat") }, icon = { Icon(Icons.Filled.ChatBubble, contentDescription = "Chat") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.NOTIFS, onClick = { tab = Tab.NOTIFS; openChat = null; openProfile = null }, label = { Text("Alerts") }, icon = { Icon(Icons.Filled.Notifications, contentDescription = "Alerts") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.SEARCH, onClick = { tab = Tab.SEARCH; openChat = null; openProfile = null }, label = { Text("Search") }, icon = { Icon(Icons.Filled.Search, contentDescription = "Search") }, colors = navColors)
+                NavigationBarItem(selected = tab == Tab.PROFILE, onClick = { tab = Tab.PROFILE; openChat = null; openProfile = null }, label = { Text("Profile") }, icon = { Icon(Icons.Filled.Person, contentDescription = "Profile") }, colors = navColors)
             }
         },
     ) { padding ->

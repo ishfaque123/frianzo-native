@@ -10,6 +10,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.ui.text.withStyle
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -354,10 +356,19 @@ fun FeedScreen(api: FrianzoApi) {
                     Spacer(Modifier.height(10.dp))
                     HorizontalDivider(color = FrianzoBorder)
                     Spacer(Modifier.height(8.dp))
-                    Text(
-                        "♥ ${post.likeCount}  •  💬 ${post.commentCount}  •  ↗ ${post.shareCount}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Favorite, contentDescription = "Likes", modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("${post.likeCount}", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.width(12.dp))
+                        Icon(Icons.Filled.ChatBubble, contentDescription = "Comments", modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.width(12.dp))
+                        Icon(Icons.Filled.Share, contentDescription = "Shares", modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("${post.shareCount}", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
             // Load the next 5-post page when the list end is reached is handled
