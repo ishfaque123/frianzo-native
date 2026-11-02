@@ -43,7 +43,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, onLoggedIn: () -> Un
         verticalArrangement = Arrangement.Center,
     ) {
         Text("Frianzo", style = MaterialTheme.typography.displayMedium)
-        Text("Native app — prototype (login + feed only)", style = MaterialTheme.typography.bodyMedium)
+        Text("Connect. Share. Discover.", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(24.dp))
 
         Button(

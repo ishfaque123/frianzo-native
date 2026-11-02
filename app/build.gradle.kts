@@ -9,14 +9,14 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        // A NEW app id namespace is used only for this prototype build.
-        // The Play app keeps its own id; do not publish this prototype under
+        // A NEW app id namespace is used for this app.
+        // The Play app keeps its own id; do not publish this app under
         // the live app's id until the owner orders a Play build.
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-prototype"
+        versionCode = 2
+        versionName = "1.0"
     }
 
     buildFeatures { compose = true }

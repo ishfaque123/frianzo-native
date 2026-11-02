@@ -1,4 +1,4 @@
-# Frianzo Native (new app)
+# Frianzo (new app)
 
 A NEW, complete, native Android app for Frianzo — Jetpack Compose, **no WebView**.
 This repo is separate from `frianzo-app` (the current live app). The current app
