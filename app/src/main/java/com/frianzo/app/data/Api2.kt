@@ -32,9 +32,33 @@ data class Comment(
     val author: Author?,
     val createdAt: String?,
     val replyCount: Int = 0,
+    val mediaUrl: String? = null,
+    val myReaction: String? = null,
+    val reactionCount: Int = 0,
+    val replies: List<Comment> = emptyList(),
 )
 data class CommentsData(val comments: List<Comment>)
-data class CommentCreateRequest(val content: String)
+data class CommentCreateRequest(val content: String, val parentCommentId: String? = null)
+data class ShareCodeData(val code: String?)
+data class StatusItem(
+    val id: String,
+    val mediaUrl: String? = null,
+    val mediaType: String? = null,
+    val thumbnailUrl: String? = null,
+    val textContent: String? = null,
+    val bgColor: String? = null,
+    val visibility: String? = null,
+    val createdAt: String? = null,
+    val seen: Boolean = false,
+    val liked: Boolean = false,
+)
+data class StatusGroup(
+    val userId: String,
+    val user: Author? = null,
+    val items: List<StatusItem> = emptyList(),
+    val hasUnseen: Boolean = false,
+)
+data class StatusFeedData(val feed: List<StatusGroup>? = null)
 data class PostCreateData(val post: Post?)
 /** Backend GET /api/posts/{id} returns { post }, not a bare post. (Currently unused in UI.) */
 data class PostResponse(val post: Post?)
@@ -120,6 +144,44 @@ interface FrianzoApi2 {
     suspend fun postComments(@Path("postId") postId: String): Envelope<CommentsData>
     @POST("api/comments/{postId}")
     suspend fun addPostComment(@Path("postId") postId: String, @Body body: CommentCreateRequest): Envelope<Any>
+    @Multipart
+    @POST("api/comments/{postId}")
+    suspend fun addPostCommentImage(
+        @Path("postId") postId: String,
+        @Part("content") content: okhttp3.RequestBody,
+        @Part("parentCommentId") parentCommentId: okhttp3.RequestBody?,
+        @Part image: MultipartBody.Part?,
+    ): Envelope<Any>
+    @POST("api/comments/{commentId}/reaction")
+    suspend fun setCommentReaction(@Path("commentId") commentId: String, @Body body: Map<String, String>): Envelope<Any>
+    @DELETE("api/comments/{commentId}")
+    suspend fun deleteComment(@Path("commentId") commentId: String): Envelope<Any>
+    @POST("api/comments/{commentId}/report")
+    suspend fun reportComment(@Path("commentId") commentId: String, @Body body: Map<String, String>): Envelope<Any>
+    @POST("api/posts/{id}/report")
+    suspend fun reportPost(@Path("id") id: String, @Body body: Map<String, String>): Envelope<Any>
+    @POST("api/posts/{id}/hide")
+    suspend fun hidePost(@Path("id") id: String): Envelope<Any>
+    @POST("api/posts/{id}/pin")
+    suspend fun togglePin(@Path("id") id: String): Envelope<Any>
+    @PATCH("api/posts/{id}")
+    suspend fun updatePost(@Path("id") id: String, @Body body: Map<String, String>): Envelope<Any>
+    @DELETE("api/posts/{id}")
+    suspend fun deletePost(@Path("id") id: String): Envelope<Any>
+    @POST("api/posts/{id}/share")
+    suspend fun repostPost(@Path("id") id: String, @Body body: Map<String, String>): Envelope<Any>
+    @POST("api/share")
+    suspend fun createShareLink(@Body body: Map<String, String>): Envelope<ShareCodeData>
+    @POST("api/share/event")
+    suspend fun recordShareEvent(@Body body: Map<String, String>): Envelope<Any>
+    @GET("api/statuses")
+    suspend fun statusFeed(): Envelope<StatusFeedData>
+    @POST("api/statuses/{id}/view")
+    suspend fun viewStatus(@Path("id") id: String): Envelope<Any>
+    @POST("api/statuses/{id}/like")
+    suspend fun toggleStatusLike(@Path("id") id: String): Envelope<Any>
+    @DELETE("api/statuses/{id}")
+    suspend fun deleteStatus(@Path("id") id: String): Envelope<Any>
 
     // Chat (REST polling for step 1 of chat; live socket is a later stage)
     @GET("api/messages/conversations")

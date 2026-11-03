@@ -40,6 +40,12 @@ data class Post(
     val commentCount: Int = 0,
     val shareCount: Int = 0,
     val author: Author?,
+    val backgroundStyle: String? = null,
+    val location: String? = null,
+    val isPinned: Boolean = false,
+    val reactionCounts: Map<String, Int>? = null,
+    val myReaction: String? = null,
+    val shareCode: String? = null,
 )
 
 data class FeedData(
