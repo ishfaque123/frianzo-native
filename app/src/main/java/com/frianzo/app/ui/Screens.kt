@@ -1030,6 +1030,7 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
     var showDelete by remember { mutableStateOf(false) }
     var showAudience by remember { mutableStateOf(false) }
     val isOwner = post.author?.id != null && post.author?.id == myId
+    val clipboard = LocalClipboardManager.current
     fun act(label: String, run: suspend () -> Unit) {
         scope.launch { try { run(); notice = label } catch (e: Exception) { notice = e.message ?: "Failed" } }
     }
@@ -1040,7 +1041,7 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
             if (post.author?.username != null) TextButton(onClick = { onClose(); onAuthor(post.author!!.username!!) }, modifier = Modifier.fillMaxWidth()) { Text("View profile", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onDetail() }, modifier = Modifier.fillMaxWidth()) { Text("View post", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { LocalClipboardManager.current.setText(AnnotatedString("https://frianzo.online/post/${post.id}")); notice = "Link copied"; }, modifier = Modifier.fillMaxWidth()) { Text("Copy link", modifier = Modifier.fillMaxWidth()) }
+            TextButton(onClick = { clipboard.setText(AnnotatedString("https://frianzo.online/post/${post.id}")); notice = "Link copied"; }, modifier = Modifier.fillMaxWidth()) { Text("Copy link", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onShare() }, modifier = Modifier.fillMaxWidth()) { Text("Share", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onComments() }, modifier = Modifier.fillMaxWidth()) { Text("Comments", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { act("Hidden") { vm.api2.hidePost(post.id); vm.hidePost(post.id); onClose() } }, modifier = Modifier.fillMaxWidth()) { Text("Hide post", modifier = Modifier.fillMaxWidth()) }
