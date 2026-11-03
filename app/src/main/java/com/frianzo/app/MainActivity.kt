@@ -9,6 +9,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
+import android.content.Intent
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -82,6 +92,10 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var openProfile by remember { mutableStateOf<String?>(null) }
     var pendingMedia by remember { mutableStateOf<android.net.Uri?>(null) }
     var unread by remember { mutableStateOf(0) }
+    var unreadMessages by remember { mutableStateOf(0) }
+    var drawerOpen by remember { mutableStateOf(false) }
+    var drawerNote by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     // PERMANENT FIX for H1: Android Back from a chat thread or an opened
@@ -98,6 +112,12 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 if (res.success && res.data != null) unread = res.data.unreadCount.takeIf { it > 0 } ?: res.data.count
             } catch (_: Exception) {}
         }
+        scope.launch {
+            try {
+                val res = api2.conversations()
+                if (res.success && res.data != null) unreadMessages = res.data.sumOf { it.unreadCount }
+            } catch (_: Exception) {}
+        }
     }
 
     fun logout() {
@@ -110,68 +130,59 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     }
 
     Scaffold(
-        // Web header: white bar, blue F logo + bold blue "Frianzo" wordmark.
+        // LIVE CHROME (Shell.tsx): header row + second nav row, NO bottom bar.
+        // Header: left = 3-lines menu + blue "Frianzo" TEXT wordmark (live has
+        // no image logo in the header); right = Search + Messages (badge 9+).
+        // Second row: Home / Reels / Notifications (badge 99+) / Profile,
+        // 24dp outline icons, NO labels, active slate-900 / inactive slate-400.
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        FrianzoLogo(32.dp)
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "Frianzo",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = FrianzoBlue,
+            Column {
+                TopAppBar(
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { drawerOpen = true }) { Icon(Icons.Outlined.Menu, contentDescription = "Menu", tint = Color(0xFF0F172A), modifier = Modifier.size(24.dp)) }
+                            Text("Frianzo", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue)
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { tab = Tab.SEARCH; openChat = null; openProfile = null }) { Icon(Icons.Outlined.Search, contentDescription = "Search", tint = Color(0xFF0F172A), modifier = Modifier.size(24.dp)) }
+                        Box(contentAlignment = Alignment.TopEnd) {
+                            IconButton(onClick = { tab = Tab.CHAT; openChat = null; openProfile = null }) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Messages", tint = Color(0xFF0F172A), modifier = Modifier.size(24.dp)) }
+                            if (unreadMessages > 0) {
+                                Badge(containerColor = FrianzoBadgeRed, modifier = Modifier.offset(x = (-2).dp, y = 2.dp)) {
+                                    Text(if (unreadMessages > 9) "9+" else "$unreadMessages", fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                )
+                Surface(color = MaterialTheme.colorScheme.surface) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceAround) {
+                        val nav2 = listOf(
+                            Triple(Tab.FEED, Icons.Outlined.Home, "Home"),
+                            Triple(Tab.REELS, Icons.Filled.PlayArrow, "Reels"),
+                            Triple(Tab.NOTIFS, Icons.Outlined.Notifications, "Notifications"),
+                            Triple(Tab.PROFILE, Icons.Outlined.Person, "Profile"),
                         )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = {
-            // FB-style custom bottom bar (NOT NavigationBar): NavigationBarItem
-            // gives each of 7 items too little width, so "Reels"/"Alerts"/
-            // "Search"/"Profile" wrapped across two lines in the video.
-            // This Row gives every item equal weight, a 24dp icon and an
-            // 11sp label forced to one line with no soft wrap, so no label
-            // can ever wrap. All 7 destinations are kept: removing one
-            // would break navigation (Post, Chat, Alerts are core).
-            Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    val defs = listOf(
-                        NavDef(Tab.FEED, "Feed", Icons.Filled.Home),
-                        NavDef(Tab.REELS, "Reels", Icons.Filled.PlayArrow),
-                        NavDef(Tab.CREATE, "Post", Icons.Filled.Add),
-                        NavDef(Tab.CHAT, "Chat", Icons.Filled.Chat),
-                        NavDef(Tab.NOTIFS, "Alerts", Icons.Filled.Notifications, unread),
-                        NavDef(Tab.SEARCH, "Search", Icons.Filled.Search),
-                        NavDef(Tab.PROFILE, "Profile", Icons.Filled.Person),
-                    )
-                    defs.forEach { def ->
-                        val selected = tab == def.tabValue
-                        val color = if (selected) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant
-                        Column(
-                            Modifier.weight(1f).clickable { tab = def.tabValue; openChat = null; openProfile = null },
-                            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                        ) {
-                            Box(contentAlignment = androidx.compose.ui.Alignment.TopEnd) {
-                                Icon(def.icon, contentDescription = def.label, tint = color, modifier = Modifier.size(24.dp))
-                                if (def.badge > 0) {
+                        nav2.forEach { (t, icon, label) ->
+                            val selected = tab == t
+                            val color = if (selected) Color(0xFF0F172A) else Color(0xFF94A3B8)
+                            Box(contentAlignment = Alignment.TopEnd, modifier = Modifier.clickable { tab = t; openChat = null; openProfile = null }.padding(8.dp)) {
+                                Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(24.dp))
+                                if (t == Tab.NOTIFS && unread > 0) {
                                     Badge(containerColor = FrianzoBadgeRed, modifier = Modifier.offset(x = 8.dp, y = (-4).dp)) {
-                                        Text("${def.badge}", fontSize = 9.sp)
+                                        Text(if (unread > 99) "99+" else "$unread", fontSize = 10.sp)
                                     }
                                 }
                             }
-                            Text(
-                                def.label, fontSize = 11.sp, maxLines = 1, softWrap = false,
-                                color = color,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            )
                         }
                     }
                 }
+                HorizontalDivider()
             }
         },
+        containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when {
@@ -185,6 +196,44 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
                 tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout)
             }
+        if (drawerOpen) {
+            // LIVE DRAWER (Shell.tsx drawerLinks, in order): profile row, then
+            // Settings / Your Activity / Professional Dashboard / Close Friends
+            // / AI Video Generator / ISAI Assistant, then Share Frianzo, then
+            // Logout in the footer. Items with no native screen yet open a
+            // plain "not in this build yet" note — never a faked screen.
+            AlertDialog(
+                onDismissRequest = { drawerOpen = false },
+                title = { Text("Frianzo") },
+                text = {
+                    Column {
+                        TextButton(onClick = { drawerOpen = false; tab = Tab.PROFILE; openChat = null; openProfile = null }, modifier = Modifier.fillMaxWidth()) { Text("View Profile", modifier = Modifier.fillMaxWidth()) }
+                        HorizontalDivider()
+                        val items = listOf("Settings", "Your Activity", "Professional Dashboard", "Close Friends", "AI Video Generator", "ISAI Assistant")
+                        items.forEach { label ->
+                            TextButton(onClick = { drawerNote = "$label is not in this build yet." }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                        }
+                        HorizontalDivider()
+                        TextButton(onClick = {
+                            drawerOpen = false
+                            val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Frianzo - share posts, videos and connect with people. Download: https://play.google.com/store/apps/details?id=com.frianzo.app") }
+                            context.startActivity(Intent.createChooser(intent, "Share Frianzo"))
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Share Frianzo", modifier = Modifier.fillMaxWidth()) }
+                        HorizontalDivider()
+                        TextButton(onClick = { drawerOpen = false; logout() }, modifier = Modifier.fillMaxWidth()) { Text("Logout", color = Color.Red, modifier = Modifier.fillMaxWidth()) }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { drawerOpen = false }) { Text("Close") } },
+            )
+        }
+        if (drawerNote != null) {
+            AlertDialog(
+                onDismissRequest = { drawerNote = null },
+                title = { Text("Not in this build yet") },
+                text = { Text(drawerNote!!) },
+                confirmButton = { TextButton(onClick = { drawerNote = null }) { Text("OK") } },
+            )
+        }
         }
     }
 }
