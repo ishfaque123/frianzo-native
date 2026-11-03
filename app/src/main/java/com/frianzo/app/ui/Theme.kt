@@ -8,7 +8,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +43,23 @@ val FrianzoTextDark = Color(0xFF0F172A)
 val FrianzoTextSecondary = Color(0xFF64748B)
 val FrianzoBorder = Color(0xFFE2E8F0)
 val FrianzoBadgeRed = Color(0xFFDC2626)
+
+private val FrianzoDarkColorScheme = darkColorScheme(
+    primary = FrianzoBlue,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF1E3A8A),
+    onPrimaryContainer = Color.White,
+    secondary = FrianzoBlue,
+    secondaryContainer = Color(0xFF1E3A8A),
+    background = Color(0xFF0F172A),
+    onBackground = Color.White,
+    surface = Color(0xFF1E293B),
+    onSurface = Color.White,
+    surfaceVariant = Color(0xFF334155),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    outline = Color(0xFF475569),
+    error = Color(0xFFF87171),
+)
 
 private val FrianzoColorScheme = lightColorScheme(
     primary = FrianzoBlue,
@@ -95,9 +114,11 @@ private val FrianzoTypography = Typography(
 )
 
 @Composable
-fun FrianzoTheme(content: @Composable () -> Unit) {
+fun FrianzoTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+    // SYSTEM THEME: no fixed dark login theme, no fixed light theme.
+    // Phone dark -> dark scheme, phone light -> light scheme, everywhere.
     MaterialTheme(
-        colorScheme = FrianzoColorScheme,
+        colorScheme = if (darkTheme) FrianzoDarkColorScheme else FrianzoColorScheme,
         shapes = FrianzoShapes,
         typography = FrianzoTypography,
         content = content,

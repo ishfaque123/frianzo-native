@@ -80,6 +80,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var tab by remember { mutableStateOf(Tab.FEED) }
     var openChat by remember { mutableStateOf<Pair<String, String>?>(null) }
     var openProfile by remember { mutableStateOf<String?>(null) }
+    var pendingMedia by remember { mutableStateOf<android.net.Uri?>(null) }
     var unread by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
@@ -123,10 +124,10 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = androidx.compose.ui.graphics.Color.White),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
             )
         },
-        containerColor = FrianzoPageBackground,
+        containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             // FB-style custom bottom bar (NOT NavigationBar): NavigationBarItem
             // gives each of 7 items too little width, so "Reels"/"Alerts"/
@@ -135,7 +136,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             // 11sp label forced to one line with no soft wrap, so no label
             // can ever wrap. All 7 destinations are kept: removing one
             // would break navigation (Post, Chat, Alerts are core).
-            Surface(color = androidx.compose.ui.graphics.Color.White, tonalElevation = 3.dp) {
+            Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                     val defs = listOf(
                         NavDef(Tab.FEED, "Feed", Icons.Filled.Home),
@@ -148,7 +149,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                     )
                     defs.forEach { def ->
                         val selected = tab == def.tabValue
-                        val color = if (selected) FrianzoBlue else FrianzoTextSecondary
+                        val color = if (selected) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant
                         Column(
                             Modifier.weight(1f).clickable { tab = def.tabValue; openChat = null; openProfile = null },
                             horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
@@ -176,9 +177,9 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             when {
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId) { openChat = null }
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name })
-                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
+                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
                 tab == Tab.REELS -> ReelsScreen(api2) { username -> openProfile = username }
-                tab == Tab.CREATE -> CreatePostScreen(api2) { feedVm.refresh(); tab = Tab.FEED }
+                tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia) { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }
                 tab == Tab.CHAT -> ChatListScreen(api2) { id, name -> openChat = id to name }
                 tab == Tab.NOTIFS -> NotificationsScreen(api2) { username -> openProfile = username }
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }

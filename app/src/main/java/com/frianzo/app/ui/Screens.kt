@@ -2,6 +2,9 @@ package com.frianzo.app.ui
 
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -9,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -64,13 +68,13 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
-    // Dark login look from the real web login screenshot: dark slate page,
-    // white wordmark, dark outlined Google button, white email button.
-    val loginBg = androidx.compose.ui.graphics.Color(0xFF1E293B)
-    val loginFieldBg = androidx.compose.ui.graphics.Color(0xFF2B3648)
-    val loginBorder = androidx.compose.ui.graphics.Color(0xFF475569)
-    val loginGrey = androidx.compose.ui.graphics.Color(0xFF94A3B8)
-    val loginBlue = androidx.compose.ui.graphics.Color(0xFF3B82F6)
+    // SYSTEM THEME: login is NOT a separate fixed dark theme any more.
+    // Colours come from MaterialTheme, which follows the phone setting:
+    // dark phone -> dark login, light phone -> light login.
+    val loginBg = MaterialTheme.colorScheme.background
+    val loginFieldBg = MaterialTheme.colorScheme.surfaceVariant
+    val loginBorder = MaterialTheme.colorScheme.outline
+    val loginGrey = MaterialTheme.colorScheme.onSurfaceVariant
 
     fun fail(e: Exception, fallback: String) {
         // Never show Retrofit's bare "HTTP 403": map an HttpException to the
@@ -80,8 +84,8 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     }
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedTextColor = androidx.compose.ui.graphics.Color.White,
-        unfocusedTextColor = androidx.compose.ui.graphics.Color.White,
+        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
         focusedContainerColor = loginFieldBg,
         unfocusedContainerColor = loginFieldBg,
         disabledContainerColor = loginFieldBg,
@@ -89,7 +93,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         unfocusedBorderColor = loginBorder,
         focusedPlaceholderColor = loginGrey,
         unfocusedPlaceholderColor = loginGrey,
-        cursorColor = androidx.compose.ui.graphics.Color.White,
+        cursorColor = MaterialTheme.colorScheme.onSurface,
     )
 
     Column(
@@ -106,7 +110,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         Text(
             "Frianzo",
             style = MaterialTheme.typography.displayMedium,
-            color = androidx.compose.ui.graphics.Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         Spacer(Modifier.height(6.dp))
         Text(
@@ -179,7 +183,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = loginFieldBg,
-                contentColor = androidx.compose.ui.graphics.Color.White,
+                contentColor = MaterialTheme.colorScheme.onSurface,
             ),
             border = androidx.compose.foundation.BorderStroke(1.dp, loginBorder),
         ) {
@@ -197,7 +201,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                 )
             }
             Spacer(Modifier.width(10.dp))
-            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = androidx.compose.ui.graphics.Color.White)
+            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         }
 
         Spacer(Modifier.height(24.dp))
@@ -254,8 +258,8 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = androidx.compose.ui.graphics.Color.White,
-                contentColor = androidx.compose.ui.graphics.Color(0xFF0F172A),
+                containerColor = FrianzoBlue,
+                contentColor = androidx.compose.ui.graphics.Color.White,
             ),
         ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium) }
         if (codeSent) {
@@ -280,19 +284,11 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             Spacer(Modifier.height(12.dp))
             Text(it, color = MaterialTheme.colorScheme.error, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
-        if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading(color = androidx.compose.ui.graphics.Color.White) }
+        if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
 
         Spacer(Modifier.height(28.dp))
         Text(
-            text = androidx.compose.ui.text.buildAnnotatedString {
-                append("By continuing with an account located in ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Pakistan") }
-                append(", you agree to Frianzo's ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Terms of Service") }
-                append(" and acknowledge that you have read our ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)) { append("Privacy Policy") }
-                append(".")
-            },
+            "By continuing with an account located in Pakistan, you agree to Frianzo's Terms of Service and acknowledge that you have read our Privacy Policy.",
             style = MaterialTheme.typography.bodySmall,
             color = loginGrey,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -452,9 +448,9 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewMode
     override fun <T : ViewModel> create(modelClass: Class<T>): T = FeedViewModel(api, api2) as T
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
+fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val posts = vm.posts
@@ -466,6 +462,12 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     var sharePost by remember { mutableStateOf<Post?>(null) }
     var storyInfo by remember { mutableStateOf<String?>(null) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
+    // + BUTTON = SYSTEM GALLERY (live behaviour): photos AND videos.
+    // PickVisualMedia (system photo picker) needs no Gallery permission
+    // and returns a Uri; the parent opens Create with it pre-attached.
+    val galleryPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
+        if (uri != null) onPickMedia(uri)
+    }
     LaunchedEffect(Unit) {
         try {
             val me = vm.api2.myProfile()
@@ -514,7 +516,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
 
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize().background(FrianzoPageBackground),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
     ) {
         // Composer row (flat, live layout): avatar + pill -> Post screen.
         // The + button opens the Post screen too, where photo pick lives;
@@ -522,23 +524,25 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         // file to the separate Post tab, so a picker here would be a dead
         // target. Post-screen photo pick is the working equivalent.
         item {
-            Column(Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 12.dp)) {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     FrianzoAvatar(myAvatar, 40.dp)
                     Spacer(Modifier.width(10.dp))
                     Box(
                         Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(28.dp))
-                            .background(FrianzoPageBackground).clickable { onCreatePost() },
+                            .background(MaterialTheme.colorScheme.surfaceVariant).clickable { onCreatePost() },
                         contentAlignment = Alignment.CenterStart,
                     ) {
-                        Text("What's on your mind?", fontSize = 15.sp, color = FrianzoTextSecondary, modifier = Modifier.padding(horizontal = 16.dp))
+                        Text("What's on your mind?", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
                     }
                     Spacer(Modifier.width(10.dp))
                     Box(
-                        Modifier.size(40.dp).clip(CircleShape).background(FrianzoBlueTint).clickable { onCreatePost() },
+                        Modifier.size(40.dp).clip(CircleShape).background(FrianzoBlueTint).clickable {
+                            galleryPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo))
+                        },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Create post", modifier = Modifier.size(24.dp), tint = FrianzoBlue)
+                        Icon(Icons.Filled.Add, contentDescription = "Add photo or video", modifier = Modifier.size(24.dp), tint = FrianzoBlue)
                     }
                 }
             }
@@ -549,7 +553,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         // invented). Every circle is tappable; none is a dead target.
         item {
             val storyAuthors = posts.mapNotNull { it.author }.distinctBy { it.id ?: it.username }.take(8)
-            Column(Modifier.fillMaxWidth().background(Color.White).padding(vertical = 12.dp)) {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(vertical = 12.dp)) {
                 LazyRow(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -561,14 +565,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                 Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
                             }
                             Spacer(Modifier.height(4.dp))
-                            Text("Your story", fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
+                            Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                         }
                     }
                     items(storyAuthors) { author ->
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { storyInfo = author.displayName ?: author.username ?: "User" }) {
                             Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { FrianzoAvatar(author.profilePictureUrl, 56.dp) }
                             Spacer(Modifier.height(4.dp))
-                            Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
+                            Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -584,14 +588,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             // No rounded shadow card. Text and photo taps are NOT nested
             // inside any parent clickable, so action buttons below can
             // never be swallowed by a card tap handler.
-            Column(Modifier.fillMaxWidth().background(Color.White)) {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.clickable { post.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(post.author?.profilePictureUrl, 40.dp) }
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f).clickable { post.author?.username?.let { onAuthor(it) } }) {
                         Text(post.author?.displayName ?: post.author?.username ?: "User", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                         val time = feedTime(post.createdAt)
-                        Text(if (time.isNotBlank()) time else "@${post.author?.username ?: ""}", fontSize = 12.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
+                        Text(if (time.isNotBlank()) time else "@${post.author?.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                     }
                     val authorId = post.author?.id
                     if (authorId != null && authorId != myId && followStates[authorId] == false) {
@@ -611,7 +615,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         Spacer(Modifier.width(8.dp))
                     }
                     Box {
-                        IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary) }
+                        IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                             if (post.author?.username != null) {
                                 DropdownMenuItem(text = { Text("View profile") }, onClick = { menuExpanded = false; post.author?.username?.let { onAuthor(it) } })
@@ -629,7 +633,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         }
                     }
                     // Always-visible Hide X, live layout.
-                    IconButton(onClick = { vm.hidePost(post.id) }) { Icon(Icons.Filled.Close, contentDescription = "Hide", modifier = Modifier.size(20.dp), tint = FrianzoTextSecondary) }
+                    IconButton(onClick = { vm.hidePost(post.id) }) { Icon(Icons.Filled.Close, contentDescription = "Hide", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 // Text tap -> comments dialog (no post-detail screen exists
                 // in the app yet, so this is the working tap target).
@@ -646,14 +650,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         if (post.likeCount > 0) {
                             Icon(reactionIcon(myReaction), contentDescription = null, modifier = Modifier.size(16.dp), tint = reactionColor(myReaction))
                             Spacer(Modifier.width(4.dp))
-                            Text("${post.likeCount}", fontSize = 12.sp, color = FrianzoTextSecondary)
+                            Text("${post.likeCount}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Spacer(Modifier.weight(1f))
                         val rightParts = buildList {
                             if (post.commentCount > 0) add("${post.commentCount} comments")
                             if (post.shareCount > 0) add("${post.shareCount} shares")
                         }
-                        if (rightParts.isNotEmpty()) Text(rightParts.joinToString(" · "), fontSize = 12.sp, color = FrianzoTextSecondary)
+                        if (rightParts.isNotEmpty()) Text(rightParts.joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.height(8.dp))
                 }
@@ -672,14 +676,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         Icon(
                             Icons.Outlined.ThumbUp, contentDescription = "Like",
                             modifier = Modifier.size(28.dp),
-                            tint = if (liked) FrianzoBlue else FrianzoTextSecondary,
+                            tint = if (liked) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Box(Modifier.weight(1f).height(48.dp).clickable { commentPost = post }, contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary)
+                        Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Box(Modifier.weight(1f).height(48.dp).clickable { sharePost = post }, contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = FrianzoTextSecondary)
+                        Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 if (pickerPost) {
@@ -721,7 +725,7 @@ private fun reactionIcon(type: String?): ImageVector =
     reactionOptions().firstOrNull { it.type == type }?.icon ?: Icons.Outlined.ThumbUp
 
 private fun reactionColor(type: String?): Color =
-    reactionOptions().firstOrNull { it.type == type }?.color ?: FrianzoTextSecondary
+    reactionOptions().firstOrNull { it.type == type }?.color ?: MaterialTheme.colorScheme.onSurfaceVariant
 
 @Composable
 private fun ReactionPickerRow(onPick: (String) -> Unit, onDismiss: () -> Unit) {
@@ -729,14 +733,14 @@ private fun ReactionPickerRow(onPick: (String) -> Unit, onDismiss: () -> Unit) {
         reactionOptions().forEach { opt ->
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onPick(opt.type) }) {
                 Icon(opt.icon, contentDescription = opt.label, modifier = Modifier.size(40.dp), tint = opt.color)
-                Text(opt.label, fontSize = 11.sp, color = FrianzoTextSecondary)
+                Text(opt.label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         TextButton(onClick = onDismiss) { Text("Close") }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, onOpenChat: (String, String) -> Unit) {
     val context = LocalContext.current
@@ -749,7 +753,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
             Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Text(link, fontSize = 14.sp, color = FrianzoTextSecondary)
+            Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
             Button(onClick = {
                 clipboard.setText(AnnotatedString(link)); copied = true
@@ -809,7 +813,7 @@ private fun ShareTile(label: String, onClick: () -> Unit) {
             Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(24.dp), tint = FrianzoBlue)
         }
         Spacer(Modifier.height(4.dp))
-        Text(label, fontSize = 11.sp, color = FrianzoTextSecondary)
+        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
