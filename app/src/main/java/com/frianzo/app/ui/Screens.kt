@@ -10,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -58,6 +59,27 @@ import java.util.Base64
 /** Step 1 screens only: Login (Google + email OTP) and Feed (read-only).
  *  No posting, liking, commenting, reels or chat yet — those are later steps. */
 
+
+/** Multicolour Google "G" (drawn, no asset in repo): four coloured arcs
+ * plus a blue bar, in Google's blue/red/yellow/green. */
+@Composable
+private fun GoogleGIcon() {
+    Canvas(modifier = Modifier.size(24.dp)) {
+        val stroke = 3.dp.toPx()
+        val style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke)
+        drawArc(Color(0xFF4285F4), 300f, 90f, false, style = style)
+        drawArc(Color(0xFF34A853), 30f, 90f, false, style = style)
+        drawArc(Color(0xFFFBBC05), 120f, 90f, false, style = style)
+        drawArc(Color(0xFFEA4335), 210f, 90f, false, style = style)
+        drawLine(
+            Color(0xFF4285F4),
+            start = androidx.compose.ui.geometry.Offset(center.x, center.y),
+            end = androidx.compose.ui.geometry.Offset(size.width, center.y),
+            strokeWidth = stroke,
+        )
+    }
+}
+
 @Composable
 fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: PersistentCookieJar? = null, onLoggedIn: () -> Unit) {
     val context = LocalContext.current
@@ -68,13 +90,17 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
-    // SYSTEM THEME: login is NOT a separate fixed dark theme any more.
-    // Colours come from MaterialTheme, which follows the phone setting:
-    // dark phone -> dark login, light phone -> light login.
-    val loginBg = MaterialTheme.colorScheme.background
-    val loginFieldBg = MaterialTheme.colorScheme.surfaceVariant
-    val loginBorder = MaterialTheme.colorScheme.outline
-    val loginGrey = MaterialTheme.colorScheme.onSurfaceVariant
+    // LIVE SITE LOGIN (same-to-same): fixed pale blue-gray/off-white
+    // background, white field/button, gray text — regardless of the
+    // phone system theme. Other screens still follow the system theme.
+    val loginBg = Color(0xFFF8FAFC)
+    val loginFieldBg = Color.White
+    val loginBorder = Color(0xFFCBD5E1)
+    val loginGrey = Color(0xFF64748B)
+    val loginDark = Color(0xFF0F172A)
+    // Logged-out: no user country is known yet, so the live site's
+    // country word defaults to Pakistan via the existing mapping.
+    val loginCountry = countryDisplayName(null) ?: "Pakistan"
 
     fun fail(e: Exception, fallback: String) {
         // Never show Retrofit's bare "HTTP 403": map an HttpException to the
@@ -84,8 +110,8 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     }
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+        focusedTextColor = loginDark,
+        unfocusedTextColor = loginDark,
         focusedContainerColor = loginFieldBg,
         unfocusedContainerColor = loginFieldBg,
         disabledContainerColor = loginFieldBg,
@@ -93,7 +119,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         unfocusedBorderColor = loginBorder,
         focusedPlaceholderColor = loginGrey,
         unfocusedPlaceholderColor = loginGrey,
-        cursorColor = MaterialTheme.colorScheme.onSurface,
+        cursorColor = loginDark,
     )
 
     Column(
@@ -110,7 +136,8 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         Text(
             "Frianzo",
             style = MaterialTheme.typography.displayMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = Color.Black,
+            fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(6.dp))
         Text(
@@ -182,26 +209,14 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = loginFieldBg,
-                contentColor = MaterialTheme.colorScheme.onSurface,
+                containerColor = Color.White,
+                contentColor = loginDark,
             ),
             border = androidx.compose.foundation.BorderStroke(1.dp, loginBorder),
         ) {
-            // Simplified Google "G" mark: no official multicolour G asset exists
-            // in the native repo, so a white disc with a blue G is used.
-            Box(
-                modifier = Modifier.size(24.dp)
-                    .background(androidx.compose.ui.graphics.Color.White, androidx.compose.foundation.shape.CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "G",
-                    color = FrianzoBlue,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            }
+            GoogleGIcon()
             Spacer(Modifier.width(10.dp))
-            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = loginDark, fontWeight = FontWeight.SemiBold)
         }
 
         Spacer(Modifier.height(24.dp))
@@ -258,10 +273,10 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = FrianzoBlue,
+                containerColor = Color(0xFF0F172A),
                 contentColor = androidx.compose.ui.graphics.Color.White,
             ),
-        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium) }
+        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         if (codeSent) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
@@ -288,19 +303,27 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
 
         Spacer(Modifier.height(28.dp))
         Text(
-            "By continuing with an account located in Pakistan, you agree to Frianzo's Terms of Service and acknowledge that you have read our Privacy Policy.",
+            androidx.compose.ui.text.buildAnnotatedString {
+                append("By continuing with an account located in ")
+                withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append(loginCountry) }
+                append(", you agree to Frianzo's ")
+                withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append("Terms of Service") }
+                append(" and acknowledge that you have read our ")
+                withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append("Privacy Policy") }
+                append(".")
+            },
             style = MaterialTheme.typography.bodySmall,
             color = loginGrey,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
         Spacer(Modifier.height(28.dp))
-        Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
-            Text("About", style = MaterialTheme.typography.bodySmall, color = loginGrey)
-            Text("   ·   ", style = MaterialTheme.typography.bodySmall, color = loginGrey)
-            Text("Privacy", style = MaterialTheme.typography.bodySmall, color = loginGrey)
-            Text("   ·   ", style = MaterialTheme.typography.bodySmall, color = loginGrey)
-            Text("Terms", style = MaterialTheme.typography.bodySmall, color = loginGrey)
-        }
+        Text(
+            "About · Privacy · Terms",
+            style = MaterialTheme.typography.bodySmall,
+            color = loginGrey,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
