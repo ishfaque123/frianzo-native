@@ -747,6 +747,7 @@ private fun reactionOptions(): List<ReactionOption> = listOf(
 private fun reactionIcon(type: String?): ImageVector =
     reactionOptions().firstOrNull { it.type == type }?.icon ?: Icons.Outlined.ThumbUp
 
+@Composable
 private fun reactionColor(type: String?): Color =
     reactionOptions().firstOrNull { it.type == type }?.color ?: MaterialTheme.colorScheme.onSurfaceVariant
 
