@@ -94,7 +94,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var unread by remember { mutableStateOf(0) }
     var unreadMessages by remember { mutableStateOf(0) }
     var drawerOpen by remember { mutableStateOf(false) }
-    var drawerNote by remember { mutableStateOf<String?>(null) }
+    var drawerScreen by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -102,6 +102,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     // profile returns to the previous screen instead of exiting the app.
     BackHandler(enabled = openChat != null) { openChat = null }
     BackHandler(enabled = openProfile != null) { openProfile = null }
+    BackHandler(enabled = drawerScreen != null) { drawerScreen = null }
 
     // Unread badge for the Alerts tab (M1): refresh whenever the tab changes
     // and after returning to it; a failed count simply shows no badge.
@@ -186,6 +187,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when {
+                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() })
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId) { openChat = null }
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name })
                 tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
@@ -201,7 +203,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             // Settings / Your Activity / Professional Dashboard / Close Friends
             // / AI Video Generator / ISAI Assistant, then Share Frianzo, then
             // Logout in the footer. Items with no native screen yet open a
-            // plain "not in this build yet" note — never a faked screen.
+            // Each item opens a real native screen (DrawerScreens.kt), never a placeholder.
             AlertDialog(
                 onDismissRequest = { drawerOpen = false },
                 title = { Text("Frianzo") },
@@ -211,7 +213,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                         HorizontalDivider()
                         val items = listOf("Settings", "Your Activity", "Professional Dashboard", "Close Friends", "AI Video Generator", "ISAI Assistant")
                         items.forEach { label ->
-                            TextButton(onClick = { drawerNote = "$label is not in this build yet." }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                            TextButton(onClick = { drawerOpen = false; drawerScreen = label }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
                         }
                         HorizontalDivider()
                         TextButton(onClick = {
@@ -226,14 +228,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 confirmButton = { TextButton(onClick = { drawerOpen = false }) { Text("Close") } },
             )
         }
-        if (drawerNote != null) {
-            AlertDialog(
-                onDismissRequest = { drawerNote = null },
-                title = { Text("Not in this build yet") },
-                text = { Text(drawerNote!!) },
-                confirmButton = { TextButton(onClick = { drawerNote = null }) { Text("OK") } },
-            )
-        }
+
         }
     }
 }

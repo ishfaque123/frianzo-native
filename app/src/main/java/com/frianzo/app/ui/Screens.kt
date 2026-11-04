@@ -855,7 +855,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
                 ShareTile("Facebook", Color(0xFF1877F2), "f") { openUrl("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link), "facebook") }
                 ShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") }
                 ShareTile("SMS", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") }
-                ShareTile("More", FrianzoBlue, "+") { val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, link) }; context.startActivity(Intent.createChooser(intent, "Share post")) }
+                ShareTile("More", FrianzoBlue, "+") { record("more"); val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, link) }; context.startActivity(Intent.createChooser(intent, "Share post")) }
             }
             Spacer(Modifier.height(8.dp))
             val authorId = post.author?.id
@@ -975,6 +975,8 @@ private fun CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int,
 @Composable
 private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, depth: Int, onReply: (Comment) -> Unit, onChanged: () -> Unit) {
     val scope = rememberCoroutineScope()
+    var editing by remember { mutableStateOf(false) }
+    var editDraft by rememberSaveable { mutableStateOf(c.content ?: "") }
     var liked by remember { mutableStateOf(c.myReaction != null) }
     var likeCount by remember { mutableStateOf(c.reactionCount) }
     var reported by remember { mutableStateOf(false) }
@@ -984,7 +986,19 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, depth: Int,
             Spacer(Modifier.width(8.dp))
             Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         }
-        Text(c.content ?: "", fontSize = 14.sp, modifier = Modifier.padding(start = 40.dp))
+        if (editing) {
+            Row(Modifier.padding(start = 40.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(value = editDraft, onValueChange = { editDraft = it }, modifier = Modifier.weight(1f), singleLine = true)
+                TextButton(onClick = {
+                    scope.launch {
+                        try { if (api2.editComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {}
+                    }
+                }) { Text("Save", fontSize = 12.sp) }
+                TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 12.sp) }
+            }
+        } else {
+            Text(c.content ?: "", fontSize = 14.sp, modifier = Modifier.padding(start = 40.dp))
+        }
         c.mediaUrl?.let { AsyncImage(model = it, contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().padding(start = 40.dp, top = 4.dp)) }
         Row(Modifier.padding(start = 40.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = {
@@ -994,6 +1008,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, depth: Int,
             TextButton(onClick = { onReply(c) }) { Text("Reply", fontSize = 12.sp) }
             TextButton(onClick = { scope.launch { try { if (api2.reportComment(c.id, mapOf("reason" to "other")).success) reported = true } catch (_: Exception) {} } }) { Text(if (reported) "Reported" else "Report", fontSize = 12.sp) }
             if (c.author?.id != null && c.author?.id == myId) {
+                TextButton(onClick = { editDraft = c.content ?: ""; editing = true }) { Text("Edit", fontSize = 12.sp) }
                 TextButton(onClick = { scope.launch { try { if (api2.deleteComment(c.id).success) onChanged() } catch (_: Exception) {} } }) { Text("Delete", fontSize = 12.sp, color = Color.Red) }
             }
         }
@@ -1087,6 +1102,8 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
     val scope = rememberCoroutineScope()
     var liked by remember { mutableStateOf(false) }
     var likeCount by remember { mutableStateOf(0) }
+    var shareDetail by remember { mutableStateOf<Post?>(null) }
+    val detailScroll = rememberScrollState()
     LaunchedEffect(postId) {
         try {
             val r = vm.api2.postById(postId)
@@ -1096,7 +1113,7 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
         loading = false
     }
     ModalBottomSheet(onDismissRequest = onClose) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(detailScroll).padding(bottom = 24.dp)) {
             if (loading) { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { DotsLoading() }; return@Column }
             if (error != null || detail == null) { Text(error ?: "Post not found", modifier = Modifier.padding(16.dp)); return@Column }
             val post = detail!!
@@ -1126,12 +1143,13 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
                     val was = liked; liked = !liked; likeCount += if (liked) 1 else -1
                     scope.launch { try { val r = vm.api2.setReaction(post.id, mapOf("type" to "like")); if (r.success && r.data?.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum() else { liked = was; likeCount += if (was) 1 else -1 } } catch (_: Exception) { liked = was } }
                 }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = if (liked) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant) }
-                Box(Modifier.weight(1f).height(48.dp), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                Box(Modifier.weight(1f).height(48.dp), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Box(Modifier.weight(1f).height(48.dp).clickable { scope.launch { detailScroll.animateScrollTo(detailScroll.maxValue) } }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Box(Modifier.weight(1f).height(48.dp).clickable { shareDetail = post }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
             Spacer(Modifier.height(12.dp))
             CommentSection(vm.api2, post.id, post.commentCount, myId) { vm.updateCommentCount(post.id, it) }
+            shareDetail?.let { sp -> PostShareSheet(vm, sp, onClose = { shareDetail = null }, onOpenChat = onOpenChat) }
         }
     }
 }

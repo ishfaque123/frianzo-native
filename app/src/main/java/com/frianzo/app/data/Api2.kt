@@ -116,6 +116,37 @@ data class FollowStatusData(val status: String?)
 /** Backend GET /api/users/me and /api/users/{username} return { user: {...} }, not bare fields. */
 data class ProfileResponse(val user: PublicProfile?)
 
+
+// ---------- Drawer destinations (v2.7, verified against the web frontend) ----------
+data class UsageData(val pings: List<String>? = null)
+data class EngagementBreakdown(val likes: Int = 0, val comments: Int = 0, val shares: Int = 0)
+data class DailyView(val date: String, val views: Int = 0)
+data class TopPerforming(val type: String?, val id: String?, val title: String?, val mediaUrl: String?, val createdAt: String?, val views: Int = 0)
+data class DashboardStats(
+    val views: Int = 0,
+    val engagement: Int = 0,
+    val engagementBreakdown: EngagementBreakdown? = null,
+    val engagementTrendPct: Double? = null,
+    val newFollowers: Int = 0,
+    val followersTrendPct: Double? = null,
+    val content: Int = 0,
+    val contentTrendPct: Double? = null,
+    val dailyViews: List<DailyView> = emptyList(),
+    val viewsTrendPct: Double? = null,
+    val topPerforming: TopPerforming? = null,
+)
+data class Monetization(val status: String?, val referrals: Int = 0, val requiredReferrals: Int = 0, val progress: Int = 0, val referralLink: String = "")
+data class DashboardData(val earnings: Double = 0.0, val monetization: Monetization? = null, val stats: DashboardStats? = null)
+data class CloseFriendCandidate(val id: String, val username: String, val displayName: String?, val profilePictureUrl: String?, val isCloseFriend: Boolean = false)
+data class CloseFriendsData(val users: List<CloseFriendCandidate>? = null)
+data class VideoGenStatus(val enabled: Boolean = false, val hasAccess: Boolean = false, val referralCount: Int = 0, val referralsNeeded: Int = 25)
+data class VideoGenGenerateRequest(val prompt: String, val aspectRatio: String, val durationSeconds: Int)
+data class VideoGenGenerateData(val operationName: String?)
+data class VideoGenOperation(val done: Boolean = false, val videoUrl: String?, val error: String?)
+data class IsaiMessage(val role: String, val content: String)
+data class IsaiChatRequest(val messages: List<IsaiMessage>)
+data class IsaiReply(val reply: String?, val remaining: Int? = null)
+
 interface FrianzoApi2 {
     // Reels (auth required)
     @GET("api/reels")
@@ -216,6 +247,34 @@ interface FrianzoApi2 {
     suspend fun toggleFollow(@Path("userId") userId: String): Envelope<FollowData>
     @GET("api/follows/{userId}/status")
     suspend fun followStatus(@Path("userId") userId: String): Envelope<FollowStatusData>
+
+    // Drawer destinations (v2.7)
+    @GET("api/usage")
+    suspend fun usage(@Query("from") from: String, @Query("to") to: String): Envelope<UsageData>
+    @GET("api/users/me/dashboard")
+    suspend fun dashboard(@Query("days") days: Int = 30): Envelope<DashboardData>
+    @GET("api/close-friends")
+    suspend fun closeFriends(): Envelope<CloseFriendsData>
+    @POST("api/close-friends/{userId}")
+    suspend fun addCloseFriend(@Path("userId") userId: String): Envelope<Any>
+    @DELETE("api/close-friends/{userId}")
+    suspend fun removeCloseFriend(@Path("userId") userId: String): Envelope<Any>
+    @GET("api/video-gen/status")
+    suspend fun videoGenStatus(): Envelope<VideoGenStatus>
+    @POST("api/video-gen/generate")
+    suspend fun generateVideo(@Body body: VideoGenGenerateRequest): Envelope<VideoGenGenerateData>
+    @GET("api/video-gen/operation/{name}")
+    suspend fun videoGenOperation(@Path("name") name: String): Envelope<VideoGenOperation>
+    @POST("api/ai-assistant/chat")
+    suspend fun isaiChat(@Body body: IsaiChatRequest): Envelope<IsaiReply>
+    // Comment parity (web: PATCH /api/comments/{id})
+    @PATCH("api/comments/{commentId}")
+    suspend fun editComment(@Path("commentId") commentId: String, @Body body: Map<String, String>): Envelope<Any>
+    // Settings (web: PATCH / DELETE /api/users/me)
+    @PATCH("api/users/me")
+    suspend fun updateMe(@Body body: Map<String, Any>): Envelope<Any>
+    @DELETE("api/users/me")
+    suspend fun deleteMe(): Envelope<Any>
 }
 
 fun createApi2(context: android.content.Context, cookieJar: PersistentCookieJar): FrianzoApi2 {
