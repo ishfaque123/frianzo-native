@@ -508,7 +508,6 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewMode
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-@OptIn(ExperimentalMaterial3Api::class)
 fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
