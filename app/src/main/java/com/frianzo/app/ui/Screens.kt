@@ -832,27 +832,13 @@ private fun postBackgroundBrush(style: String): Brush = when (style) {
 
 // Web ReactionButton REACTIONS, in web order, with web labels and colours:
 // like (blue), love (red), haha / wow / sad (yellow), angry (orange).
-// Web renders Facebook-style 3D SVG icons (not system emojis, which show
-// as boxes on some Android phones); native has no SVG asset for those,
-// so the picker/counts use the web emoji characters themselves, in the
-// same order and colours, instead of Material face icons.
-private fun reactionEmoji(type: String?): String = when (type) {
-    "love" -> "\u2764\uFE0F"
-    "haha" -> "\uD83D\uDE06"
-    "wow" -> "\uD83D\uDE2E"
-    "sad" -> "\uD83D\uDE22"
-    "angry" -> "\uD83D\uDE20"
-    else -> "\uD83D\uDC4D"
-}
-private fun reactionLabel(type: String?): String = when (type) {
-    "love" -> "Love"; "haha" -> "Haha"; "wow" -> "Wow"; "sad" -> "Sad"; "angry" -> "Angry"; else -> "Like"
-}
-private fun reactionColor(type: String?): Color = when (type) {
-    "love" -> Color(0xFFDC2626)
-    "haha", "wow", "sad" -> Color(0xFFCA8A04)
-    "angry" -> Color(0xFFEA580C)
-    else -> Color(0xFF2563EB)
-}
+// DECIDED (owner, 2026-11-04): the most professional reactions are the
+// Facebook-style 3D gradient faces, exactly as on live web — blue gradient
+// circle + white thumb (Like), pink/red gradient + white heart (Love),
+// yellow gradient faces (Haha/Wow/Sad), orange gradient face (Angry).
+// They are drawn by Canvas ReactionIcon in ReactionIcons.kt and used
+// EVERYWHERE reactions appear. Never flat system emojis, never Material
+// face icons. The old system-emoji helpers are deleted, not kept.
 private fun reactionTypes(): List<String> = listOf("like", "love", "haha", "wow", "sad", "angry")
 
 @Composable
