@@ -62,7 +62,10 @@ import kotlinx.coroutines.flow.collect
 import coil.request.ImageRequest
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.security.SecureRandom
+import java.text.SimpleDateFormat
 import java.util.Base64
+import java.util.Locale
+import java.util.TimeZone
 
 /** Step 1 screens only: Login (Google + email OTP) and Feed (read-only).
  *  No posting, liking, commenting, reels or chat yet — those are later steps. */
@@ -423,7 +426,9 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
         posts = posts.map { if (it.id == postId) it.copy(commentCount = newCount) else it }
     }
 
-    fun toggleLike(post: Post) { setReaction(post, "like") }
+    // Web handleTap: tap sends the CURRENT reaction (which toggles it
+    // off server-side) or "like" when there is no reaction yet.
+    fun toggleLike(post: Post) { setReaction(post, reactionByPost[post.id] ?: "like") }
 
     /**
      * Live reaction behaviour: optimistic instant update, server sync wins,
@@ -723,7 +728,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 topReactions.forEachIndexed { idx, rtype ->
                                     Box(Modifier.offset(x = (-7 * idx).dp).size(24.dp).clip(CircleShape).background(Color.White).padding(1.dp), contentAlignment = Alignment.Center) {
-                                        Icon(reactionIcon(rtype), contentDescription = null, modifier = Modifier.size(22.dp), tint = reactionColor(rtype))
+                                        Text(reactionEmoji(rtype), fontSize = 16.sp)
                                     }
                                 }
                             }
@@ -738,11 +743,16 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 }
                 HorizontalDivider(color = FrianzoBorder)
                 if (pickerPost) {
+                    // Web picker: white rounded pill above the button, icons
+                    // size 40, in web order, staggered pop is web-only CSS.
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
-                        Surface(shape = RoundedCornerShape(28.dp), tonalElevation = 8.dp, shadowElevation = 8.dp) {
+                        Surface(shape = RoundedCornerShape(28.dp), tonalElevation = 8.dp, shadowElevation = 8.dp, color = Color.White) {
                             Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                reactionOptions().forEach { opt ->
-                                    Icon(opt.icon, contentDescription = opt.label, modifier = Modifier.size(40.dp).clickable { pickerPost = false; vm.setReaction(post, opt.type) }, tint = opt.color)
+                                reactionTypes().forEach { type ->
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { pickerPost = false; vm.setReaction(post, type) }) {
+                                        Text(reactionEmoji(type), fontSize = 32.sp)
+                                        Text(reactionLabel(type), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
                                 }
                             }
                         }
@@ -754,16 +764,20 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
                     Box(
                         Modifier.weight(1f).height(48.dp).combinedClickable(
+                            // Web: 400ms hold opens the picker; a short tap
+                            // toggles the CURRENT reaction off, or likes.
+                            // combinedClickable long-press is the platform
+                            // long-press (Compose default, ~400ms).
                             onClick = { vm.toggleLike(post) },
                             onLongClick = { pickerPost = true },
                         ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
-                            Icons.Outlined.ThumbUp, contentDescription = "Like",
-                            modifier = Modifier.size(28.dp),
-                            tint = if (liked) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        when (myReaction) {
+                            null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
+                            else -> Text(reactionEmoji(myReaction), fontSize = 24.sp)
+                        }
                     }
                     Box(Modifier.weight(1f).height(48.dp).clickable { commentPost = post }, contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -790,31 +804,43 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     }
 }
 
-private data class ReactionOption(val type: String, val label: String, val icon: ImageVector, val color: Color)
-
-private fun reactionOptions(): List<ReactionOption> = listOf(
-    ReactionOption("like", "Like", Icons.Outlined.ThumbUp, Color(0xFF2563EB)),
-    ReactionOption("love", "Love", Icons.Filled.Favorite, Color(0xFFDC2626)),
-    ReactionOption("haha", "Haha", Icons.Filled.SentimentSatisfied, Color(0xFFCA8A04)),
-    ReactionOption("wow", "Wow", Icons.Filled.SentimentVerySatisfied, Color(0xFFCA8A04)),
-    ReactionOption("sad", "Sad", Icons.Filled.SentimentDissatisfied, Color(0xFFCA8A04)),
-    ReactionOption("angry", "Angry", Icons.Filled.SentimentVeryDissatisfied, Color(0xFFEA580C)),
-)
-
-private fun reactionIcon(type: String?): ImageVector =
-    reactionOptions().firstOrNull { it.type == type }?.icon ?: Icons.Outlined.ThumbUp
+// Web ReactionButton REACTIONS, in web order, with web labels and colours:
+// like (blue), love (red), haha / wow / sad (yellow), angry (orange).
+// Web renders Facebook-style 3D SVG icons (not system emojis, which show
+// as boxes on some Android phones); native has no SVG asset for those,
+// so the picker/counts use the web emoji characters themselves, in the
+// same order and colours, instead of Material face icons.
+private fun reactionEmoji(type: String?): String = when (type) {
+    "love" -> "\u2764\uFE0F"
+    "haha" -> "\uD83D\uDE06"
+    "wow" -> "\uD83D\uDE2E"
+    "sad" -> "\uD83D\uDE22"
+    "angry" -> "\uD83D\uDE20"
+    else -> "\uD83D\uDC4D"
+}
+private fun reactionLabel(type: String?): String = when (type) {
+    "love" -> "Love"; "haha" -> "Haha"; "wow" -> "Wow"; "sad" -> "Sad"; "angry" -> "Angry"; else -> "Like"
+}
+private fun reactionColor(type: String?): Color = when (type) {
+    "love" -> Color(0xFFDC2626)
+    "haha", "wow", "sad" -> Color(0xFFCA8A04)
+    "angry" -> Color(0xFFEA580C)
+    else -> Color(0xFF2563EB)
+}
+private fun reactionTypes(): List<String> = listOf("like", "love", "haha", "wow", "sad", "angry")
 
 @Composable
-private fun reactionColor(type: String?): Color =
-    reactionOptions().firstOrNull { it.type == type }?.color ?: MaterialTheme.colorScheme.onSurfaceVariant
+private fun ReactionEmojiText(type: String?, fontSize: androidx.compose.ui.unit.TextUnit, modifier: Modifier = Modifier) {
+    Text(reactionEmoji(type), fontSize = fontSize, modifier = modifier)
+}
 
 @Composable
 private fun ReactionPickerRow(onPick: (String) -> Unit, onDismiss: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-        reactionOptions().forEach { opt ->
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onPick(opt.type) }) {
-                Icon(opt.icon, contentDescription = opt.label, modifier = Modifier.size(40.dp), tint = opt.color)
-                Text(opt.label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        reactionTypes().forEach { type ->
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onPick(type) }) {
+                Text(reactionEmoji(type), fontSize = 32.sp)
+                Text(reactionLabel(type), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         TextButton(onClick = onDismiss) { Text("Close") }
@@ -830,8 +856,10 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
     var copied by remember { mutableStateOf(false) }
     var dmBusy by remember { mutableStateOf(false) }
     var reposted by remember { mutableStateOf(false) }
-    var link by remember { mutableStateOf("https://frianzo.online/post/${post.id}") }
+    // Web: the feed's permanent share code is used first, no API call.
+    var link by remember { mutableStateOf(if (!post.shareCode.isNullOrBlank()) "https://frianzo.online/s/${post.shareCode}" else "https://frianzo.online/post/${post.id}") }
     LaunchedEffect(post.id) {
+        if (!post.shareCode.isNullOrBlank()) return@LaunchedEffect
         try {
             val r = vm.api2.createShareLink(mapOf("type" to "post", "id" to post.id))
             val code = r.data?.code
@@ -839,44 +867,65 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
         } catch (_: Exception) {}
     }
     fun record(channel: String) { scope.launch { try { vm.api2.recordShareEvent(mapOf("type" to "post", "id" to post.id, "channel" to channel)) } catch (_: Exception) {} } }
-    fun openUrl(url: String, channel: String) { record(channel); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {} }
+    // Web openAndClose: external taps close the sheet after recording.
+    fun openUrl(url: String, channel: String) { record(channel); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {}; onClose() }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
             Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy") }, modifier = Modifier.fillMaxWidth()) { Text(if (copied) "Copied!" else "Copy link") }
+            // Web link box: bordered box with the URL, then a dark Copy link button.
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White).padding(10.dp)) {
+                Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); scope.launch { kotlinx.coroutines.delay(2000); copied = false } },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (copied) "Copied!" else "Copy link") }
+            }
             Spacer(Modifier.height(12.dp))
+            // Web grid order, 4 per row, no "More" tile on web. Brand logos
+            // are web SVGs; native keeps its letter circles (no logo assets).
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                ShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
+                    val authorId2 = post.author?.id
+                    if (authorId2 != null) {
+                        dmBusy = true; record("dm")
+                        scope.launch {
+                            try {
+                                val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId2))
+                                val convId = res.data?.id
+                                if (convId != null) { onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
+                            } catch (_: Exception) {}
+                            dmBusy = false
+                        }
+                    }
+                }
                 ShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") }
                 ShareTile("WA Status", Color(0xFF25D366), "W") { openUrl("whatsapp://send?text=" + android.net.Uri.encode(link), "whatsapp_status") }
                 ShareTile("Messenger", Color(0xFF0084FF), "M") { openUrl("fb-messenger://share?link=" + android.net.Uri.encode(link), "messenger") }
-                ShareTile("Facebook", Color(0xFF1877F2), "f") { openUrl("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link), "facebook") }
-                ShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") }
-                ShareTile("SMS", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") }
-                ShareTile("More", FrianzoBlue, "+") { record("more"); val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, link) }; context.startActivity(Intent.createChooser(intent, "Share post")) }
             }
             Spacer(Modifier.height(8.dp))
-            val authorId = post.author?.id
-            if (authorId != null) {
-                TextButton(enabled = !dmBusy, onClick = {
-                    dmBusy = true; record("dm")
-                    scope.launch {
-                        try {
-                            val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId))
-                            val convId = res.data?.id
-                            if (convId != null) { onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
-                        } catch (_: Exception) {}
-                        dmBusy = false
-                    }
-                }, modifier = Modifier.fillMaxWidth()) { Text("Send in Frianzo DM") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                ShareTile("Facebook", Color(0xFF1877F2), "f") { openUrl("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link), "facebook") }
+                ShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") }
+                ShareTile("Text message", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") }
             }
+            Spacer(Modifier.height(8.dp))
+            // Web: reposts are counted server-side and must NOT also be
+            // recorded as a share event (that would double-count them).
+            // On success the sheet closes (web: onClose + reload).
+            var repostError by remember { mutableStateOf<String?>(null) }
+            if (repostError != null) { Spacer(Modifier.height(8.dp)); Text(repostError!!, fontSize = 13.sp, color = Color.Red) }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
             TextButton(onClick = {
                 scope.launch {
-                    try { val r = vm.api2.repostPost(post.id, mapOf("content" to "")); if (r.success) { reposted = true; record("repost"); vm.refresh() } } catch (_: Exception) {}
+                    try {
+                        val r = vm.api2.repostPost(post.id, mapOf("content" to ""))
+                        if (r.success) { vm.refresh(); onClose() } else repostError = r.error?.message ?: "Could not repost"
+                    } catch (e: Exception) { repostError = e.message }
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text(if (reposted) "Reposted!" else "Repost to your feed") }
+            }, modifier = Modifier.fillMaxWidth()) { Text("Repost to your feed") }
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -896,21 +945,86 @@ private fun ShareTile(label: String, color: Color, letter: String, onClick: () -
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, myId: String? = null, onClose: () -> Unit, onCountChange: (Int) -> Unit) {
+    var sortBy by remember { mutableStateOf("top") }
     ModalBottomSheet(onDismissRequest = onClose) {
-        CommentSection(api2, post.id, post.commentCount, myId, onCountChange)
-        Spacer(Modifier.height(24.dp))
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
+            // Web header: Top/Newest pill top-left, "Comments" centred, X top-right.
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.clip(RoundedCornerShape(28.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(2.dp)) {
+                    listOf("top" to "Top", "newest" to "Newest").forEach { (key, label) ->
+                        val selected = sortBy == key
+                        Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (selected) Color.White else Color.Transparent).clickable { sortBy = key }.padding(horizontal = 10.dp, vertical = 4.dp)) {
+                            Text(label, fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            HorizontalDivider()
+            CommentSection(api2, post.id, post.commentCount, myId, post.author?.id, sortBy, true, onCountChange)
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
 
+private fun commentTimeAgo(createdAt: String?): String {
+    if (createdAt.isNullOrBlank()) return ""
+    val formats = listOf(
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US),
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US),
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US),
+    )
+    var millis: Long? = null
+    for (f in formats) {
+        f.timeZone = TimeZone.getTimeZone("UTC")
+        try { millis = f.parse(createdAt)?.time; if (millis != null) break } catch (_: Exception) {}
+    }
+    if (millis == null) return ""
+    val seconds = ((System.currentTimeMillis() - millis) / 1000).coerceAtLeast(0)
+    return when {
+        seconds < 60 -> "now"
+        seconds < 3600 -> "${seconds / 60}m"
+        seconds < 86400 -> "${seconds / 3600}h"
+        seconds < 604800 -> "${seconds / 86400}d"
+        seconds < 2592000 -> "${seconds / 604800}w"
+        seconds < 31536000 -> "${seconds / 2592000}mo"
+        else -> "${seconds / 31536000}y"
+    }
+}
+
+private fun formatCount(n: Int): String {
+    if (n < 1000) return "$n"
+    if (n < 1000000) { val k = n / 1000.0; return if (k % 1.0 == 0.0) "${k.toInt()}k" else "%.1fk".format(k) }
+    val m = n / 1000000.0; return if (m % 1.0 == 0.0) "${m.toInt()}M" else "%.1fM".format(m)
+}
+
+// Web CommentsModal.flattenReplies: replies flattened recursively, sorted
+// by createdAt ascending, each carrying its immediate parent author.
+private fun flattenReplies(replies: List<Comment>, parentAuthor: Author?): List<Pair<Comment, Author?>> {
+    val flat = mutableListOf<Pair<Comment, Author?>>()
+    for (r in replies) {
+        flat.add(r to parentAuthor)
+        if (r.replies.isNotEmpty()) flat.addAll(flattenReplies(r.replies, r.author))
+    }
+    return flat.sortedBy { it.first.createdAt ?: "" }
+}
+
 @Composable
-private fun CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, onCountChange: (Int) -> Unit = {}) {
+private fun CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, sortBy: String = "top", fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<Comment?>(null) }
     var imageUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var count by remember { mutableStateOf(initialCount) }
+    var expandedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var mentionQuery by remember { mutableStateOf<String?>(null) }
+    var mentionResults by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) imageUri = uri }
     fun load() {
@@ -922,103 +1036,239 @@ private fun CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int,
         }
     }
     LaunchedEffect(postId) { load() }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        LazyColumn(Modifier.fillMaxWidth().height(380.dp)) {
-            items(comments, key = { it.id }) { c -> CommentRow(api2, c, myId, 0, onReply = { replyTo = it }, onChanged = { load() }) }
-            if (comments.isEmpty() && error == null) item { Text("No comments yet") }
-            if (error != null) item { Text(error!!) }
+    // @mention search: web debounces 300ms, searches /api/users/search limit 5.
+    LaunchedEffect(mentionQuery) {
+        val q = mentionQuery
+        if (q.isNullOrBlank()) { mentionResults = emptyList(); return@LaunchedEffect }
+        kotlinx.coroutines.delay(300)
+        try {
+            val res = api2.searchUsers(q)
+            if (res.success && res.data != null) mentionResults = res.data.users.take(5) else mentionResults = emptyList()
+        } catch (_: Exception) { mentionResults = emptyList() }
+    }
+    val sorted = when (sortBy) {
+        "newest" -> comments.sortedByDescending { it.createdAt ?: "" }
+        else -> comments.sortedWith(compareByDescending<Comment> { it.reactionCount }.thenByDescending { it.createdAt ?: "" })
+    }
+    Column(if (fillHeight) Modifier.fillMaxWidth().weight(1f).padding(horizontal = 16.dp) else Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        LazyColumn(if (fillHeight) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(380.dp)) {
+            if (sorted.isEmpty() && error == null) item { Text("No comments yet. Be the first to comment.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 24.dp)) }
+            if (error != null) item { Text(error!!, fontSize = 13.sp, color = Color.Red) }
+            items(sorted, key = { it.id }) { c ->
+                CommentRow(api2, c, myId, postOwnerId, 0, null, onReply = { replyTo = it }, onChanged = { load() })
+                val flatReplies = flattenReplies(c.replies, c.author)
+                if (flatReplies.isNotEmpty()) {
+                    val isExpanded = c.id in expandedIds
+                    Row(Modifier.fillMaxWidth().padding(start = 20.dp, top = 4.dp)) {
+                        Box(Modifier.width(2.dp).fillMaxHeight().background(Color(0xFFE2E8F0)))
+                        Column(Modifier.padding(start = 12.dp)) {
+                            if (!isExpanded) {
+                                TextButton(onClick = { expandedIds = expandedIds + c.id }) { Text("View ${flatReplies.size} ${if (flatReplies.size == 1) "reply" else "replies"}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            } else {
+                                flatReplies.forEach { (r, parentAuthor) ->
+                                    CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, onReply = { replyTo = it }, onChanged = { load() })
+                                }
+                                TextButton(onClick = { expandedIds = expandedIds - c.id }) { Text("Hide replies", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (replyTo != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Replying to @${replyTo!!.author?.username ?: "User"}", fontSize = 12.sp, color = FrianzoBlue)
-                Spacer(Modifier.width(8.dp))
-                TextButton(onClick = { replyTo = null }) { Text("Cancel") }
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(FrianzoBlueTint).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Replying to @${replyTo!!.author?.username ?: "User"}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
+            Spacer(Modifier.height(8.dp))
+        }
+        if (mentionQuery != null && mentionResults.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(vertical = 4.dp)) {
+                mentionResults.forEach { u ->
+                    Row(Modifier.fillMaxWidth().clickable {
+                        val q = mentionQuery ?: ""
+                        val idx = draft.lastIndexOf("@$q")
+                        draft = if (idx >= 0) draft.substring(0, idx) + "@${u.username} " + draft.substring(idx + q.length + 1) else draft + "@${u.username} "
+                        mentionQuery = null; mentionResults = emptyList()
+                    }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        FrianzoAvatar(u.profilePictureUrl, 28.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(u.displayName ?: u.username ?: "", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text("@${u.username}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
         }
         if (imageUri != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Photo attached", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AsyncImage(model = imageUri, contentDescription = "Comment attachment", modifier = Modifier.heightIn(max = 128.dp).clip(RoundedCornerShape(8.dp)))
+                Spacer(Modifier.width(8.dp))
                 TextButton(onClick = { imageUri = null }) { Text("Remove") }
             }
+            Spacer(Modifier.height(8.dp))
         }
+        if (error != null) { Text(error!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(4.dp)) }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }) { Icon(Icons.Filled.Add, contentDescription = "Attach photo", tint = FrianzoBlue) }
-            OutlinedTextField(value = draft, onValueChange = { draft = it }, label = { Text("Write a comment") }, modifier = Modifier.weight(1f), singleLine = true)
+            IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }) { Icon(Icons.Filled.Add, contentDescription = "Add photo", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { v ->
+                    draft = v
+                    val m = Regex("@(\\w*)$").find(v)
+                    mentionQuery = m?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
+                },
+                placeholder = { Text("Write a comment...") },
+                modifier = Modifier.weight(1f),
+                maxLines = 4,
+            )
             Spacer(Modifier.width(8.dp))
-            Button(enabled = draft.isNotBlank() || imageUri != null, onClick = {
-                val text = draft; val uri = imageUri; val parent = replyTo?.id; draft = ""; imageUri = null; replyTo = null
-                scope.launch {
-                    try {
-                        val ok = if (uri != null) {
-                            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                            if (bytes == null) false else {
-                                val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-                                val body = okhttp3.RequestBody.create(mime.toMediaTypeOrNull(), bytes)
-                                val part = okhttp3.MultipartBody.Part.createFormData("image", "comment.jpg", body)
-                                val contentBody = okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), text)
-                                val parentBody = parent?.let { okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), it) }
-                                api2.addPostCommentImage(postId, contentBody, parentBody, part).success
+            Button(
+                enabled = draft.isNotBlank() || imageUri != null,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
+                onClick = {
+                    val text = draft; val uri = imageUri; val parent = replyTo?.id; draft = ""; imageUri = null; replyTo = null; mentionQuery = null
+                    scope.launch {
+                        try {
+                            val ok = if (uri != null) {
+                                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                if (bytes == null) false
+                                else if (bytes.size > 5 * 1024 * 1024) { error = "Image must be under 5MB."; imageUri = uri; draft = text; false }
+                                else {
+                                    val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                                    val body = okhttp3.RequestBody.create(mime.toMediaTypeOrNull(), bytes)
+                                    val part = okhttp3.MultipartBody.Part.createFormData("image", "comment.jpg", body)
+                                    val contentBody = okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), text)
+                                    val parentBody = parent?.let { okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), it) }
+                                    api2.addPostCommentImage(postId, contentBody, parentBody, part).success
+                                }
+                            } else {
+                                api2.addPostComment(postId, CommentCreateRequest(text, parent)).success
                             }
-                        } else {
-                            api2.addPostComment(postId, CommentCreateRequest(text, parent)).success
-                        }
-                        if (ok) { load(); count += 1; onCountChange(count) } else error = "Could not send comment"
-                    } catch (e: Exception) { error = e.message; draft = text }
-                }
-            }) { Text("Send") }
+                            if (ok) { load(); count += 1; onCountChange(count) } else if (error == null) error = "Could not send comment"
+                        } catch (e: Exception) { error = e.message; draft = text }
+                    }
+                },
+            ) { Text("Send") }
         }
     }
 }
 
 @Composable
-private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, depth: Int, onReply: (Comment) -> Unit, onChanged: () -> Unit) {
+private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId: String?, depth: Int, parentAuthor: Author?, onReply: (Comment) -> Unit, onChanged: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf(false) }
     var editDraft by rememberSaveable { mutableStateOf(c.content ?: "") }
-    var liked by remember { mutableStateOf(c.myReaction != null) }
-    var likeCount by remember { mutableStateOf(c.reactionCount) }
+    var localReaction by remember { mutableStateOf(c.myReaction) }
+    var localCount by remember { mutableStateOf(c.reactionCount) }
+    var showPicker by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
     var reported by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(start = (depth * 24).dp, top = 6.dp, bottom = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            FrianzoAvatar(c.author?.profilePictureUrl, 32.dp)
+    val isReply = depth > 0
+    val isOwner = myId != null && c.author?.id == myId
+    val canDelete = isOwner || (myId != null && postOwnerId != null && myId == postOwnerId)
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            FrianzoAvatar(c.author?.profilePictureUrl, if (isReply) 22.dp else 24.dp)
             Spacer(Modifier.width(8.dp))
-            Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-        }
-        if (editing) {
-            Row(Modifier.padding(start = 40.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(value = editDraft, onValueChange = { editDraft = it }, modifier = Modifier.weight(1f), singleLine = true)
-                TextButton(onClick = {
-                    scope.launch {
-                        try { if (api2.editComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {}
+            Column(Modifier.weight(1f)) {
+                // Web bubble: top-level bg-slate-100, reply bg-slate-50 + border.
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
+                        }
+                        c.mediaUrl?.let { AsyncImage(model = it, contentDescription = "Comment image", modifier = Modifier.fillMaxWidth().heightIn(max = 192.dp).padding(top = 8.dp).clip(RoundedCornerShape(12.dp))) }
+                        if (editing) {
+                            Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(value = editDraft, onValueChange = { editDraft = it }, modifier = Modifier.weight(1f), singleLine = true)
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        try { if (api2.editComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {}
+                                    }
+                                }) { Text("Save", fontSize = 12.sp, color = FrianzoBlue) }
+                                TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 12.sp) }
+                            }
+                        } else {
+                            val prefix = if (isReply && parentAuthor != null && !(c.content ?: "").trim().lowercase().startsWith("@${parentAuthor.username?.lowercase()}")) "@${parentAuthor.username} " else ""
+                            Text(
+                                text = androidx.compose.ui.text.buildAnnotatedString {
+                                    if (prefix.isNotEmpty()) { withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append(prefix) } }
+                                    append(c.content ?: "")
+                                },
+                                fontSize = 14.sp,
+                            )
+                        }
                     }
-                }) { Text("Save", fontSize = 12.sp) }
-                TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 12.sp) }
+                }
+                Spacer(Modifier.height(4.dp))
+                if (showPicker) {
+                    // Web comment picker: above the Like button, 6 icons size 32, in web order.
+                    Row(Modifier.padding(start = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        reactionTypes().forEach { type ->
+                            Text(reactionEmoji(type), fontSize = 28.sp, modifier = Modifier.clickable {
+                                showPicker = false
+                                val prevReaction = localReaction; val prevCount = localCount
+                                val removing = prevReaction == type
+                                localReaction = if (removing) null else type
+                                localCount = (prevCount + if (removing) -1 else if (prevReaction != null) 0 else 1).coerceAtLeast(0)
+                                scope.launch {
+                                    try { if (!api2.setCommentReaction(c.id, mapOf("type" to type)).success) { localReaction = prevReaction; localCount = prevCount } } catch (_: Exception) { localReaction = prevReaction; localCount = prevCount }
+                                }
+                            })
+                        }
+                    }
+                }
+                Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { showPicker = !showPicker }, contentPadding = PaddingValues(0.dp)) {
+                        if (localReaction != null) Text(reactionEmoji(localReaction), fontSize = 16.sp)
+                        else Text("Like", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    if (localCount > 0) { Spacer(Modifier.width(12.dp)); Text(formatCount(localCount), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Spacer(Modifier.width(12.dp))
+                    Text(commentTimeAgo(c.createdAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; editDraft = c.content ?: ""; editing = true })
+                            if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; showDelete = true })
+                            DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")) })
+                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = {
+                                menuOpen = false
+                                scope.launch { try { if (api2.reportComment(c.id, mapOf("reason" to "other")).success) reported = true } catch (_: Exception) {} }
+                            })
+                        }
+                    }
+                }
+                if (reported) Text("Comment reported. Thanks for letting us know.", fontSize = 12.sp, color = Color(0xFF16A34A), modifier = Modifier.padding(start = 8.dp))
             }
-        } else {
-            Text(c.content ?: "", fontSize = 14.sp, modifier = Modifier.padding(start = 40.dp))
         }
-        c.mediaUrl?.let { AsyncImage(model = it, contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().padding(start = 40.dp, top = 4.dp)) }
-        Row(Modifier.padding(start = 40.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = {
-                liked = !liked; likeCount += if (liked) 1 else -1
-                scope.launch { try { api2.setCommentReaction(c.id, mapOf("type" to "like")) } catch (_: Exception) {} }
-            }) { Text(if (liked) "Liked · $likeCount" else "Like · $likeCount", fontSize = 12.sp) }
-            TextButton(onClick = { onReply(c) }) { Text("Reply", fontSize = 12.sp) }
-            TextButton(onClick = { scope.launch { try { if (api2.reportComment(c.id, mapOf("reason" to "other")).success) reported = true } catch (_: Exception) {} } }) { Text(if (reported) "Reported" else "Report", fontSize = 12.sp) }
-            if (c.author?.id != null && c.author?.id == myId) {
-                TextButton(onClick = { editDraft = c.content ?: ""; editing = true }) { Text("Edit", fontSize = 12.sp) }
-                TextButton(onClick = { scope.launch { try { if (api2.deleteComment(c.id).success) onChanged() } catch (_: Exception) {} } }) { Text("Delete", fontSize = 12.sp, color = Color.Red) }
-            }
-        }
-        c.replies.forEach { r -> CommentRow(api2, r, myId, (depth + 1).coerceAtMost(2), onReply, onChanged) }
-        HorizontalDivider()
+    }
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            title = { Text("Delete comment?") },
+            text = { Text("This can't be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDelete = false
+                    scope.launch { try { if (api2.deleteComment(c.id).success) onChanged() } catch (_: Exception) {} }
+                }) { Text("Delete", color = Color.Red) }
+            },
+            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
+        )
     }
 }
 
-
-@Composable
 private fun PostPhoto(url: String, onClick: () -> Unit = {}) {
     var reload by remember { mutableStateOf(0) }
     key(reload) {
@@ -1101,13 +1351,14 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var liked by remember { mutableStateOf(false) }
+    var detailReaction by remember { mutableStateOf<String?>(null) }
     var likeCount by remember { mutableStateOf(0) }
     var shareDetail by remember { mutableStateOf<Post?>(null) }
     val detailScroll = rememberScrollState()
     LaunchedEffect(postId) {
         try {
             val r = vm.api2.postById(postId)
-            if (r.success && r.data?.post != null) { detail = r.data.post; likeCount = r.data.post.likeCount; liked = r.data.post.myReaction != null }
+            if (r.success && r.data?.post != null) { detail = r.data.post; likeCount = r.data.post.likeCount; liked = r.data.post.myReaction != null; detailReaction = r.data.post.myReaction }
             else error = r.error?.message ?: "Post not found"
         } catch (e: Exception) { error = e.message }
         loading = false
@@ -1140,15 +1391,33 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
             HorizontalDivider(color = FrianzoBorder)
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
                 Box(Modifier.weight(1f).height(48.dp).clickable {
-                    val was = liked; liked = !liked; likeCount += if (liked) 1 else -1
-                    scope.launch { try { val r = vm.api2.setReaction(post.id, mapOf("type" to "like")); if (r.success && r.data?.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum() else { liked = was; likeCount += if (was) 1 else -1 } } catch (_: Exception) { liked = was } }
-                }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = if (liked) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant) }
+                    // Web tap: send the current reaction to remove it, or "like".
+                    val sendType = detailReaction ?: "like"
+                    val wasLiked = liked; val wasReaction = detailReaction; val wasCount = likeCount
+                    liked = !liked; detailReaction = if (wasLiked) null else "like"
+                    likeCount = (likeCount + if (wasLiked) -1 else 1).coerceAtLeast(0)
+                    scope.launch {
+                        try {
+                            val r = vm.api2.setReaction(post.id, mapOf("type" to sendType))
+                            if (r.success && r.data != null) {
+                                if (r.data.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum()
+                                detailReaction = r.data.myReaction; liked = r.data.myReaction != null
+                            } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                        } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                    }
+                }, contentAlignment = Alignment.Center) {
+                    when (detailReaction) {
+                        null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
+                        else -> Text(reactionEmoji(detailReaction), fontSize = 24.sp)
+                    }
+                }
                 Box(Modifier.weight(1f).height(48.dp).clickable { scope.launch { detailScroll.animateScrollTo(detailScroll.maxValue) } }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Box(Modifier.weight(1f).height(48.dp).clickable { shareDetail = post }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
             Spacer(Modifier.height(12.dp))
-            CommentSection(vm.api2, post.id, post.commentCount, myId) { vm.updateCommentCount(post.id, it) }
+            CommentSection(vm.api2, post.id, post.commentCount, myId, post.author?.id) { vm.updateCommentCount(post.id, it) }
             shareDetail?.let { sp -> PostShareSheet(vm, sp, onClose = { shareDetail = null }, onOpenChat = onOpenChat) }
         }
     }
