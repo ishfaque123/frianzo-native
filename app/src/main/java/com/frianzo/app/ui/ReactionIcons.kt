@@ -1,6 +1,7 @@
 package com.frianzo.app.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -19,6 +20,31 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 
 /**
  * Web-exact reaction icons, drawn in code to match vynzo-frontend
@@ -103,6 +129,69 @@ fun ReactionIcon(type: String?, size: Dp, modifier: Modifier = Modifier) {
                     }
                 }
             }
+        }
+    }
+}
+
+
+private fun pickerLabel(type: String): String = when (type) {
+    "love" -> "Love"; "haha" -> "Haha"; "wow" -> "Wow"; "sad" -> "Sad"; "angry" -> "Angry"; else -> "Like"
+}
+
+/** One web picker item: staggered pop (45ms each, scale 0 -> 1.25 -> 1, 0.35s),
+ *  press-and-hold scales 1.45, lifts -6px and shows the black/80 label above
+ *  (web hover tooltip, adapted to touch). Release picks the reaction. */
+@Composable
+private fun ReactionPickerItem(type: String, idx: Int, size: Dp, onPick: (String) -> Unit) {
+    val scale = remember { Animatable(0f) }
+    var pressed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(idx * 45L)
+        scale.animateTo(1.25f, tween(210))
+        scale.animateTo(1f, tween(140))
+    }
+    val displayScale = if (pressed) 1.45f else scale.value
+    val lift = if (pressed) -6f else 0f
+    // Web: label tooltip sits ABOVE the icon (absolute -top-8), so the label
+    // row comes first with a fixed height, keeping icons aligned.
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        if (pressed) {
+            Box(
+                modifier = Modifier.clip(RoundedCornerShape(28.dp)).background(Color(0xCC000000)).padding(horizontal = 8.dp, vertical = 2.dp),
+                contentAlignment = Alignment.Center
+            ) { Text(pickerLabel(type), fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Color.White) }
+        } else {
+            Spacer(Modifier.height(18.dp))
+        }
+        Spacer(Modifier.height(2.dp))
+        Box(
+            modifier = Modifier.size(size).graphicsLayer { scaleX = displayScale; scaleY = displayScale; translationY = lift },
+            contentAlignment = Alignment.Center
+        ) {
+            ReactionIcon(type, size, modifier = Modifier.pointerInput(type) {
+                detectTapGestures(onPress = {
+                    pressed = true
+                    val released = tryAwaitRelease()
+                    pressed = false
+                    if (released) onPick(type)
+                })
+            })
+        }
+    }
+}
+
+/** Web picker pill: white, border black/5, shadow-xl, NO labels below icons.
+ *  iconSize 40dp for posts, 32dp for comments (web sizes). */
+@Composable
+fun ReactionPickerPill(iconSize: Dp, types: List<String>, onPick: (String) -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, Color(0x0D000000)),
+        shadowElevation = 16.dp
+    ) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            types.forEachIndexed { idx, type -> ReactionPickerItem(type, idx, iconSize, onPick) }
         }
     }
 }

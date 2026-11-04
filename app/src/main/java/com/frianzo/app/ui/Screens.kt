@@ -2,6 +2,7 @@ package com.frianzo.app.ui
 
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
@@ -20,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -41,6 +43,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.layout.ContentScale
@@ -54,6 +57,7 @@ import retrofit2.HttpException
 import com.frianzo.app.data.*
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -712,9 +716,20 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     // Always-visible Hide X, live layout.
                     IconButton(onClick = { followScope.launch { try { vm.api2.hidePost(post.id) } catch (_: Exception) {} ; vm.hidePost(post.id) } }) { Icon(Icons.Filled.Close, contentDescription = "Hide", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
-                // Text tap -> comments dialog (no post-detail screen exists
-                // in the app yet, so this is the working tap target).
-                post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp).clickable { detailPostId = post.id }) }
+                // Web PostCard: a post with backgroundStyle and no image
+                // renders as a centred white bold text on a gradient tile
+                // (min-h-56, rounded-2xl), not plain body text.
+                post.content?.let {
+                    if (!post.backgroundStyle.isNullOrBlank() && post.imageUrl.isNullOrBlank()) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp).heightIn(min = 224.dp)
+                                .clip(RoundedCornerShape(16.dp)).background(postBackgroundBrush(post.backgroundStyle!!)),
+                            contentAlignment = Alignment.Center
+                        ) { Text(it, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(24.dp).clickable { detailPostId = post.id }) }
+                    } else {
+                        Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp).clickable { detailPostId = post.id })
+                    }
+                }
                 post.imageUrl?.let {
                     Spacer(Modifier.height(10.dp))
                     PostPhoto(it, onClick = { detailPostId = post.id })
@@ -727,8 +742,8 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             val topReactions = (post.reactionCounts?.entries?.sortedByDescending { it.value }?.map { it.key } ?: listOfNotNull(vm.reactionByPost[post.id])).take(3)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 topReactions.forEachIndexed { idx, rtype ->
-                                    Box(Modifier.offset(x = (-7 * idx).dp).size(24.dp).clip(CircleShape).background(Color.White).padding(1.dp), contentAlignment = Alignment.Center) {
-                                        ReactionIcon(rtype, 20.dp)
+                                    Box(Modifier.zIndex((topReactions.size - idx).toFloat()).offset(x = (-7 * idx).dp).size(24.dp).clip(CircleShape).background(Color.White).padding(1.dp), contentAlignment = Alignment.Center) {
+                                        ReactionIcon(rtype, 22.dp)
                                     }
                                 }
                             }
@@ -743,18 +758,11 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 }
                 HorizontalDivider(color = FrianzoBorder)
                 if (pickerPost) {
-                    // Web picker: white rounded pill above the button, icons
-                    // size 40, in web order, staggered pop is web-only CSS.
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
-                        Surface(shape = RoundedCornerShape(28.dp), tonalElevation = 8.dp, shadowElevation = 8.dp, color = Color.White) {
-                            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                reactionTypes().forEach { type ->
-                                    Box(modifier = Modifier.clickable { pickerPost = false; vm.setReaction(post, type) }) {
-                                        ReactionIcon(type, 40.dp)
-                                    }
-                                }
-                            }
-                        }
+                    // Web picker: absolute bottom-full left-0 above the Like
+                    // button, white pill, icons 40, no labels below, pop +
+                    // press tooltip inside ReactionPickerPill.
+                    Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.Start) {
+                        ReactionPickerPill(40.dp, reactionTypes()) { type -> pickerPost = false; vm.setReaction(post, type) }
                     }
                 }
                 // Icon-only action row, live style: three flex-1 buttons.
@@ -762,20 +770,26 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 // live). Tap toggles; 400ms long-press opens the picker.
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
                     Box(
-                        Modifier.weight(1f).height(48.dp).combinedClickable(
-                            // Web: 400ms hold opens the picker; a short tap
-                            // toggles the CURRENT reaction off, or likes.
-                            // combinedClickable long-press is the platform
-                            // long-press (Compose default, ~400ms).
-                            onClick = { vm.toggleLike(post) },
-                            onLongClick = { pickerPost = true },
-                        ),
+                        Modifier.weight(1f).height(48.dp).pointerInput(post.id) {
+                            // Web ReactionButton: HOLD_TO_OPEN_MS = 400 exactly.
+                            // Down starts a 400ms timer; release before it = tap
+                            // (toggle current reaction / like); release after it
+                            // opened the picker, so NO tap fires; a scroll/drag
+                            // cancels the press, so no accidental reaction.
+                            detectTapGestures(onPress = {
+                                var opened = false
+                                val timer = followScope.launch { delay(400); opened = true; pickerPost = true }
+                                val released = tryAwaitRelease()
+                                timer.cancel()
+                                if (released && !opened) vm.toggleLike(post)
+                            })
+                        },
                         contentAlignment = Alignment.Center,
                     ) {
                         when (myReaction) {
                             null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
-                            else -> ReactionIcon(myReaction, 28.dp)
+                            else -> ReactionIcon(myReaction, 24.dp)
                         }
                     }
                     Box(Modifier.weight(1f).height(48.dp).clickable { commentPost = post }, contentAlignment = Alignment.Center) {
@@ -801,6 +815,19 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         }
     }
+}
+
+// Web PostCard POST_BACKGROUND_CLASSES, as Compose gradients.
+private fun postBackgroundBrush(style: String): Brush = when (style) {
+    "sunset" -> Brush.linearGradient(listOf(Color(0xFFFB923C), Color(0xFFEC4899), Color(0xFF9333EA)))
+    "ocean" -> Brush.linearGradient(listOf(Color(0xFF22D3EE), Color(0xFF3B82F6), Color(0xFF6366F1)))
+    "violet" -> Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFFD946EF), Color(0xFFEC4899)))
+    "mint" -> Brush.linearGradient(listOf(Color(0xFF6EE7B7), Color(0xFF2DD4BF), Color(0xFF22D3EE)))
+    "peach" -> Brush.linearGradient(listOf(Color(0xFFFDE68A), Color(0xFFFB923C), Color(0xFFF43F5E)))
+    "night" -> Brush.linearGradient(listOf(Color(0xFF475569), Color(0xFF0F172A), Color(0xFF000000)))
+    "rose" -> Brush.linearGradient(listOf(Color(0xFFFB7185), Color(0xFFEF4444), Color(0xFFEC4899)))
+    "sky" -> Brush.linearGradient(listOf(Color(0xFF7DD3FC), Color(0xFF60A5FA), Color(0xFF6366F1)))
+    else -> Brush.linearGradient(listOf(Color(0xFF2563EB), Color(0xFF1D4ED8)))
 }
 
 // Web ReactionButton REACTIONS, in web order, with web labels and colours:
@@ -872,7 +899,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
             Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             // Web link box: bordered box with the URL, then a dark Copy link button.
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White).padding(10.dp)) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White).border(1.dp, FrianzoBorder, RoundedCornerShape(8.dp)).padding(10.dp)) {
                 Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
                 Button(
@@ -1102,8 +1129,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         }
         if (error != null) { Text(error!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(4.dp)) }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }) { Icon(Icons.Filled.Add, contentDescription = "Add photo", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-            androidx.compose.material3.TextField(
+            IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            OutlinedTextField(
                 value = draft,
                 onValueChange = { v ->
                     draft = v
@@ -1111,22 +1138,22 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                     mentionQuery = m?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
                 },
                 placeholder = { Text("Write a comment...") },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                 maxLines = 4,
                 singleLine = false,
-                shape = RoundedCornerShape(28.dp),
-                colors = androidx.compose.material3.TextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent
+                shape = RoundedCornerShape(10.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    focusedBorderColor = FrianzoBorder,
+                    unfocusedBorderColor = FrianzoBorder
                 )
             )
             Spacer(Modifier.width(8.dp))
-            androidx.compose.material3.IconButton(
+            Button(
                 enabled = draft.isNotBlank() || imageUri != null,
-                modifier = Modifier.size(40.dp).clip(androidx.compose.foundation.shape.CircleShape).background(FrianzoBlue),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF64748B), contentColor = Color.White),
                 onClick = {
                     val text = draft; val uri = imageUri; val parent = replyTo?.id; draft = ""; imageUri = null; replyTo = null; mentionQuery = null
                     scope.launch {
@@ -1150,7 +1177,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                         } catch (e: Exception) { error = e.message; draft = text }
                     }
                 },
-            ) { Icon(Icons.Filled.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(20.dp)) }
+            ) { Text("Send") }
         }
     }
 }
@@ -1163,7 +1190,6 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     var editDraft by rememberSaveable { mutableStateOf(c.content ?: "") }
     var localReaction by remember { mutableStateOf(c.myReaction) }
     var localCount by remember { mutableStateOf(c.reactionCount) }
-    var showPicker by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var reported by remember { mutableStateOf(false) }
@@ -1172,14 +1198,14 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     val canDelete = isOwner || (myId != null && postOwnerId != null && myId == postOwnerId)
     Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) {
         Row(verticalAlignment = Alignment.Top) {
-            FrianzoAvatar(c.author?.profilePictureUrl, if (isReply) 22.dp else 24.dp)
+            FrianzoAvatar(c.author?.profilePictureUrl, if (isReply) 28.dp else 32.dp)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 // Web bubble: top-level bg-slate-100, reply bg-slate-50 + border.
-                Box(Modifier.clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else Color(0xFFF0F2F5)).padding(horizontal = 12.dp, vertical = 10.dp)) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                             if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
                         }
                         c.mediaUrl?.let { AsyncImage(model = it, contentDescription = "Comment image", modifier = Modifier.fillMaxWidth().heightIn(max = 192.dp).padding(top = 8.dp).clip(RoundedCornerShape(12.dp))) }
@@ -1200,40 +1226,34 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                                     if (prefix.isNotEmpty()) { withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append(prefix) } }
                                     append(c.content ?: "")
                                 },
-                                fontSize = 14.sp,
+                                fontSize = 15.sp,
                             )
                         }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                if (showPicker) {
-                    // Web comment picker: above the Like button, 6 icons size 32, in web order.
-                    Row(Modifier.padding(start = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        reactionTypes().forEach { type ->
-                            ReactionIcon(type, 32.dp, modifier = Modifier.clickable {
-                                showPicker = false
-                                val prevReaction = localReaction; val prevCount = localCount
-                                val removing = prevReaction == type
-                                localReaction = if (removing) null else type
-                                localCount = (prevCount + if (removing) -1 else if (prevReaction != null) 0 else 1).coerceAtLeast(0)
-                                scope.launch {
-                                    try { if (!api2.setCommentReaction(c.id, mapOf("type" to type)).success) { localReaction = prevReaction; localCount = prevCount } } catch (_: Exception) { localReaction = prevReaction; localCount = prevCount }
-                                }
-                            })
-                        }
-                    }
-                }
                 Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { showPicker = !showPicker }, contentPadding = PaddingValues(0.dp)) {
+                    TextButton(onClick = {
+                        // Live web: comment Like is TAP-ONLY, no picker.
+                        // Tap toggles "like" (switching from another reaction keeps the count).
+                        val prevReaction = localReaction; val prevCount = localCount
+                        val removing = prevReaction == "like"
+                        val switching = prevReaction != null && !removing
+                        localReaction = if (removing) null else "like"
+                        localCount = (prevCount + if (removing) -1 else if (switching) 0 else 1).coerceAtLeast(0)
+                        scope.launch {
+                            try { if (!api2.setCommentReaction(c.id, mapOf("type" to "like")).success) { localReaction = prevReaction; localCount = prevCount } } catch (_: Exception) { localReaction = prevReaction; localCount = prevCount }
+                        }
+                    }, contentPadding = PaddingValues(0.dp)) {
                         if (localReaction != null) ReactionIcon(localReaction, 16.dp)
-                        else Text("Like", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        else Text("Like", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.width(12.dp))
-                    TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    if (localCount > 0) { Spacer(Modifier.width(12.dp)); Text(formatCount(localCount), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    Spacer(Modifier.width(12.dp))
-                    Text(commentTimeAgo(c.createdAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    if (localCount > 0) { Spacer(Modifier.width(12.dp)); Text(formatCount(localCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     Spacer(Modifier.weight(1f))
+                    Text(commentTimeAgo(c.createdAt), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(8.dp))
                     Box {
                         IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -1353,6 +1373,7 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
     var detailReaction by remember { mutableStateOf<String?>(null) }
     var likeCount by remember { mutableStateOf(0) }
     var shareDetail by remember { mutableStateOf<Post?>(null) }
+    var detailPicker by remember { mutableStateOf(false) }
     val detailScroll = rememberScrollState()
     LaunchedEffect(postId) {
         try {
@@ -1382,28 +1403,75 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
             post.imageUrl?.let { Spacer(Modifier.height(10.dp)); PostPhoto(it) }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (post.likeCount > 0 || likeCount > 0) Text("$likeCount likes", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val detailTop = (post.reactionCounts?.entries?.sortedByDescending { it.value }?.map { it.key } ?: listOfNotNull(detailReaction)).take(3)
+                if (likeCount > 0) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        detailTop.forEachIndexed { idx, rtype ->
+                            Box(Modifier.zIndex((detailTop.size - idx).toFloat()).offset(x = (-7 * idx).dp).size(24.dp).clip(CircleShape).background(Color.White).padding(1.dp), contentAlignment = Alignment.Center) {
+                                ReactionIcon(rtype, 22.dp)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Text("$likeCount", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Spacer(Modifier.weight(1f))
-                Text("${post.commentCount} comments", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (post.commentCount > 0) Text("${post.commentCount} comments", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (post.shareCount > 0) { Spacer(Modifier.width(8.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 2.dp)) { Text("${post.shareCount} shares", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             }
             Spacer(Modifier.height(8.dp))
             HorizontalDivider(color = FrianzoBorder)
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-                Box(Modifier.weight(1f).height(48.dp).clickable {
-                    // Web tap: send the current reaction to remove it, or "like".
-                    val sendType = detailReaction ?: "like"
-                    val wasLiked = liked; val wasReaction = detailReaction; val wasCount = likeCount
-                    liked = !liked; detailReaction = if (wasLiked) null else "like"
-                    likeCount = (likeCount + if (wasLiked) -1 else 1).coerceAtLeast(0)
-                    scope.launch {
-                        try {
-                            val r = vm.api2.setReaction(post.id, mapOf("type" to sendType))
-                            if (r.success && r.data != null) {
-                                if (r.data.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum()
-                                detailReaction = r.data.myReaction; liked = r.data.myReaction != null
-                            } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
-                        } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+            if (detailPicker) {
+                // Web picker above the Like button, left-aligned, icons 40.
+                Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.Start) {
+                    ReactionPickerPill(40.dp, reactionTypes()) { type ->
+                        detailPicker = false
+                        val wasLiked = liked; val wasReaction = detailReaction; val wasCount = likeCount
+                        val removing = detailReaction == type
+                        val switching = detailReaction != null && !removing
+                        liked = !removing; detailReaction = if (removing) null else type
+                        likeCount = (likeCount + if (removing) -1 else if (switching) 0 else 1).coerceAtLeast(0)
+                        scope.launch {
+                            try {
+                                val r = vm.api2.setReaction(post.id, mapOf("type" to type))
+                                if (r.success && r.data != null) {
+                                    if (r.data.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum()
+                                    detailReaction = r.data.myReaction; liked = r.data.myReaction != null
+                                } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                            } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                        }
                     }
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                Box(Modifier.weight(1f).height(48.dp).pointerInput(post.id) {
+                    // Web: 400ms hold opens the picker; release after hold
+                    // fires NO tap; scroll cancels. Tap sends the CURRENT
+                    // reaction (toggles it off) or "like" when none.
+                    detectTapGestures(onPress = {
+                        var opened = false
+                        val timer = scope.launch { delay(400); opened = true; detailPicker = true }
+                        val released = tryAwaitRelease()
+                        timer.cancel()
+                        if (released && !opened) {
+                            val sendType = detailReaction ?: "like"
+                            val wasLiked = liked; val wasReaction = detailReaction; val wasCount = likeCount
+                            // BUG FIX: removing a non-like reaction previously
+                            // optimistically showed "like"; it must clear.
+                            liked = false; detailReaction = null
+                            likeCount = (likeCount - 1).coerceAtLeast(0)
+                            if (wasReaction == null) { liked = true; detailReaction = "like"; likeCount = wasCount + 1 }
+                            scope.launch {
+                                try {
+                                    val r = vm.api2.setReaction(post.id, mapOf("type" to sendType))
+                                    if (r.success && r.data != null) {
+                                        if (r.data.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum()
+                                        detailReaction = r.data.myReaction; liked = r.data.myReaction != null
+                                    } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                                } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                            }
+                        }
+                    })
                 }, contentAlignment = Alignment.Center) {
                     when (detailReaction) {
                         null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
