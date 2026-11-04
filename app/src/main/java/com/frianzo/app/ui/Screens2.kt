@@ -499,7 +499,7 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
     // only explicit Search taps are saved (debounced typing is not).
     val prefs = remember { context.getSharedPreferences("frianzo_search", android.content.Context.MODE_PRIVATE) }
     var recents by remember { mutableStateOf(prefs.getString("recents_str", "")?.split("\n")?.filter { it.isNotBlank() }?.take(5) ?: emptyList()) }
-    fun saveRecents(list: List<String>) { prefs.edit().putString("recents_str", list.joinToString("\n")).apply() }
+    fun saveRecents(list: List<String>) { val clean = list.map { it.replace("\n", " ").trim() }.filter { it.isNotBlank() }; prefs.edit().putString("recents_str", clean.joinToString("\n")).apply() }
     fun runSearch(term: String, saveRecent: Boolean = false) {
         if (term.isBlank()) { searchError = "Type a name to search"; results = emptyList(); return }
         searchError = null; searching = true
