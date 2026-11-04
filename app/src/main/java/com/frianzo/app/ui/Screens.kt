@@ -1013,7 +1013,7 @@ private fun flattenReplies(replies: List<Comment>, parentAuthor: Author?): List<
 }
 
 @Composable
-private fun CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, sortBy: String = "top", fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
+private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, sortBy: String = "top", fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
@@ -1269,6 +1269,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     }
 }
 
+@Composable
 private fun PostPhoto(url: String, onClick: () -> Unit = {}) {
     var reload by remember { mutableStateOf(0) }
     key(reload) {

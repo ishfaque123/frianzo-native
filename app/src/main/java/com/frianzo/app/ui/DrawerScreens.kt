@@ -318,7 +318,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     stats.topPerforming?.let { top ->
                         Text("Top performing content", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         Text("${top.type} - ${top.views} views", fontSize = 13.sp)
-                        Text(top.title, fontSize = 13.sp)
+                        Text(top.title ?: "", fontSize = 13.sp)
                         Spacer(Modifier.height(12.dp))
                     }
                     Text("Content views - Last $range days", fontWeight = FontWeight.Bold, fontSize = 14.sp)
