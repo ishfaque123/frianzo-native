@@ -860,17 +860,6 @@ private fun ReactionEmojiText(type: String?, fontSize: androidx.compose.ui.unit.
     ReactionIcon(type, fontSize.value.dp, modifier)
 }
 
-@Composable
-private fun ReactionPickerRow(onPick: (String) -> Unit, onDismiss: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-        reactionTypes().forEach { type ->
-            Box(modifier = Modifier.clickable { onPick(type) }) {
-                ReactionIcon(type, 36.dp)
-            }
-        }
-        TextButton(onClick = onDismiss) { Text("Close") }
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -970,20 +959,18 @@ private fun ShareTile(label: String, color: Color, letter: String, onClick: () -
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, myId: String? = null, onClose: () -> Unit, onCountChange: (Int) -> Unit) {
-    var sortBy by remember { mutableStateOf("top") }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
             // FB-style header: just "Comments" centred + X. No Top/Newest pill.
             // Sorting is newest first, so a new comment lands at the top like FB.
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
                 Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            HorizontalDivider()
-            CommentSection(api2, post.id, post.commentCount, myId, post.author?.id, sortBy, true, onCountChange)
-            Spacer(Modifier.height(24.dp))
+            HorizontalDivider(color = FrianzoBorder)
+            CommentSection(api2, post.id, post.commentCount, myId, post.author?.id, fillHeight = true, onCountChange = onCountChange)
         }
     }
 }
@@ -1033,7 +1020,6 @@ private fun flattenReplies(replies: List<Comment>, parentAuthor: Author?): List<
 @Composable
 private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, sortBy: String = "top", fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<Comment?>(null) }
@@ -1068,24 +1054,20 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
     val sorted = comments.sortedByDescending { it.createdAt ?: "" }
     Column(if (fillHeight) Modifier.fillMaxWidth().weight(1f).padding(horizontal = 16.dp) else Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         LazyColumn(if (fillHeight) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(380.dp)) {
-            if (sorted.isEmpty() && error == null) item { Text("No comments yet. Be the first to comment.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 24.dp)) }
-            if (error != null) item { Text(error!!, fontSize = 13.sp, color = Color.Red) }
+            if (sorted.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { Text("No comments yet. Be the first to comment.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             items(sorted, key = { it.id }) { c ->
                 CommentRow(api2, c, myId, postOwnerId, 0, null, onReply = { replyTo = it }, onChanged = { load() })
                 val flatReplies = flattenReplies(c.replies, c.author)
                 if (flatReplies.isNotEmpty()) {
                     val isExpanded = c.id in expandedIds
-                    Row(Modifier.fillMaxWidth().padding(start = 20.dp, top = 4.dp)) {
-                        Box(Modifier.width(2.dp).fillMaxHeight().background(Color(0xFFE2E8F0)))
-                        Column(Modifier.padding(start = 12.dp)) {
-                            if (!isExpanded) {
-                                TextButton(onClick = { expandedIds = expandedIds + c.id }) { Text("View ${flatReplies.size} ${if (flatReplies.size == 1) "reply" else "replies"}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            } else {
-                                flatReplies.forEach { (r, parentAuthor) ->
-                                    CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, onReply = { replyTo = it }, onChanged = { load() })
-                                }
-                                TextButton(onClick = { expandedIds = expandedIds - c.id }) { Text("Hide replies", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Column(Modifier.fillMaxWidth().padding(start = 40.dp, top = 2.dp)) {
+                        if (!isExpanded) {
+                            TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${flatReplies.size} ${if (flatReplies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        } else {
+                            flatReplies.forEach { (r, parentAuthor) ->
+                                CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, onReply = { replyTo = it }, onChanged = { load() })
                             }
+                            TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                     }
                 }
@@ -1093,14 +1075,20 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         }
         if (replyTo != null) {
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(FrianzoBlueTint).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Replying to @${replyTo!!.author?.username ?: "User"}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = androidx.compose.ui.text.buildAnnotatedString {
+                        append("Replying to ")
+                        withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append("@${replyTo!!.author?.username ?: "User"}") }
+                    },
+                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             Spacer(Modifier.height(8.dp))
         }
         if (mentionQuery != null && mentionResults.isNotEmpty()) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(vertical = 4.dp)) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = Color.White, shadowElevation = 4.dp, border = BorderStroke(1.dp, FrianzoBorder)) { Column(Modifier.padding(vertical = 4.dp)) {
                 mentionResults.forEach { u ->
                     Row(Modifier.fillMaxWidth().clickable {
                         val q = mentionQuery ?: ""
@@ -1111,25 +1099,25 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                         FrianzoAvatar(u.profilePictureUrl, 28.dp)
                         Spacer(Modifier.width(8.dp))
                         Column {
-                            Text(u.displayName ?: u.username ?: "", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(u.displayName ?: u.username ?: "", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                             Text("@${u.username}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
-            }
+            } }
             Spacer(Modifier.height(8.dp))
         }
         if (imageUri != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AsyncImage(model = imageUri, contentDescription = "Comment attachment", modifier = Modifier.heightIn(max = 128.dp).clip(RoundedCornerShape(8.dp)))
                 Spacer(Modifier.width(8.dp))
-                TextButton(onClick = { imageUri = null }) { Text("Remove") }
+                TextButton(onClick = { imageUri = null }) { Text("Remove", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             Spacer(Modifier.height(8.dp))
         }
         if (error != null) { Text(error!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(4.dp)) }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             OutlinedTextField(
                 value = draft,
                 onValueChange = { v ->
@@ -1152,6 +1140,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
             Spacer(Modifier.width(8.dp))
             Button(
                 enabled = draft.isNotBlank() || imageUri != null,
+                modifier = Modifier.height(48.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp),
                 shape = RoundedCornerShape(8.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF64748B), contentColor = Color.White),
                 onClick = {
@@ -1211,13 +1201,13 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                         c.mediaUrl?.let { AsyncImage(model = it, contentDescription = "Comment image", modifier = Modifier.fillMaxWidth().heightIn(max = 192.dp).padding(top = 8.dp).clip(RoundedCornerShape(12.dp))) }
                         if (editing) {
                             Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedTextField(value = editDraft, onValueChange = { editDraft = it }, modifier = Modifier.weight(1f), singleLine = true)
+                                OutlinedTextField(value = editDraft, onValueChange = { editDraft = it }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(10.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder))
                                 TextButton(onClick = {
                                     scope.launch {
                                         try { if (api2.editComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {}
                                     }
-                                }) { Text("Save", fontSize = 12.sp, color = FrianzoBlue) }
-                                TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 12.sp) }
+                                }) { Text("Save", fontSize = 13.sp, color = FrianzoBlue) }
+                                TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 13.sp) }
                             }
                         } else {
                             val prefix = if (isReply && parentAuthor != null && !(c.content ?: "").trim().lowercase().startsWith("@${parentAuthor.username?.lowercase()}")) "@${parentAuthor.username} " else ""
@@ -1245,8 +1235,8 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                             try { if (!api2.setCommentReaction(c.id, mapOf("type" to "like")).success) { localReaction = prevReaction; localCount = prevCount } } catch (_: Exception) { localReaction = prevReaction; localCount = prevCount }
                         }
                     }, contentPadding = PaddingValues(0.dp)) {
-                        if (localReaction != null) ReactionIcon(localReaction, 16.dp)
-                        else Text("Like", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (localReaction != null) { ReactionIcon(localReaction, 16.dp); Spacer(Modifier.width(4.dp)) }
+                        Text("Like", fontSize = 13.sp, fontWeight = if (localReaction != null) FontWeight.SemiBold else FontWeight.Normal, color = if (localReaction != null) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
