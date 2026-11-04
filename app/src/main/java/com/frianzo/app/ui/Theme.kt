@@ -114,11 +114,13 @@ private val FrianzoTypography = Typography(
 )
 
 @Composable
-fun FrianzoTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    // SYSTEM THEME: no fixed dark login theme, no fixed light theme.
-    // Phone dark -> dark scheme, phone light -> light scheme, everywhere.
+fun FrianzoTheme(darkTheme: Boolean = false, content: @Composable () -> Unit) {
+    // WEB MATCH: the web app is always light, and the login screen is
+    // already forced light. System dark mode made the whole feed dark
+    // (see owner screenshots 2026-11-04), which does not match the web.
+    // Always use the light scheme, regardless of phone theme.
     MaterialTheme(
-        colorScheme = if (darkTheme) FrianzoDarkColorScheme else FrianzoColorScheme,
+        colorScheme = FrianzoColorScheme,
         shapes = FrianzoShapes,
         typography = FrianzoTypography,
         content = content,

@@ -728,7 +728,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 topReactions.forEachIndexed { idx, rtype ->
                                     Box(Modifier.offset(x = (-7 * idx).dp).size(24.dp).clip(CircleShape).background(Color.White).padding(1.dp), contentAlignment = Alignment.Center) {
-                                        Text(reactionEmoji(rtype), fontSize = 16.sp)
+                                        ReactionIcon(rtype, 20.dp)
                                     }
                                 }
                             }
@@ -749,9 +749,8 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         Surface(shape = RoundedCornerShape(28.dp), tonalElevation = 8.dp, shadowElevation = 8.dp, color = Color.White) {
                             Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 reactionTypes().forEach { type ->
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { pickerPost = false; vm.setReaction(post, type) }) {
-                                        Text(reactionEmoji(type), fontSize = 32.sp)
-                                        Text(reactionLabel(type), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Box(modifier = Modifier.clickable { pickerPost = false; vm.setReaction(post, type) }) {
+                                        ReactionIcon(type, 40.dp)
                                     }
                                 }
                             }
@@ -776,7 +775,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         when (myReaction) {
                             null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
-                            else -> Text(reactionEmoji(myReaction), fontSize = 24.sp)
+                            else -> ReactionIcon(myReaction, 28.dp)
                         }
                     }
                     Box(Modifier.weight(1f).height(48.dp).clickable { commentPost = post }, contentAlignment = Alignment.Center) {
@@ -831,16 +830,15 @@ private fun reactionTypes(): List<String> = listOf("like", "love", "haha", "wow"
 
 @Composable
 private fun ReactionEmojiText(type: String?, fontSize: androidx.compose.ui.unit.TextUnit, modifier: Modifier = Modifier) {
-    Text(reactionEmoji(type), fontSize = fontSize, modifier = modifier)
+    ReactionIcon(type, fontSize.value.dp, modifier)
 }
 
 @Composable
 private fun ReactionPickerRow(onPick: (String) -> Unit, onDismiss: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
         reactionTypes().forEach { type ->
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onPick(type) }) {
-                Text(reactionEmoji(type), fontSize = 32.sp)
-                Text(reactionLabel(type), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Box(modifier = Modifier.clickable { onPick(type) }) {
+                ReactionIcon(type, 36.dp)
             }
         }
         TextButton(onClick = onDismiss) { Text("Close") }
@@ -1212,7 +1210,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                     // Web comment picker: above the Like button, 6 icons size 32, in web order.
                     Row(Modifier.padding(start = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         reactionTypes().forEach { type ->
-                            Text(reactionEmoji(type), fontSize = 28.sp, modifier = Modifier.clickable {
+                            ReactionIcon(type, 32.dp, modifier = Modifier.clickable {
                                 showPicker = false
                                 val prevReaction = localReaction; val prevCount = localCount
                                 val removing = prevReaction == type
@@ -1227,7 +1225,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                 }
                 Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { showPicker = !showPicker }, contentPadding = PaddingValues(0.dp)) {
-                        if (localReaction != null) Text(reactionEmoji(localReaction), fontSize = 16.sp)
+                        if (localReaction != null) ReactionIcon(localReaction, 16.dp)
                         else Text("Like", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.width(12.dp))
@@ -1410,7 +1408,7 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
                     when (detailReaction) {
                         null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
-                        else -> Text(reactionEmoji(detailReaction), fontSize = 24.sp)
+                        else -> ReactionIcon(detailReaction, 24.dp)
                     }
                 }
                 Box(Modifier.weight(1f).height(48.dp).clickable { scope.launch { detailScroll.animateScrollTo(detailScroll.maxValue) } }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
