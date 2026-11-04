@@ -946,16 +946,9 @@ private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, myId: String? = nu
     var sortBy by remember { mutableStateOf("top") }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
-            // Web header: Top/Newest pill top-left, "Comments" centred, X top-right.
+            // FB-style header: just "Comments" centred + X. No Top/Newest pill.
+            // Sorting is newest first, so a new comment lands at the top like FB.
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.clip(RoundedCornerShape(28.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(2.dp)) {
-                    listOf("top" to "Top", "newest" to "Newest").forEach { (key, label) ->
-                        val selected = sortBy == key
-                        Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (selected) Color.White else Color.Transparent).clickable { sortBy = key }.padding(horizontal = 10.dp, vertical = 4.dp)) {
-                            Text(label, fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
                 Spacer(Modifier.weight(1f))
                 Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
@@ -1044,10 +1037,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
             if (res.success && res.data != null) mentionResults = res.data.users.take(5) else mentionResults = emptyList()
         } catch (_: Exception) { mentionResults = emptyList() }
     }
-    val sorted = when (sortBy) {
-        "newest" -> comments.sortedByDescending { it.createdAt ?: "" }
-        else -> comments.sortedWith(compareByDescending<Comment> { it.reactionCount }.thenByDescending { it.createdAt ?: "" })
-    }
+    // FB-style: newest first, so a new comment appears at the top.
+    val sorted = comments.sortedByDescending { it.createdAt ?: "" }
     Column(if (fillHeight) Modifier.fillMaxWidth().weight(1f).padding(horizontal = 16.dp) else Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         LazyColumn(if (fillHeight) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(380.dp)) {
             if (sorted.isEmpty() && error == null) item { Text("No comments yet. Be the first to comment.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 24.dp)) }
@@ -1112,7 +1103,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         if (error != null) { Text(error!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(4.dp)) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }) { Icon(Icons.Filled.Add, contentDescription = "Add photo", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-            OutlinedTextField(
+            androidx.compose.material3.TextField(
                 value = draft,
                 onValueChange = { v ->
                     draft = v
@@ -1122,11 +1113,20 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                 placeholder = { Text("Write a comment...") },
                 modifier = Modifier.weight(1f),
                 maxLines = 4,
+                singleLine = false,
+                shape = RoundedCornerShape(28.dp),
+                colors = androidx.compose.material3.TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent
+                )
             )
             Spacer(Modifier.width(8.dp))
-            Button(
+            androidx.compose.material3.IconButton(
                 enabled = draft.isNotBlank() || imageUri != null,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
+                modifier = Modifier.size(40.dp).clip(androidx.compose.foundation.shape.CircleShape).background(FrianzoBlue),
                 onClick = {
                     val text = draft; val uri = imageUri; val parent = replyTo?.id; draft = ""; imageUri = null; replyTo = null; mentionQuery = null
                     scope.launch {
@@ -1150,7 +1150,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                         } catch (e: Exception) { error = e.message; draft = text }
                     }
                 },
-            ) { Text("Send") }
+            ) { Icon(Icons.Filled.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(20.dp)) }
         }
     }
 }
@@ -1176,7 +1176,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 // Web bubble: top-level bg-slate-100, reply bg-slate-50 + border.
-                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Box(Modifier.clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 8.dp)) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
