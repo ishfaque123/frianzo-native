@@ -401,8 +401,10 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
     var error by mutableStateOf<String?>(null); private set
     var likedIds by mutableStateOf<Set<String>>(emptySet()); private set
     // Live reaction type per post ("like", "love", "haha", "wow", "sad", "angry").
-    // Post model carries no myReaction field, so this map is the local source.
+    // Seeded from Post.myReaction (the model DOES have it) in loadMore, so an
+    // already-liked post shows as liked instead of snapping back on tap.
     var reactionByPost by mutableStateOf<Map<String, String>>(emptyMap()); private set
+    var refreshing by mutableStateOf(false); private set
 
     fun hidePost(postId: String) { posts = posts.filterNot { it.id == postId } }
 
@@ -413,17 +415,31 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
             try {
                 val res = api.feed(offset)
                 if (res.success && res.data != null) {
-                    posts = posts + (res.data.posts ?: emptyList())
+                    val newPosts = res.data.posts ?: emptyList()
+                    posts = posts + newPosts
+                    // Seed already-liked state from the server, but never
+                    // overwrite a reaction the user just set in this session.
+                    newPosts.forEach { post ->
+                        post.myReaction?.let { mr ->
+                            if (post.id !in reactionByPost) {
+                                reactionByPost = reactionByPost + (post.id to mr)
+                                likedIds = likedIds + post.id
+                            }
+                        }
+                    }
                     offset = res.data.nextOffset
                     hasMore = res.data.hasMore
                 } else error = res.error?.message ?: "Feed failed"
             } catch (e: Exception) { error = e.message ?: "Feed failed" }
-            finally { loading = false }
+            finally { loading = false; refreshing = false }
         }
     }
 
     fun refresh() {
+        if (loading) return
         posts = emptyList(); offset = 0; hasMore = true; error = null
+        reactionByPost = emptyMap(); likedIds = emptySet()
+        refreshing = true
         loadMore()
     }
 
@@ -491,6 +507,7 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewMode
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -548,7 +565,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
     }
     commentPost?.let { post ->
-        PostCommentsDialog(vm.api2, post,
+        PostCommentsDialog(vm.api2, post, myId,
             onClose = { commentPost = null },
             onCountChange = { newCount -> vm.updateCommentCount(post.id, newCount) })
     }
@@ -568,6 +585,19 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         )
     }
 
+    PullToRefreshBox(
+        isRefreshing = vm.refreshing,
+        onRefresh = {
+            vm.refresh()
+            followScope.launch {
+                try {
+                    val sf = vm.api2.statusFeed()
+                    if (sf.success && sf.data != null) statusGroups = sf.data.feed ?: emptyList()
+                } catch (_: Exception) {}
+            }
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -816,6 +846,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         }
     }
+    }
 }
 
 // Web PostCard POST_BACKGROUND_CLASSES, as Compose gradients.
@@ -1043,7 +1074,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         LazyColumn(if (fillHeight) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(380.dp)) {
             if (sorted.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { Text("No comments yet. Be the first to comment.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             items(sorted, key = { it.id }) { c ->
-                CommentRow(api2, c, myId, postOwnerId, 0, null, onReply = { replyTo = it }, onChanged = { load() })
+                CommentRow(api2, c, myId, postOwnerId, 0, null, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val nc = (count - 1).coerceAtLeast(0); count = nc; onCountChange(nc) })
                 val flatReplies = flattenReplies(c.replies, c.author)
                 if (flatReplies.isNotEmpty()) {
                     val isExpanded = c.id in expandedIds
@@ -1052,7 +1083,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                             TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${flatReplies.size} ${if (flatReplies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         } else {
                             flatReplies.forEach { (r, parentAuthor) ->
-                                CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, onReply = { replyTo = it }, onChanged = { load() })
+                                CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val nc = (count - 1).coerceAtLeast(0); count = nc; onCountChange(nc) })
                             }
                             TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
@@ -1160,7 +1191,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
 }
 
 @Composable
-private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId: String?, depth: Int, parentAuthor: Author?, onReply: (Comment) -> Unit, onChanged: () -> Unit) {
+private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId: String?, depth: Int, parentAuthor: Author?, onReply: (Comment) -> Unit, onChanged: () -> Unit, onDeleted: () -> Unit = {}) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf(false) }
@@ -1170,6 +1201,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     var menuOpen by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var reported by remember { mutableStateOf(false) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
     val isReply = depth > 0
     val isOwner = myId != null && c.author?.id == myId
     val canDelete = isOwner || (myId != null && postOwnerId != null && myId == postOwnerId)
@@ -1245,6 +1277,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                     }
                 }
                 if (reported) Text("Comment reported. Thanks for letting us know.", fontSize = 12.sp, color = Color(0xFF16A34A), modifier = Modifier.padding(start = 8.dp))
+                if (deleteError != null) Text(deleteError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.padding(start = 8.dp))
             }
         }
     }
@@ -1256,7 +1289,13 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
             confirmButton = {
                 TextButton(onClick = {
                     showDelete = false
-                    scope.launch { try { if (api2.deleteComment(c.id).success) onChanged() } catch (_: Exception) {} }
+                    scope.launch {
+                        try {
+                            val r = api2.deleteComment(c.id)
+                            if (r.success) { onChanged(); onDeleted() }
+                            else deleteError = r.error?.message ?: "Could not delete comment"
+                        } catch (e: Exception) { deleteError = e.message ?: "Could not delete comment" }
+                    }
                 }) { Text("Delete", color = Color.Red) }
             },
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },

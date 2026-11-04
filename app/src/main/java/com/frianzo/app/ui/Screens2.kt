@@ -13,6 +13,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
@@ -69,7 +70,8 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
         }
     }
     var reelComment by remember { mutableStateOf<Reel?>(null) }
-    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, onClose = { reelComment = null }) }
+    var reelCommentCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }) }
     LaunchedEffect(Unit) { load() }
     LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentPadding = PaddingValues(vertical = 8.dp)) {
         items(reels, key = { it.id }) { reel ->
@@ -96,7 +98,10 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
                     // download) is created only for the reel being played.
                     if (reel.videoUrl != null && playing) {
                         AndroidView(
-                            factory = { ctx -> VideoView(ctx).apply { setVideoURI(Uri.parse(reel.videoUrl)) } },
+                            factory = { ctx -> VideoView(ctx).apply {
+                                setVideoURI(Uri.parse(reel.videoUrl))
+                                setOnCompletionListener { v -> v.seekTo(0); v.start() }
+                            } },
                             modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable { playing = false },
                             update = { view -> view.start() },
                             onRelease = { view -> view.stopPlayback() },
@@ -105,11 +110,17 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
                         Box(
                             modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black).clickable {
                                 playing = true
-                                // A real watch, not a fake "Viewed" button:
-                                // record once when playback actually starts.
+                                // Views were counted at 0 seconds before.
+                                // Now gated: only after 3s of real playback,
+                                // and only if still playing then.
                                 if (reel.id !in viewedIds) {
-                                    viewedIds = viewedIds + reel.id
-                                    scope.launch { try { api2.recordReelView(reel.id, mapOf("watchSec" to 1)) } catch (_: Exception) {} }
+                                    scope.launch {
+                                        delay(3000)
+                                        if (playing && reel.id !in viewedIds) {
+                                            viewedIds = viewedIds + reel.id
+                                            try { api2.recordReelView(reel.id, mapOf("watchSec" to 3)) } catch (_: Exception) {}
+                                        }
+                                    }
                                 }
                             },
                             contentAlignment = Alignment.Center,
@@ -130,7 +141,7 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
                             }
                         }) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("$likes") } }
                         Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { reelComment = reel }) { Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("${reel.commentCount}") }
+                        TextButton(onClick = { reelComment = reel }) { Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("${reelCommentCounts[reel.id] ?: reel.commentCount}") }
                         TextButton(onClick = {
                             val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                                 type = "text/plain"
@@ -153,7 +164,7 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
 
 // ---------- REEL COMMENTS: read + add via existing api2 reelComments endpoints ----------
 @Composable
-private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, onClose: () -> Unit) {
+private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, onClose: () -> Unit, onCommentAdded: () -> Unit = {}) {
     var comments by remember { mutableStateOf<List<ReelComment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -194,7 +205,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, onClose: () -> Uni
                 scope.launch {
                     try {
                         val res = api2.addReelComment(reel.id, CommentCreateRequest(text))
-                        if (res.success) load() else error = res.error?.message
+                        if (res.success) { load(); onCommentAdded() } else error = res.error?.message
                     } catch (e: Exception) { error = e.message; draft = text }
                 }
             }) { Text("Send") }
@@ -395,10 +406,22 @@ private fun notificationTitle(n: NotificationItem): String {
     return "$actor $action"
 }
 
+private fun notifTimeAgo(createdAt: String?): String {
+    if (createdAt.isNullOrBlank()) return ""
+    return try {
+        val f = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        val millis = f.parse(createdAt)?.time ?: return createdAt.take(10)
+        val s = ((System.currentTimeMillis() - millis) / 1000).coerceAtLeast(0)
+        when { s < 60 -> "now"; s < 3600 -> "${s / 60}m"; s < 86400 -> "${s / 3600}h"; s < 604800 -> "${s / 86400}d"; s < 2592000 -> "${s / 604800}w"; else -> "${s / 2592000}mo" }
+    } catch (_: Exception) { createdAt.take(10) }
+}
+
 @Composable
 fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
     var items by remember { mutableStateOf<List<NotificationItem>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var filter by remember { mutableStateOf("All") }
+    var showMarkAllConfirm by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     fun load() {
         scope.launch {
@@ -409,19 +432,46 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
         }
     }
     LaunchedEffect(Unit) { load() }
+    val filtered = when (filter) {
+        "Unread" -> items.filter { !it.read }
+        "Likes" -> items.filter { (it.type ?: "").contains("like") }
+        "Comments" -> items.filter { (it.type ?: "").contains("comment") }
+        "Follows" -> items.filter { it.type == "follow" }
+        "Messages" -> items.filter { it.type == "message" }
+        else -> items
+    }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Notifications", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            TextButton(onClick = { scope.launch { try { api2.markAllNotificationsRead(); load() } catch (_: Exception) {} } }) { Text("Mark all read") }
+            TextButton(onClick = { showMarkAllConfirm = true }) { Text("Mark all read") }
+        }
+        if (showMarkAllConfirm) {
+            AlertDialog(
+                onDismissRequest = { showMarkAllConfirm = false },
+                title = { Text("Mark all as read?") },
+                text = { Text("All notifications will be marked as read.") },
+                confirmButton = { Button(onClick = { showMarkAllConfirm = false; scope.launch { try { api2.markAllNotificationsRead(); load() } catch (_: Exception) {} } }) { Text("Mark all read") } },
+                dismissButton = { TextButton(onClick = { showMarkAllConfirm = false }) { Text("Cancel") } },
+            )
+        }
+        // Filter chips below the header (placement: header first, filters
+        // second, list last — the live-web order).
+        LazyRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(listOf("All", "Unread", "Likes", "Comments", "Follows", "Messages")) { f ->
+                val sel = filter == f
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { filter = f }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text(f, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
         LazyColumn(Modifier.weight(1f)) {
-            items(items, key = { it.id }) { n ->
+            items(filtered, key = { it.id }) { n ->
                 ListItem(
                     headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text(n.detail ?: n.createdAt ?: "", style = MaterialTheme.typography.bodySmall) },
+                    supportingContent = { Text(listOfNotNull(n.detail?.takeIf { it.isNotBlank() }, notifTimeAgo(n.createdAt).takeIf { it.isNotBlank() }).joinToString(" · "), style = MaterialTheme.typography.bodySmall) },
                     leadingContent = { FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
                     trailingContent = { if (!n.read) Badge(containerColor = FrianzoBadgeRed) { Text("new") } },
-                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                    colors = ListItemDefaults.colors(containerColor = if (!n.read) FrianzoBlueTint else MaterialTheme.colorScheme.surface),
                     modifier = Modifier.clickable {
                         scope.launch { try { api2.markNotificationRead(n.id); load() } catch (_: Exception) {} }
                         n.actor?.username?.let { onAuthor(it) }
@@ -430,7 +480,7 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
                 HorizontalDivider()
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-            if (items.isEmpty() && error == null) item { Text("No notifications yet", Modifier.padding(16.dp)) }
+            if (filtered.isEmpty() && error == null) item { Text(if (items.isEmpty()) "No notifications yet" else "Nothing in $filter", Modifier.padding(16.dp)) }
         }
     }
 }
@@ -438,29 +488,67 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
 // ---------- SEARCH (users) + PROFILE ----------
 @Composable
 fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
+    val context = LocalContext.current
     var q by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // Recent searches, kept on the phone only (SharedPreferences, no backend).
+    // Stored as one newline-joined string so order is newest-first, and
+    // only explicit Search taps are saved (debounced typing is not).
+    val prefs = remember { context.getSharedPreferences("frianzo_search", android.content.Context.MODE_PRIVATE) }
+    var recents by remember { mutableStateOf(prefs.getString("recents_str", "")?.split("\n")?.filter { it.isNotBlank() }?.take(5) ?: emptyList()) }
+    fun saveRecents(list: List<String>) { prefs.edit().putString("recents_str", list.joinToString("\n")).apply() }
+    fun runSearch(term: String, saveRecent: Boolean = false) {
+        if (term.isBlank()) { searchError = "Type a name to search"; results = emptyList(); return }
+        searchError = null; searching = true
+        if (saveRecent) {
+            val updated = (listOf(term) + recents.filter { it != term }).take(5)
+            recents = updated; saveRecents(updated)
+        }
+        scope.launch {
+            try {
+                val res = api2.searchUsers(term)
+                if (res.success && res.data != null) results = res.data.users
+                else searchError = res.error?.message
+            } catch (e: Exception) { searchError = e.message }
+            finally { searching = false }
+        }
+    }
+    // Live search as you type (300ms debounce), plus the Search button.
+    LaunchedEffect(q) {
+        if (q.isBlank()) { results = emptyList(); return@LaunchedEffect }
+        kotlinx.coroutines.delay(300)
+        runSearch(q, saveRecent = false)
+    }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         OutlinedTextField(
             value = q, onValueChange = { q = it },
             label = { Text("Search people") }, singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             shape = RoundedCornerShape(12.dp),
+            trailingIcon = { IconButton(onClick = { runSearch(q, saveRecent = true) }) { Icon(Icons.Filled.Search, contentDescription = "Search") } },
         )
-        Button(onClick = {
-            if (q.isBlank()) { searchError = "Type a name to search"; results = emptyList(); return@Button }
-            searchError = null
-            scope.launch {
-                try {
-                    val res = api2.searchUsers(q)
-                    if (res.success && res.data != null) results = res.data.users
-                } catch (e: Exception) { searchError = e.message }
+        if (searching) Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+        if (q.isBlank() && recents.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Recent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { recents = emptyList(); saveRecents(emptyList()) }) { Text("Clear") }
             }
-        }, modifier = Modifier.padding(horizontal = 16.dp), shape = RoundedCornerShape(28.dp)) { Text("Search") }
+            recents.forEach { r ->
+                Row(Modifier.fillMaxWidth().clickable { q = r }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.History, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(12.dp))
+                    Text(r, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { val u = recents - r; recents = u; saveRecents(u) }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Remove", modifier = Modifier.size(16.dp)) }
+                }
+                HorizontalDivider()
+            }
+        }
         searchError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
-        if (results.isEmpty() && searchError == null && q.isNotBlank()) Text("No people found", Modifier.padding(16.dp))
+        if (results.isEmpty() && searchError == null && q.isNotBlank() && !searching) Text("No people found", Modifier.padding(16.dp))
+        if (results.isEmpty() && searchError == null && q.isBlank() && recents.isEmpty()) Text("Search for people by name or @username. Post search is not available yet — the backend has no post-search endpoint.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn {
             items(results, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
@@ -515,7 +603,12 @@ fun countryDisplayName(raw: String?): String? {
 fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
     var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
+    var postsLoading by remember { mutableStateOf(false) }
+    var postsError by remember { mutableStateOf<String?>(null) }
     var following by remember { mutableStateOf(false) }
+    var followStatus by remember { mutableStateOf<String?>(null) }
+    var showEdit by remember { mutableStateOf(false) }
+    var editError by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(username) {
@@ -526,12 +619,18 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     profile = res.data.user
                     val uname = res.data.user.username
                     if (uname != null) {
+                        postsLoading = true
                         val pr = api2.userPosts(uname)
                         if (pr.success && pr.data != null) posts = pr.data.posts ?: emptyList()
+                        else postsError = pr.error?.message
+                        postsLoading = false
                     }
                     if (res.data.user.id != null && res.data.user.id != myId) {
                         val fs = api2.followStatus(res.data.user.id)
-                        if (fs.success && fs.data != null) following = fs.data.status == "following" || fs.data.status == "friends"
+                        if (fs.success && fs.data != null) {
+                            followStatus = fs.data.status
+                            following = fs.data.status == "following" || fs.data.status == "friends"
+                        }
                     }
                 } else error = res.error?.message
             } catch (e: Exception) { error = e.message }
@@ -548,14 +647,70 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     FrianzoAvatar(p.profilePictureUrl, 80.dp)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge)
+                            if (p.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
+                        }
                         Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall)
                         p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                        Text(listOfNotNull(p.city, countryDisplayName(p.country)).joinToString(", "), style = MaterialTheme.typography.bodySmall)
+                        p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue) }
+                        val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, countryDisplayName(p.country)).joinToString(", ")
+                        if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("${posts.size} Posts", style = MaterialTheme.typography.titleMedium)
+                            val fc = p.followerCount ?: p.followersCount
+                            if (fc != null) { Spacer(Modifier.width(16.dp)); Text("$fc Followers", style = MaterialTheme.typography.titleMedium) }
+                            val fg = p.followingCount ?: p.followingsCount
+                            if (fg != null) { Spacer(Modifier.width(16.dp)); Text("$fg Following", style = MaterialTheme.typography.titleMedium) }
+                        }
                     }
                 }
                 if (username == null && onLogout != null) {
-                    OutlinedButton(onClick = onLogout, modifier = Modifier.padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Log out") }
+                    Row(Modifier.padding(horizontal = 16.dp)) {
+                        OutlinedButton(onClick = { showEdit = true }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Edit profile") }
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(onClick = onLogout, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Log out") }
+                    }
+                    if (editError != null) Text(editError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                }
+                if (showEdit && profile != null) {
+                    val cur = profile!!
+                    var edName by remember { mutableStateOf(cur.displayName ?: "") }
+                    var edBio by remember { mutableStateOf(cur.bio ?: "") }
+                    var edCity by remember { mutableStateOf(cur.city ?: "") }
+                    var edCountry by remember { mutableStateOf(cur.country ?: "") }
+                    var edWeb by remember { mutableStateOf(cur.website ?: "") }
+                    AlertDialog(
+                        onDismissRequest = { showEdit = false },
+                        title = { Text("Edit profile") },
+                        text = {
+                            Column {
+                                OutlinedTextField(value = edName, onValueChange = { edName = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(value = edBio, onValueChange = { edBio = it }, label = { Text("Bio") }, modifier = Modifier.fillMaxWidth())
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(value = edCity, onValueChange = { edCity = it }, label = { Text("City") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(value = edCountry, onValueChange = { edCountry = it }, label = { Text("Country") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, label = { Text("Website") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            }
+                        },
+                        confirmButton = {
+                            Button(onClick = {
+                                scope.launch {
+                                    try {
+                                        val body = mapOf<String, Any>("displayName" to edName, "bio" to edBio, "city" to edCity, "country" to edCountry, "website" to edWeb)
+                                        val r = api2.updateMe(body)
+                                        if (r.success) { profile = cur.copy(displayName = edName, bio = edBio, city = edCity, country = edCountry, website = edWeb); showEdit = false; editError = null }
+                                        else editError = r.error?.message ?: "Could not save profile"
+                                    } catch (e: Exception) { editError = e.message }
+                                }
+                            }) { Text("Save") }
+                        },
+                        dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
+                    )
                 }
                 if (username != null && p.id != null && p.id != myId) {
                     Row(Modifier.padding(horizontal = 16.dp)) {
@@ -563,10 +718,10 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             scope.launch {
                                 try {
                                     val r = api2.toggleFollow(p.id)
-                                    if (r.success && r.data != null) following = r.data.following || r.data.isFollowing
+                                    if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none" }
                                 } catch (_: Exception) {}
                             }
-                        }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text(if (following) "Following" else "Follow") }
+                        }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text(if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow") }
                         if (onOpenChat != null) {
                             Spacer(Modifier.width(8.dp))
                             OutlinedButton(onClick = {
@@ -585,11 +740,14 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     Text("This account is private", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
                 }
                 Text("Posts", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
+                if (postsLoading) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                if (postsError != null) Text(postsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp))
+                if (!postsLoading && postsError == null && posts.isEmpty()) Text("No posts yet", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
             } ?: run {
                 if (error != null) Text(error!!, Modifier.padding(16.dp)) else Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { DotsLoading() }
             }
         }
-        items(posts, key = { it.id }) { post ->
+        items(if (profile?.isPrivate == true && username != null && !following) emptyList() else posts, key = { it.id }) { post ->
             Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
