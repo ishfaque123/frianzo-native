@@ -3,6 +3,10 @@ package com.frianzo.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
@@ -103,6 +107,21 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var myProfile by remember { mutableStateOf<PublicProfile?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // v3.1: POST_NOTIFICATIONS is asked ONCE, right after login — never at
+    // launch, never again. (Push delivery itself still needs the Firebase
+    // key, an owner step; this only asks the system permission so the app
+    // is ready the day push is switched on. No other runtime permission
+    // exists: gallery/camera/mic/location have no feature in the app.)
+    var notifAsked by remember { mutableStateOf(false) }
+    val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (!notifAsked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifAsked = true
+            if (context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
     // v2.9: drawer profile row data (loaded once; a failure just leaves
     // the row showing the fallback name).
     LaunchedEffect(Unit) {
