@@ -479,14 +479,16 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
             try {
                 val r = api2.setReaction(post.id, mapOf("type" to type))
                 if (r.success && r.data != null) {
-                    val counts = r.data.reactionCounts
-                    if (counts != null) {
-                        val total = counts.values.sum()
-                        posts = posts.map { if (it.id == post.id) it.copy(likeCount = total, reactionCounts = counts) else it }
+                    // Backend returns data.reaction + data.likeCount (web uses these);
+                    // the old myReaction/reactionCounts fields are kept as fallback.
+                    val effReaction = r.data.myReaction ?: r.data.reaction
+                    val effCount = r.data.likeCount ?: r.data.reactionCounts?.values?.sum()
+                    if (effCount != null) {
+                        posts = posts.map { if (it.id == post.id) it.copy(likeCount = effCount, reactionCounts = r.data.reactionCounts) else it }
                     }
-                    if (r.data.myReaction != null) {
+                    if (effReaction != null) {
                         likedIds = likedIds + post.id
-                        reactionByPost = reactionByPost + (post.id to r.data.myReaction)
+                        reactionByPost = reactionByPost + (post.id to effReaction)
                     } else {
                         likedIds = likedIds - post.id
                         reactionByPost = reactionByPost - post.id
@@ -1451,8 +1453,10 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
                             try {
                                 val r = vm.api2.setReaction(post.id, mapOf("type" to type))
                                 if (r.success && r.data != null) {
-                                    if (r.data.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum()
-                                    detailReaction = r.data.myReaction; liked = r.data.myReaction != null
+                                    val effR = r.data.myReaction ?: r.data.reaction
+                                    val effC = r.data.likeCount ?: r.data.reactionCounts?.values?.sum()
+                                    if (effC != null) likeCount = effC
+                                    detailReaction = effR; liked = effR != null
                                 } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
                             } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
                         }
@@ -1481,8 +1485,10 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
                                 try {
                                     val r = vm.api2.setReaction(post.id, mapOf("type" to sendType))
                                     if (r.success && r.data != null) {
-                                        if (r.data.reactionCounts != null) likeCount = r.data.reactionCounts.values.sum()
-                                        detailReaction = r.data.myReaction; liked = r.data.myReaction != null
+                                        val effR2 = r.data.myReaction ?: r.data.reaction
+                                        val effC2 = r.data.likeCount ?: r.data.reactionCounts?.values?.sum()
+                                        if (effC2 != null) likeCount = effC2
+                                        detailReaction = effR2; liked = effR2 != null
                                     } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
                                 } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
                             }

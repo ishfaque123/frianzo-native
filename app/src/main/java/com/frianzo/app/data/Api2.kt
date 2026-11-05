@@ -25,7 +25,7 @@ data class ReelComment(val id: String, val content: String?, val author: Author?
 data class ReelCommentsData(val comments: List<ReelComment>)
 
 // ---------- Posts: detail / reactions / comments ----------
-data class ReactionData(val myReaction: String?, val reactionCounts: Map<String, Int>? = null)
+data class ReactionData(val myReaction: String? = null, val reaction: String? = null, val likeCount: Int? = null, val reactionCounts: Map<String, Int>? = null)
 data class Comment(
     val id: String,
     val content: String?,
@@ -108,12 +108,6 @@ data class PublicProfile(
     val isPrivate: Boolean = false,
     val isVerified: Boolean = false,
     val isOnline: Boolean = false,
-    // Shown only when the backend actually returns them (null = hidden,
-    // never a misleading 0). Backend field names vary, so accept both.
-    val followerCount: Int? = null,
-    val followersCount: Int? = null,
-    val followingCount: Int? = null,
-    val followingsCount: Int? = null,
 )
 data class SearchUsersData(val users: List<PublicProfile>)
 data class FollowData(val following: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String?)
