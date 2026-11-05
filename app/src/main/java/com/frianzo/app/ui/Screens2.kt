@@ -558,7 +558,7 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     // user taps "Record a video" (owner-confirmed permissions).
     val pickReelVideo = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }
     var recordUri by remember { mutableStateOf<Uri?>(null) }
-    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.TakeVideo()) { ok -> if (ok && recordUri != null) videoUri = recordUri }
+    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.TakeVideo()) { success: Boolean -> if (success) { val u = recordUri; if (u != null) videoUri = u } }
     val recordReelVideo = rememberPermissionGate(cameraMicPermissions()) {
         val u = createVideoUri(context)
         if (u != null) { recordUri = u; takeVideo.launch(u) } else message = "Could not start camera"
