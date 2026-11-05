@@ -573,11 +573,12 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     var statusFailed by remember { mutableStateOf(false) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
     // + BUTTON = SYSTEM GALLERY (live behaviour): photos AND videos.
-    // PickVisualMedia (system photo picker) needs no Gallery permission
-    // and returns a Uri; the parent opens Create with it pre-attached.
+    // v3.1: Gallery permission is asked here, at pick time, before the
+    // system photo picker opens (owner-confirmed permission).
     val galleryPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) onPickMedia(uri)
     }
+    val pickMedia = rememberPermissionGate(galleryPermissions()) { pickMedia() }
     LaunchedEffect(Unit) {
         try {
             val sf = vm.api2.statusFeed()
@@ -1114,6 +1115,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
     var mentionResults by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) imageUri = uri }
+    val pickCommentPhoto = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
     fun load() {
         scope.launch {
             try {
@@ -1200,7 +1202,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         }
         if (error != null) { Text(error!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(4.dp)) }
         Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            IconButton(onClick = { pickCommentPhoto() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             OutlinedTextField(
                 value = draft,
                 onValueChange = { v ->
@@ -1762,13 +1764,14 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
             mediaIsVideo = mime?.startsWith("video") == true
         }
     }
+    val pickStoryMedia = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Cancel") }
             Text("New story", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }, shape = RoundedCornerShape(28.dp)) { Text(if (mediaUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+        OutlinedButton(onClick = { pickStoryMedia() }, shape = RoundedCornerShape(28.dp)) { Text(if (mediaUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         if (mediaUri != null && !mediaIsVideo) {
             Spacer(Modifier.height(8.dp))
             AsyncImage(model = mediaUri, contentDescription = null, modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)

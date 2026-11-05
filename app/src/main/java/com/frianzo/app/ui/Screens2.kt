@@ -554,13 +554,25 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { scope.launch { try { val r = api2.reelsConfig(); if (r.success && r.data != null) maxSec = r.data.maxDurationSec } catch (_: Exception) {} } }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) videoUri = uri }
+    // v3.1: Gallery asked at pick time; Camera + Microphone asked when the
+    // user taps "Record a video" (owner-confirmed permissions).
+    val pickReelVideo = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }
+    var recordUri by remember { mutableStateOf<Uri?>(null) }
+    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.TakeVideo()) { ok -> if (ok && recordUri != null) videoUri = recordUri }
+    val recordReelVideo = rememberPermissionGate(cameraMicPermissions()) {
+        val u = createVideoUri(context)
+        if (u != null) { recordUri = u; takeVideo.launch(u) } else message = "Could not start camera"
+    }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Cancel", maxLines = 1, softWrap = false) }
             Text("Upload reel", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }, shape = RoundedCornerShape(28.dp)) { Text(if (videoUri == null) "Pick a video" else "Video selected", maxLines = 1, softWrap = false) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { pickReelVideo() }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (videoUri == null) "Pick a video" else "Video selected", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            OutlinedButton(onClick = { recordReelVideo() }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Record a video", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+        }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = caption, onValueChange = { if (it.length <= 500) caption = it }, label = { Text("Caption (optional)") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
@@ -622,6 +634,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
             mediaIsVideo = mime?.startsWith("video") == true
         }
     }
+    val pickPostMedia = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // v2.9: Cancel / Discard — confirms first when the post is dirty.
@@ -643,7 +656,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
             }
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }) { Row(verticalAlignment = Alignment.CenterVertically) { if (imageUri != null) { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)) }; Text(if (imageUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected", maxLines = 1, softWrap = false) } }
+        OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = { pickPostMedia() }) { Row(verticalAlignment = Alignment.CenterVertically) { if (imageUri != null) { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)) }; Text(if (imageUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected", maxLines = 1, softWrap = false) } }
         if (imageUri != null && !mediaIsVideo) {
             Spacer(Modifier.height(8.dp))
             AsyncImage(model = imageUri, contentDescription = null, modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
@@ -1165,6 +1178,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
             } catch (e: Exception) { photoMsg = e.message }
         }
     }
+    val pickAvatar = rememberPermissionGate(galleryPermissions()) { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
+    val pickCover = rememberPermissionGate(galleryPermissions()) { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
     followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }) }
     highlightViewer?.let { h ->
         HighlightViewerDialog(api2, h, username == null, onClose = { highlightViewer = null }, onDeleted = {
@@ -1301,8 +1316,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, label = { Text("Website") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 Spacer(Modifier.height(8.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(onClick = { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change photo", maxLines = 1, softWrap = false) }
-                                    OutlinedButton(onClick = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change cover", maxLines = 1, softWrap = false) }
+                                    OutlinedButton(onClick = { pickAvatar() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change photo", maxLines = 1, softWrap = false) }
+                                    OutlinedButton(onClick = { pickCover() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change cover", maxLines = 1, softWrap = false) }
                                 }
                                 photoMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue) }
                             }

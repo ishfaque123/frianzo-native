@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- v3.1 permissions audit: ONLY what the app actually uses.
-         INTERNET + ACCESS_NETWORK_STATE: the app is online-only (API calls).
-         POST_NOTIFICATIONS: runtime-asked once after login (see MainActivity);
-         push delivery itself still needs the Firebase key (owner step).
-         REMOVED (no feature uses them — verified in code, not guessed):
-         - READ_MEDIA_IMAGES / READ_MEDIA_VIDEO: all picking goes through the
-           system photo picker (PickVisualMedia), which needs NO media
-           permission on any API level; the app never reads files directly.
-         - CAMERA: no TakePicture/TakeVideo anywhere; photos/videos come
-           only from the gallery picker.
-         - RECORD_AUDIO: no voice messages, no voice recording, no mic input.
-         - ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION: no GPS API is
-           called; "location" strings on posts/devices come from the server.
-         No contacts permission either: the app has no contacts feature. -->
+    <!-- v3.1 — owner-confirmed FOUR permissions only: Notification, Gallery,
+         Camera, Microphone. Location is NOT here: no feature needs it.
+         INTERNET + ACCESS_NETWORK_STATE are normal (no prompt) permissions.
+         Runtime requests (see Permissions.kt + MainActivity):
+         - POST_NOTIFICATIONS: once after login.
+         - Gallery (READ_MEDIA_IMAGES/VIDEO on Android 13+, else
+           READ_EXTERNAL_STORAGE): when the user taps a photo/video pick
+           button (composer, comments, story, reel upload, avatar/cover).
+         - CAMERA + RECORD_AUDIO: when the user taps "Record a video" in
+           reel upload (TakeVideo needs both for picture + sound). -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="true"
