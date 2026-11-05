@@ -105,6 +105,9 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
     var isPrivate by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
+    var prefs by remember { mutableStateOf<List<NotificationPref>>(emptyList()) }
+    var devices by remember { mutableStateOf<List<DeviceItem>>(emptyList()) }
+    var blocked by remember { mutableStateOf<List<BlockedEntry>>(emptyList()) }
     fun load() {
         scope.launch {
             try {
@@ -119,8 +122,17 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
             loading = false
         }
     }
-    LaunchedEffect(Unit) { load() }
+    LaunchedEffect(Unit) {
+        load()
+        scope.launch {
+            try { val r = api2.notificationPrefs(); if (r.success && r.data?.preferences != null) prefs = r.data.preferences } catch (_: Exception) {}
+            try { val r = api2.devices(); if (r.success && r.data != null) devices = r.data.devices ?: emptyList() } catch (_: Exception) {}
+            try { val r = api2.blockedUsers(); if (r.success && r.data?.blocked != null) blocked = r.data.blocked } catch (_: Exception) {}
+        }
+    }
     DrawerScaffold("Settings", onBack) {
+      Box(Modifier.weight(1f)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         if (loading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
@@ -154,6 +166,43 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save") }
             Spacer(Modifier.height(16.dp))
+            Text("Notifications", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (prefs.isEmpty()) { Text("Notification settings could not be loaded.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            prefs.forEach { pref ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(pref.category.replaceFirstChar { it.uppercase() }, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = pref.enabled, onCheckedChange = { checked ->
+                        prefs = prefs.map { if (it.category == pref.category) it.copy(enabled = checked) else it }
+                        scope.launch { try { api2.updateNotificationPref(mapOf("category" to pref.category, "enabled" to checked)) } catch (_: Exception) {} }
+                    })
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Devices", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (devices.isEmpty()) { Text("No other devices.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            devices.forEach { d ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text((d.label ?: "Device") + if (d.isCurrent) " (this device)" else "", fontSize = 14.sp)
+                        Text(listOfNotNull(d.location, d.lastActiveAt?.take(10)).joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (!d.isCurrent && d.id != null) TextButton(onClick = { scope.launch { try { if (api2.revokeDevice(d.id).success) devices = devices.filter { it.id != d.id } } catch (_: Exception) {} } }) { Text("Revoke") }
+                }
+            }
+            if (devices.size > 1) {
+                TextButton(onClick = { scope.launch { try { if (api2.revokeOtherDevices().success) devices = devices.filter { it.isCurrent } } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text("Revoke all other devices", modifier = Modifier.fillMaxWidth()) }
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Blocked accounts", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (blocked.isEmpty()) { Text("Nobody blocked.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            blocked.forEach { entry ->
+                val u = entry.user
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(u?.displayName ?: u?.username ?: "User", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    if (u?.id != null) TextButton(onClick = { scope.launch { try { if (api2.unblockUser(u.id).success) blocked = blocked.filter { it.user?.id != u.id } } catch (_: Exception) {} } }) { Text("Unblock") }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
             Text("Login & Security", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = {
@@ -167,6 +216,8 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
             TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("Logout", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete Account", color = Color.Red, modifier = Modifier.fillMaxWidth()) }
         }
+        }
+      }
     }
     if (showDelete) {
         AlertDialog(
@@ -254,9 +305,8 @@ fun ActivityScreen(api2: FrianzoApi2, onBack: () -> Unit) {
 
 // ---------- Professional Dashboard (web: /settings-menu/dashboard) ----------
 // Main stats, earnings, monetization and daily views come from
-// GET /api/users/me/dashboard. The web Achievements / Strikes / Weekly
-// Goals sections are NOT in this build yet (their sections are separate
-// web components); they are not shown with faked numbers here.
+// GET /api/users/me/dashboard; Achievements and Strikes come from
+// GET /api/users/me/achievements and /api/users/me/strikes.
 
 @Composable
 fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
@@ -267,6 +317,8 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var copied by remember { mutableStateOf(false) }
+    var achievements by remember { mutableStateOf<List<Achievement>>(emptyList()) }
+    var strikes by remember { mutableStateOf<StrikesData?>(null) }
     fun load(days: Int) {
         loading = true; error = null
         scope.launch {
@@ -278,6 +330,12 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         }
     }
     LaunchedEffect(range) { load(range) }
+    LaunchedEffect(Unit) {
+        scope.launch {
+            try { val r = api2.myAchievements(); if (r.success && r.data?.achievements != null) achievements = r.data.achievements } catch (_: Exception) {}
+            try { val r = api2.myStrikes(); if (r.success && r.data != null) strikes = r.data } catch (_: Exception) {}
+        }
+    }
     DrawerScaffold("Professional Dashboard", onBack) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(7, 30, 90).forEach { d ->
@@ -323,6 +381,24 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     }
                     Text("Content views - Last $range days", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Text("Total: ${stats.dailyViews.sumOf { it.views }}", fontSize = 13.sp)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Achievements", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    if (achievements.isEmpty()) { Text("No achievements yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    achievements.forEach { a ->
+                        Text(a.name ?: a.key ?: "Achievement", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        a.description?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("Strikes", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    val totalStrikes = strikes?.total ?: 0
+                    if (totalStrikes == 0) { Text("No strikes — good.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    strikes?.strikes?.forEach { s ->
+                        Text(listOfNotNull(s.reason, s.action, s.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp)
+                    }
+                    strikes?.removals?.forEach { r ->
+                        Text(listOfNotNull(r.type, r.detail, r.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp)
+                    }
                     Spacer(Modifier.height(8.dp))
                 }
             }

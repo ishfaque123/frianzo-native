@@ -189,14 +189,14 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             when {
                 drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() })
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId) { openChat = null }
-                openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name })
+                openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it })
                 tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
-                tab == Tab.REELS -> ReelsScreen(api2) { username -> openProfile = username }
+                tab == Tab.REELS -> ReelsScreen(api2, myId) { username -> openProfile = username }
                 tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia) { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }
                 tab == Tab.CHAT -> ChatListScreen(api2) { id, name -> openChat = id to name }
                 tab == Tab.NOTIFS -> NotificationsScreen(api2) { username -> openProfile = username }
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
-                tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout)
+                tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it })
             }
         if (drawerOpen) {
             // LIVE DRAWER (Shell.tsx drawerLinks, in order): profile row, then

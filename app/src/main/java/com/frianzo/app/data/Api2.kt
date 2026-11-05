@@ -20,6 +20,9 @@ data class Reel(
     val author: Author?,
 )
 data class ReelFeedData(val reels: List<Reel>, val hasMore: Boolean = false, val nextOffset: Int = 0)
+data class ReelsConfigData(val enabled: Boolean = true, val maxDurationSec: Int = 180, val dailyLimit: Int = 0)
+data class ReelUploadData(val reel: Reel?)
+data class ReelFavoriteData(val favorited: Boolean = false)
 data class ReelLikeData(val liked: Boolean = false, val likeCount: Int = 0)
 data class ReelComment(val id: String, val content: String?, val author: Author?, val createdAt: String?)
 data class ReelCommentsData(val comments: List<ReelComment>)
@@ -59,6 +62,8 @@ data class StatusGroup(
     val hasUnseen: Boolean = false,
 )
 data class StatusFeedData(val feed: List<StatusGroup>? = null)
+data class StatusCreateData(val status: StatusItem?)
+data class StatusViewer(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val viewedAt: String? = null, val liked: Boolean = false)
 data class PostCreateData(val post: Post?)
 /** Backend GET /api/posts/{id} returns { post }, not a bare post. (Currently unused in UI.) */
 data class PostResponse(val post: Post?)
@@ -91,6 +96,9 @@ data class NotificationItem(
     val actor: Author?,
 )
 data class NotificationsData(val notifications: List<NotificationItem>)
+data class NotificationPref(val category: String, val enabled: Boolean = true)
+data class NotificationPrefsData(val preferences: List<NotificationPref>? = null)
+data class DeleteIdsRequest(val ids: List<String>)
 data class UnreadData(val unreadCount: Int = 0, val count: Int = 0)
 
 // ---------- Profile / search / follow ----------
@@ -119,6 +127,19 @@ data class SearchUsersData(val users: List<PublicProfile>)
 data class FollowData(val following: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String?)
 /** Backend GET /api/follows/{id}/status returns { status: "none"|"following"|"follow_back"|"friends"|"self" }. */
 data class FollowStatusData(val status: String?)
+data class FollowListUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val isVerified: Boolean = false, val isFollowing: Boolean = false)
+data class FollowListData(val users: List<FollowListUser>? = null)
+data class Achievement(val key: String?, val name: String?, val description: String?, val icon: String? = null, val earnedAt: String? = null)
+data class AchievementsData(val achievements: List<Achievement>? = null)
+data class Strike(val id: String?, val severity: String?, val reason: String?, val action: String?, val createdAt: String?)
+data class Removal(val id: String?, val type: String?, val detail: String?, val createdAt: String?)
+data class StrikesData(val strikes: List<Strike>? = null, val removals: List<Removal>? = null, val total: Int = 0)
+data class DeviceItem(val id: String?, val label: String?, val location: String?, val lastActiveAt: String?, val isCurrent: Boolean = false)
+data class DevicesData(val devices: List<DeviceItem>? = null)
+data class BlockedUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?)
+data class BlockStatusData(val blockedByMe: Boolean = false, val blockedByOther: Boolean = false)
+data class BlockedEntry(val blockedAt: String? = null, val user: BlockedUser?)
+data class BlockedListData(val blocked: List<BlockedEntry>? = null)
 /** Backend GET /api/users/me and /api/users/{username} return { user: {...} }, not bare fields. */
 data class ProfileResponse(val user: PublicProfile?)
 
@@ -157,14 +178,38 @@ interface FrianzoApi2 {
     // Reels (auth required)
     @GET("api/reels")
     suspend fun reelFeed(@Query("offset") offset: Int = 0, @Query("feed") feed: String = "foryou"): Envelope<ReelFeedData>
+    @GET("api/reels/config")
+    suspend fun reelsConfig(): Envelope<ReelsConfigData>
+    @Multipart
+    @POST("api/reels")
+    suspend fun uploadReel(
+        @Part video: MultipartBody.Part,
+        @Part("caption") caption: RequestBody?,
+        @Part("category") category: RequestBody?,
+        @Part("durationSec") durationSec: RequestBody,
+    ): Envelope<ReelUploadData>
     @POST("api/reels/{id}/like")
     suspend fun toggleReelLike(@Path("id") id: String): Envelope<ReelLikeData>
+    @POST("api/reels/{id}/favorite")
+    suspend fun toggleReelFavorite(@Path("id") id: String): Envelope<ReelFavoriteData>
+    @POST("api/reels/{id}/report")
+    suspend fun reportReel(@Path("id") id: String, @Body body: Map<String, String>): Envelope<Any>
+    @DELETE("api/reels/{id}")
+    suspend fun deleteReel(@Path("id") id: String): Envelope<Any>
     @POST("api/reels/{id}/view")
     suspend fun recordReelView(@Path("id") id: String, @Body body: Map<String, Int>): Envelope<Any>
     @GET("api/reels/{id}/comments")
     suspend fun reelComments(@Path("id") id: String): Envelope<ReelCommentsData>
     @POST("api/reels/{id}/comments")
     suspend fun addReelComment(@Path("id") id: String, @Body body: CommentCreateRequest): Envelope<Any>
+    @POST("api/reels/comments/{commentId}/reaction")
+    suspend fun reelCommentReaction(@Path("commentId") commentId: String, @Body body: Map<String, String>): Envelope<Any>
+    @PUT("api/reels/comments/{commentId}")
+    suspend fun editReelComment(@Path("commentId") commentId: String, @Body body: Map<String, String>): Envelope<Any>
+    @POST("api/reels/comments/{commentId}/report")
+    suspend fun reportReelComment(@Path("commentId") commentId: String, @Body body: Map<String, String>): Envelope<Any>
+    @DELETE("api/reels/comments/{commentId}")
+    suspend fun deleteReelComment(@Path("commentId") commentId: String): Envelope<Any>
 
     // Posts
     @Multipart
@@ -172,6 +217,12 @@ interface FrianzoApi2 {
     suspend fun createPost(
         @Part("content") content: RequestBody,
         @Part image: MultipartBody.Part?,
+    ): Envelope<PostCreateData>
+    @Multipart
+    @POST("api/posts")
+    suspend fun createPostWithBg(
+        @Part("content") content: RequestBody,
+        @Part("backgroundStyle") backgroundStyle: RequestBody,
     ): Envelope<PostCreateData>
     @GET("api/posts/{id}")
     suspend fun postById(@Path("id") id: String): Envelope<PostResponse>
@@ -213,6 +264,20 @@ interface FrianzoApi2 {
     suspend fun recordShareEvent(@Body body: Map<String, String>): Envelope<Any>
     @GET("api/statuses")
     suspend fun statusFeed(): Envelope<StatusFeedData>
+    @Multipart
+    @POST("api/statuses")
+    suspend fun createStatus(
+        @Part media: MultipartBody.Part?,
+        @Part("textContent") textContent: RequestBody?,
+        @Part("bgColor") bgColor: RequestBody?,
+        @Part("visibility") visibility: RequestBody?,
+    ): Envelope<StatusCreateData>
+    @GET("api/statuses/{id}/viewers")
+    suspend fun statusViewers(@Path("id") id: String): Envelope<List<StatusViewer>>
+    @POST("api/statuses/mute/{userId}")
+    suspend fun muteStories(@Path("userId") userId: String): Envelope<Any>
+    @DELETE("api/statuses/mute/{userId}")
+    suspend fun unmuteStories(@Path("userId") userId: String): Envelope<Any>
     @POST("api/statuses/{id}/view")
     suspend fun viewStatus(@Path("id") id: String): Envelope<Any>
     @POST("api/statuses/{id}/like")
@@ -229,6 +294,10 @@ interface FrianzoApi2 {
     suspend fun messages(@Path("id") id: String): Envelope<MessagesData>
     @POST("api/messages/conversations/{id}/messages")
     suspend fun sendMessage(@Path("id") id: String, @Body body: SendMessageRequest): Envelope<ConversationMessage>
+    @DELETE("api/messages/conversations/{id}")
+    suspend fun deleteConversation(@Path("id") id: String): Envelope<Any>
+    @POST("api/messages/conversations/{id}/disappearing")
+    suspend fun setDisappearing(@Path("id") id: String, @Body body: Map<String, Any?>): Envelope<Any>
 
     // Notifications
     @GET("api/notifications")
@@ -239,6 +308,14 @@ interface FrianzoApi2 {
     suspend fun markNotificationRead(@Path("id") id: String): Envelope<Any>
     @POST("api/notifications/read-all")
     suspend fun markAllNotificationsRead(): Envelope<Any>
+    @GET("api/notifications/preferences")
+    suspend fun notificationPrefs(): Envelope<NotificationPrefsData>
+    @PUT("api/notifications/preferences")
+    suspend fun updateNotificationPref(@Body body: Map<String, Any>): Envelope<Any>
+    @DELETE("api/notifications/all")
+    suspend fun deleteAllNotifications(): Envelope<Any>
+    @HTTP(method = "DELETE", path = "api/notifications", hasBody = true)
+    suspend fun deleteNotifications(@Body body: DeleteIdsRequest): Envelope<Any>
 
     // Profile / search / follow
     @GET("api/users/me")
@@ -253,6 +330,32 @@ interface FrianzoApi2 {
     suspend fun toggleFollow(@Path("userId") userId: String): Envelope<FollowData>
     @GET("api/follows/{userId}/status")
     suspend fun followStatus(@Path("userId") userId: String): Envelope<FollowStatusData>
+    @GET("api/follows/{userId}/{direction}")
+    suspend fun followUsers(@Path("userId") userId: String, @Path("direction") direction: String): Envelope<FollowListData>
+    @GET("api/users/me/achievements")
+    suspend fun myAchievements(): Envelope<AchievementsData>
+    @GET("api/users/me/strikes")
+    suspend fun myStrikes(): Envelope<StrikesData>
+    @GET("api/devices")
+    suspend fun devices(): Envelope<DevicesData>
+    @DELETE("api/devices/{id}")
+    suspend fun revokeDevice(@Path("id") id: String): Envelope<Any>
+    @DELETE("api/devices/others")
+    suspend fun revokeOtherDevices(): Envelope<Any>
+    @GET("api/blocks")
+    suspend fun blockedUsers(): Envelope<BlockedListData>
+    @POST("api/blocks/{userId}")
+    suspend fun blockUser(@Path("userId") userId: String): Envelope<Any>
+    @DELETE("api/blocks/{userId}")
+    suspend fun unblockUser(@Path("userId") userId: String): Envelope<Any>
+    @GET("api/blocks/{userId}/status")
+    suspend fun blockStatus(@Path("userId") userId: String): Envelope<BlockStatusData>
+    @Multipart
+    @POST("api/users/me/avatar")
+    suspend fun uploadAvatar(@Part image: MultipartBody.Part): Envelope<Any>
+    @Multipart
+    @POST("api/users/me/cover")
+    suspend fun uploadCover(@Part image: MultipartBody.Part): Envelope<Any>
 
     // Drawer destinations (v2.7)
     @GET("api/usage")

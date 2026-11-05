@@ -1,5 +1,6 @@
 package com.frianzo.app.ui
 
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.widget.VideoView
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -18,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,7 +39,7 @@ import java.io.File
 
 // ---------- REELS: vertical list, tap video to play/pause, like + view ----------
 @Composable
-fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
+fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> Unit = {}) {
     val context = LocalContext.current
     var reels by remember { mutableStateOf<List<Reel>>(emptyList()) }
     var offset by remember { mutableStateOf(0) }
@@ -45,13 +47,15 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
     var viewedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var feed by remember { mutableStateOf("foryou") }
+    var showUpload by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     fun load() {
         if (loading || !hasMore) return
         loading = true
         scope.launch {
             try {
-                val res = api2.reelFeed(offset)
+                val res = api2.reelFeed(offset, feed)
                 if (res.success && res.data != null) {
                     // PERMANENT FIX for H2: the backend has no exclude
                     // param and re-ranks on every page, so offset pages
@@ -71,9 +75,23 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
     }
     var reelComment by remember { mutableStateOf<Reel?>(null) }
     var reelCommentCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
-    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }) }
-    LaunchedEffect(Unit) { load() }
+    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }) }
+    if (showUpload) { ReelUploadScreen(api2, onDone = { showUpload = false; reels = emptyList(); offset = 0; hasMore = true; load() }, onClose = { showUpload = false }) }
+    LaunchedEffect(feed) { reels = emptyList(); offset = 0; hasMore = true; load() }
     LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentPadding = PaddingValues(vertical = 8.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                listOf("foryou" to "For You", "following" to "Following").forEach { (v, label) ->
+                    val sel = feed == v
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { if (feed != v) feed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = { showUpload = true }, shape = RoundedCornerShape(28.dp)) { Text("Upload reel") }
+            }
+        }
         items(reels, key = { it.id }) { reel ->
             var liked by remember { mutableStateOf(reel.liked) }
             var likes by remember { mutableStateOf(reel.likeCount) }
@@ -149,6 +167,21 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
                             }
                             context.startActivity(android.content.Intent.createChooser(intent, "Share reel"))
                         }) { Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Share") }
+                        var fav by remember { mutableStateOf(reel.favorited) }
+                        IconButton(onClick = {
+                            scope.launch {
+                                try { val r = api2.toggleReelFavorite(reel.id); if (r.success && r.data != null) fav = r.data.favorited } catch (_: Exception) {}
+                            }
+                        }) { Icon(if (fav) Icons.Filled.Star else Icons.Outlined.StarBorder, contentDescription = "Save reel", tint = if (fav) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant) }
+                        var moreOpen by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
+                            DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                                DropdownMenuItem(text = { Text("Copy link") }, onClick = { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", "https://frianzo.online/reel/${reel.id}")) })
+                                DropdownMenuItem(text = { Text("Report") }, onClick = { moreOpen = false; scope.launch { try { api2.reportReel(reel.id, mapOf("reason" to "other")) } catch (_: Exception) {} } })
+                                if (reel.author?.id == myId) DropdownMenuItem(text = { Text("Delete reel", color = Color.Red) }, onClick = { moreOpen = false; scope.launch { try { if (api2.deleteReel(reel.id).success) reels = reels.filter { it.id != reel.id } } catch (_: Exception) {} } })
+                            }
+                        }
                     }
                 }
             }
@@ -164,10 +197,12 @@ fun ReelsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
 
 // ---------- REEL COMMENTS: read + add via existing api2 reelComments endpoints ----------
 @Composable
-private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, onClose: () -> Unit, onCommentAdded: () -> Unit = {}) {
+private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = null, onClose: () -> Unit, onCommentAdded: () -> Unit = {}) {
     var comments by remember { mutableStateOf<List<ReelComment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var editTarget by remember { mutableStateOf<ReelComment?>(null) }
+    var editText by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     fun load() {
         scope.launch {
@@ -188,6 +223,14 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, onClose: () -> Uni
                         Column(Modifier.padding(vertical = 6.dp)) {
                             Text(c.author?.displayName ?: c.author?.username ?: "User", style = MaterialTheme.typography.titleMedium)
                             Text(c.content ?: "", style = MaterialTheme.typography.bodyMedium)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { scope.launch { try { api2.reelCommentReaction(c.id, mapOf("type" to "like")) } catch (_: Exception) {} } }) { Text("Like") }
+                                TextButton(onClick = { scope.launch { try { api2.reportReelComment(c.id, mapOf("reason" to "other")) } catch (_: Exception) {} } }) { Text("Report") }
+                                if (c.author?.id == myId) {
+                                    TextButton(onClick = { editTarget = c; editText = c.content ?: "" }) { Text("Edit") }
+                                    TextButton(onClick = { scope.launch { try { if (api2.deleteReelComment(c.id).success) comments = comments.filter { it.id != c.id } } catch (_: Exception) {} } }) { Text("Delete", color = Color.Red) }
+                                }
+                            }
                         }
                         HorizontalDivider()
                     }
@@ -212,6 +255,63 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, onClose: () -> Uni
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
     )
+    if (editTarget != null) {
+        AlertDialog(onDismissRequest = { editTarget = null }, title = { Text("Edit comment") },
+            text = { OutlinedTextField(value = editText, onValueChange = { editText = it }, modifier = Modifier.fillMaxWidth()) },
+            confirmButton = { Button(onClick = { val target = editTarget!!; scope.launch { try { if (api2.editReelComment(target.id, mapOf("content" to editText)).success) { comments = comments.map { if (it.id == target.id) it.copy(content = editText) else it }; editTarget = null } } catch (_: Exception) {} } }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { editTarget = null }) { Text("Cancel") } })
+    }
+}
+
+// ---------- REEL UPLOAD: video + caption + category (POST /api/reels) ----------
+@Composable
+private fun ReelUploadScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: () -> Unit) {
+    val context = LocalContext.current
+    var videoUri by remember { mutableStateOf<Uri?>(null) }
+    var caption by rememberSaveable { mutableStateOf("") }
+    var category by rememberSaveable { mutableStateOf("") }
+    var maxSec by remember { mutableStateOf(180) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { scope.launch { try { val r = api2.reelsConfig(); if (r.success && r.data != null) maxSec = r.data.maxDurationSec } catch (_: Exception) {} } }
+    val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) videoUri = uri }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onClose) { Text("Cancel") }
+            Text("Upload reel", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }, shape = RoundedCornerShape(28.dp)) { Text(if (videoUri == null) "Pick a video" else "Video selected") }
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(value = caption, onValueChange = { if (it.length <= 500) caption = it }, label = { Text("Caption (optional)") }, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(value = category, onValueChange = { category = it }, label = { Text("Category (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Text("Max length: ${maxSec}s", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(12.dp))
+        Button(enabled = !busy && videoUri != null, onClick = {
+            busy = true
+            scope.launch {
+                try {
+                    val uri = videoUri!!
+                    val durMs = try { val mmr = MediaMetadataRetriever(); mmr.setDataSource(context, uri); (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 15000L).also { mmr.release() } } catch (_: Exception) { 15000L }
+                    val durationSec = ((durMs / 1000).toInt()).coerceIn(1, maxSec)
+                    val input = context.contentResolver.openInputStream(uri) ?: throw Exception("Could not read the video")
+                    val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null } ?: "video/mp4"
+                    val tmp = File(context.cacheDir, "reel_upload.mp4")
+                    input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
+                    val videoPart = MultipartBody.Part.createFormData("video", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
+                    val res = api2.uploadReel(videoPart, caption.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()), category.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()), durationSec.toString().toRequestBody("text/plain".toMediaTypeOrNull()))
+                    try { tmp.delete() } catch (_: Exception) {}
+                    if (!res.success) throw Exception(res.error?.message ?: "Upload failed")
+                    onDone()
+                } catch (e: Exception) { message = e.message ?: "Upload failed" }
+                finally { busy = false }
+            }
+        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(28.dp)) { Text(if (busy) "Uploading..." else "Upload reel") }
+        message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
+        if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
+    }
 }
 
 // ---------- CREATE POST: text + optional photo ----------
@@ -233,6 +333,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var bgStyle by rememberSaveable { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -246,6 +347,18 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
         Text("New post", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("What's on your mind?") }, modifier = Modifier.fillMaxWidth().height(140.dp), shape = RoundedCornerShape(12.dp))
+        if (imageUri == null) {
+            Spacer(Modifier.height(8.dp))
+            Text("Text background", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(4.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(listOf("sunset" to Color(0xFFF97316), "ocean" to Color(0xFF0EA5E9), "violet" to Color(0xFF8B5CF6), "mint" to Color(0xFF10B981), "peach" to Color(0xFFFBBF24), "night" to Color(0xFF1E293B), "rose" to Color(0xFFF43F5E), "sky" to Color(0xFF38BDF8))) { (style, color) ->
+                    Box(Modifier.size(40.dp).clip(CircleShape).background(color).clickable { bgStyle = if (bgStyle == style) null else style }.border(if (bgStyle == style) 3.dp else 0.dp, if (bgStyle == style) FrianzoBlue else Color.Transparent, CircleShape), contentAlignment = Alignment.Center) {
+                        Text(style.take(1).uppercase(), color = Color.White, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }) { Row(verticalAlignment = Alignment.CenterVertically) { if (imageUri != null) { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)) }; Text(if (imageUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected") } }
         if (imageUri != null && !mediaIsVideo) {
@@ -274,7 +387,8 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
                         input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
                         part = MultipartBody.Part.createFormData("image", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
                     }
-                    val res = api2.createPost(text.toRequestBody("text/plain".toMediaTypeOrNull()), part)
+                    val res = if (bgStyle != null && part == null) api2.createPostWithBg(text.toRequestBody("text/plain".toMediaTypeOrNull()), bgStyle!!.toRequestBody("text/plain".toMediaTypeOrNull()))
+                    else api2.createPost(text.toRequestBody("text/plain".toMediaTypeOrNull()), part)
                     // Temp upload file is cache-only; delete it after use
                     // instead of leaving post_upload.jpg behind forever.
                     try { tmpFile?.delete() } catch (_: Exception) {}
@@ -295,8 +409,10 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
 fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
     var list by remember { mutableStateOf<List<Conversation>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var q by rememberSaveable { mutableStateOf("") }
+    var found by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
+    fun loadList() {
         scope.launch {
             try {
                 val res = api2.conversations()
@@ -304,23 +420,55 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
             } catch (e: Exception) { error = e.message }
         }
     }
-    LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentPadding = PaddingValues(vertical = 8.dp)) {
-        item { Text("Chats", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp)) }
-        items(list, key = { it.id }) { c ->
-            val other = c.otherUser
-            val last = c.lastMessage?.content ?: c.messages?.firstOrNull()?.content ?: ""
-            ListItem(
-                headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium) },
-                supportingContent = { Text(last, style = MaterialTheme.typography.bodySmall) },
-                leadingContent = { FrianzoAvatar(other?.profilePictureUrl, 48.dp) },
-                trailingContent = { if (c.unreadCount > 0) Badge(containerColor = FrianzoBadgeRed) { Text("${c.unreadCount}") } },
-                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
-                modifier = Modifier.clickable { onOpen(c.id, other?.displayName ?: other?.username ?: "") },
-            )
-            HorizontalDivider()
+    LaunchedEffect(Unit) { loadList() }
+    LaunchedEffect(q) {
+        if (q.isBlank()) { found = emptyList(); return@LaunchedEffect }
+        delay(300)
+        scope.launch {
+            try { val r = api2.searchUsers(q); if (r.success && r.data != null) found = r.data.users } catch (_: Exception) {}
         }
-        if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-        if (list.isEmpty() && error == null) item { Text("No chats yet", Modifier.padding(16.dp)) }
+    }
+    LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentPadding = PaddingValues(vertical = 8.dp)) {
+        item { Text("Chats", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+        item {
+            OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search people to message") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
+        }
+        if (q.isNotBlank()) {
+            items(found, key = { it.id ?: it.username ?: "" }) { u ->
+                ListItem(
+                    headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium) },
+                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall) },
+                    leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
+                    modifier = Modifier.clickable {
+                        if (u.id != null) scope.launch {
+                            try { val r = api2.createConversation(CreateConversationRequest(u.id)); if (r.success && r.data != null) { q = ""; onOpen(r.data.id, u.displayName ?: u.username ?: "") } } catch (_: Exception) {}
+                        }
+                    },
+                )
+                HorizontalDivider()
+            }
+        } else {
+            items(list, key = { it.id }) { c ->
+                val other = c.otherUser
+                val last = c.lastMessage?.content ?: c.messages?.firstOrNull()?.content ?: ""
+                ListItem(
+                    headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium) },
+                    supportingContent = { Text(last, style = MaterialTheme.typography.bodySmall) },
+                    leadingContent = { FrianzoAvatar(other?.profilePictureUrl, 48.dp) },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (c.unreadCount > 0) Badge(containerColor = FrianzoBadgeRed) { Text("${c.unreadCount}") }
+                            IconButton(onClick = { scope.launch { try { if (api2.deleteConversation(c.id).success) list = list.filter { it.id != c.id } } catch (_: Exception) {} } }) { Icon(Icons.Filled.Delete, contentDescription = "Delete chat", modifier = Modifier.size(20.dp)) }
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.clickable { onOpen(c.id, other?.displayName ?: other?.username ?: "") },
+                )
+                HorizontalDivider()
+            }
+            if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
+            if (list.isEmpty() && error == null) item { Text("No chats yet", Modifier.padding(16.dp)) }
+        }
     }
 }
 
@@ -330,7 +478,22 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     var draft by rememberSaveable { mutableStateOf("") }
     var loadError by remember { mutableStateOf<String?>(null) }
     var sendError by remember { mutableStateOf<String?>(null) }
+    var otherUserId by remember { mutableStateOf<String?>(null) }
+    var isBlocked by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showTimer by remember { mutableStateOf(false) }
+    var timerLabel by remember { mutableStateOf("Off") }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(conversationId) {
+        scope.launch {
+            try {
+                val res = api2.conversations()
+                val other = res.data?.firstOrNull { it.id == conversationId }?.otherUser
+                otherUserId = other?.id
+                if (other?.id != null) { try { val bs = api2.blockStatus(other.id); isBlocked = bs.data?.blockedByMe == true } catch (_: Exception) {} }
+            } catch (_: Exception) {}
+        }
+    }
     // PERMANENT FIX for H3: poll every 5s while the thread is open, so
     // incoming messages appear without leaving and re-opening the thread.
     // The loop is tied to LaunchedEffect, so it stops when the thread closes.
@@ -357,7 +520,34 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("Back") }
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 16.dp))
+            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(vertical = 16.dp))
+            if (timerLabel != "Off") Text(timerLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Box {
+                IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Chat options") }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Disappearing messages: $timerLabel") }, onClick = { menuOpen = false; showTimer = true })
+                    if (otherUserId != null) DropdownMenuItem(text = { Text(if (isBlocked) "Unblock" else "Block") }, onClick = {
+                        menuOpen = false
+                        scope.launch {
+                            try {
+                                if (isBlocked) { if (api2.unblockUser(otherUserId!!).success) isBlocked = false }
+                                else if (api2.blockUser(otherUserId!!).success) isBlocked = true
+                            } catch (_: Exception) {}
+                        }
+                    })
+                    DropdownMenuItem(text = { Text("Delete chat", color = Color.Red) }, onClick = {
+                        menuOpen = false
+                        scope.launch { try { if (api2.deleteConversation(conversationId).success) onBack() } catch (_: Exception) {} }
+                    })
+                }
+            }
+        }
+        if (showTimer) {
+            AlertDialog(onDismissRequest = { showTimer = false }, title = { Text("Disappearing messages") },
+                text = { Column { listOf(null to "Off", 3600 to "1 hour", 86400 to "1 day", 604800 to "1 week").forEach { (secs, label) ->
+                    TextButton(onClick = { showTimer = false; timerLabel = label; scope.launch { try { api2.setDisappearing(conversationId, mapOf<String, Any?>("duration" to secs)) } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                } } },
+                confirmButton = {}, dismissButton = { TextButton(onClick = { showTimer = false }) { Text("Cancel") } })
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
             items(messages, key = { it.id ?: "" }) { m ->
@@ -422,6 +612,9 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
     var error by remember { mutableStateOf<String?>(null) }
     var filter by remember { mutableStateOf("All") }
     var showMarkAllConfirm by remember { mutableStateOf(false) }
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showDeleteAllConfirm by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     fun load() {
         scope.launch {
@@ -443,7 +636,20 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Notifications", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            TextButton(onClick = { selecting = !selecting; if (!selecting) selected = emptySet() }) { Text(if (selecting) "Cancel" else "Select") }
             TextButton(onClick = { showMarkAllConfirm = true }) { Text("Mark all read") }
+            TextButton(onClick = { showDeleteAllConfirm = true }) { Text("Delete all", color = Color.Red) }
+        }
+        if (selecting && selected.isNotEmpty()) {
+            Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${selected.size} selected", modifier = Modifier.weight(1f))
+                Button(onClick = { scope.launch { try { if (api2.deleteNotifications(DeleteIdsRequest(selected.toList())).success) { items = items.filter { it.id !in selected }; selected = emptySet(); selecting = false } } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete selected") }
+            }
+        }
+        if (showDeleteAllConfirm) {
+            AlertDialog(onDismissRequest = { showDeleteAllConfirm = false }, title = { Text("Delete all notifications?") }, text = { Text("This can't be undone.") },
+                confirmButton = { Button(onClick = { showDeleteAllConfirm = false; scope.launch { try { if (api2.deleteAllNotifications().success) items = emptyList() } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete all") } },
+                dismissButton = { TextButton(onClick = { showDeleteAllConfirm = false }) { Text("Cancel") } })
         }
         if (showMarkAllConfirm) {
             AlertDialog(
@@ -469,12 +675,15 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
                 ListItem(
                     headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium) },
                     supportingContent = { Text(listOfNotNull(n.detail?.takeIf { it.isNotBlank() }, notifTimeAgo(n.createdAt).takeIf { it.isNotBlank() }).joinToString(" · "), style = MaterialTheme.typography.bodySmall) },
-                    leadingContent = { FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
                     trailingContent = { if (!n.read) Badge(containerColor = FrianzoBadgeRed) { Text("new") } },
+                    leadingContent = { if (selecting) Checkbox(checked = n.id in selected, onCheckedChange = { checked -> selected = if (checked) selected + n.id else selected - n.id }) else FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
                     colors = ListItemDefaults.colors(containerColor = if (!n.read) FrianzoBlueTint else MaterialTheme.colorScheme.surface),
                     modifier = Modifier.clickable {
-                        scope.launch { try { api2.markNotificationRead(n.id); load() } catch (_: Exception) {} }
-                        n.actor?.username?.let { onAuthor(it) }
+                        if (selecting) { selected = if (n.id in selected) selected - n.id else selected + n.id }
+                        else {
+                            scope.launch { try { api2.markNotificationRead(n.id); load() } catch (_: Exception) {} }
+                            n.actor?.username?.let { onAuthor(it) }
+                        }
                     },
                 )
                 HorizontalDivider()
@@ -600,7 +809,7 @@ fun countryDisplayName(raw: String?): String? {
 }
 
 @Composable
-fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null) {
+fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null, feedVm: FeedViewModel? = null, onUser: ((String) -> Unit)? = null) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
     var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
     var postsLoading by remember { mutableStateOf(false) }
@@ -610,7 +819,31 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var showEdit by remember { mutableStateOf(false) }
     var editError by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var followList by remember { mutableStateOf<String?>(null) }
+    var detailPostId by remember { mutableStateOf<String?>(null) }
+    var photoMsg by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val avatarPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                val part = uriToImagePart(context, uri, "avatar_upload")
+                if (api2.uploadAvatar(part).success) photoMsg = "Photo updated — reopen profile to see it." else photoMsg = "Photo upload failed"
+            } catch (e: Exception) { photoMsg = e.message }
+        }
+    }
+    val coverPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                val part = uriToImagePart(context, uri, "cover_upload")
+                if (api2.uploadCover(part).success) photoMsg = "Cover updated." else photoMsg = "Cover upload failed"
+            } catch (e: Exception) { photoMsg = e.message }
+        }
+    }
+    followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }) }
+    if (detailPostId != null && feedVm != null) {
+        PostDetailScreen(feedVm, detailPostId!!, myId, onClose = { detailPostId = null }, onAuthor = { u -> detailPostId = null; onUser?.invoke(u) }, onOpenChat = { id, name -> detailPostId = null; onOpenChat?.invoke(id, name) })
+    }
     LaunchedEffect(username) {
         scope.launch {
             try {
@@ -660,9 +893,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("${posts.size} Posts", style = MaterialTheme.typography.titleMedium)
                             val fc = p.followerCount ?: p.followersCount
-                            if (fc != null) { Spacer(Modifier.width(16.dp)); Text("$fc Followers", style = MaterialTheme.typography.titleMedium) }
+                            if (fc != null) { Spacer(Modifier.width(16.dp)); Text("$fc Followers", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { if (p.id != null) followList = "followers" }) }
                             val fg = p.followingCount ?: p.followingsCount
-                            if (fg != null) { Spacer(Modifier.width(16.dp)); Text("$fg Following", style = MaterialTheme.typography.titleMedium) }
+                            if (fg != null) { Spacer(Modifier.width(16.dp)); Text("$fg Following", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { if (p.id != null) followList = "following" }) }
                         }
                     }
                 }
@@ -695,6 +928,12 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 OutlinedTextField(value = edCountry, onValueChange = { edCountry = it }, label = { Text("Country") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, label = { Text("Website") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp)) { Text("Change photo") }
+                                    OutlinedButton(onClick = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp)) { Text("Change cover") }
+                                }
+                                photoMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue) }
                             }
                         },
                         confirmButton = {
@@ -748,7 +987,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
             }
         }
         items(if (profile?.isPrivate == true && username != null && !following) emptyList() else posts, key = { it.id }) { post ->
-            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).clickable { if (feedVm != null) detailPostId = post.id }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     post.imageUrl?.let { Spacer(Modifier.height(8.dp)); AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))) }
@@ -768,3 +1007,47 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     }
 }
 
+
+// ---------- FOLLOWERS / FOLLOWING LIST (GET /api/follows/{id}/{direction}) ----------
+@Composable
+private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: String, onUser: (String) -> Unit, onClose: () -> Unit) {
+    var users by remember { mutableStateOf<List<FollowListUser>>(emptyList()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(userId, direction) {
+        scope.launch {
+            try {
+                val res = api2.followUsers(userId, direction)
+                if (res.success && res.data != null) users = res.data.users ?: emptyList() else error = res.error?.message
+            } catch (e: Exception) { error = e.message }
+        }
+    }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onClose) { Text("Back") }
+            Text(if (direction == "followers") "Followers" else "Following", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            items(users, key = { it.id ?: it.username ?: "" }) { u ->
+                ListItem(
+                    headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium) },
+                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall) },
+                    leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
+                    modifier = Modifier.clickable { if (u.username != null) onUser(u.username!!) },
+                )
+                HorizontalDivider()
+            }
+            if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
+            if (users.isEmpty() && error == null) item { Text("Nobody here yet", Modifier.padding(16.dp)) }
+        }
+    }
+}
+
+private fun uriToImagePart(context: android.content.Context, uri: Uri, baseName: String): MultipartBody.Part {
+    val input = context.contentResolver.openInputStream(uri) ?: throw Exception("Could not read the image")
+    val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null } ?: "image/jpeg"
+    val ext = when (mime.substringAfter("/")) { "png" -> "png"; "webp" -> "webp"; "gif" -> "gif"; else -> "jpg" }
+    val tmp = File(context.cacheDir, "$baseName.$ext")
+    input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
+    return MultipartBody.Part.createFormData("image", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
+}

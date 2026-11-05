@@ -523,6 +523,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     var storyInfo by remember { mutableStateOf<String?>(null) }
     var detailPostId by remember { mutableStateOf<String?>(null) }
     var storyViewer by remember { mutableStateOf<StatusGroup?>(null) }
+    var showStoryCreate by remember { mutableStateOf(false) }
     var statusGroups by remember { mutableStateOf<List<StatusGroup>>(emptyList()) }
     var statusFailed by remember { mutableStateOf(false) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
@@ -576,7 +577,20 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         PostDetailScreen(vm, pid, myId, onClose = { detailPostId = null }, onAuthor = onAuthor, onOpenChat = onOpenChat)
     }
     storyViewer?.let { group ->
-        StoryViewerDialog(vm.api2, group, myId, onClose = { storyViewer = null })
+        StoryViewerDialog(vm.api2, group, myId, onClose = { storyViewer = null }, onDeleted = {
+            storyViewer = null
+            followScope.launch {
+                try { val sf = vm.api2.statusFeed(); if (sf.success && sf.data != null) statusGroups = sf.data.feed ?: emptyList() } catch (_: Exception) {}
+            }
+        })
+    }
+    if (showStoryCreate) {
+        StoryCreateScreen(vm.api2, onDone = {
+            showStoryCreate = false
+            followScope.launch {
+                try { val sf = vm.api2.statusFeed(); if (sf.success && sf.data != null) statusGroups = sf.data.feed ?: emptyList() } catch (_: Exception) {}
+            }
+        }, onClose = { showStoryCreate = false })
     }
     storyInfo?.let { name ->
         AlertDialog(
@@ -643,7 +657,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         items(statusGroups) { group ->
                             val isOwn = group.userId == myId || group.user?.id == myId
                             val label = if (isOwn) "Your story" else (group.user?.displayName ?: group.user?.username ?: "User").substringBefore(" ")
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { storyViewer = group }) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { if (isOwn) showStoryCreate = true else storyViewer = group }) {
                                 val ring = if (group.hasUnseen && !isOwn) Brush.linearGradient(listOf(Color(0xFFF59E0B), Color(0xFFEC4899))) else null
                                 Box(Modifier.size(62.dp).clip(CircleShape).background(ring ?: Brush.linearGradient(listOf(Color(0xFFCBD5E1), Color(0xFFCBD5E1)))).padding(3.dp), contentAlignment = Alignment.Center) {
                                     Box(Modifier.size(56.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) { FrianzoAvatar(group.user?.profilePictureUrl, 56.dp) }
@@ -655,7 +669,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         }
                         if (statusGroups.none { it.userId == myId || it.user?.id == myId }) {
                             item {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { onCreatePost() }) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { showStoryCreate = true }) {
                                     Box(contentAlignment = Alignment.BottomEnd) {
                                         Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) { FrianzoAvatar(myAvatar, 56.dp) }
                                         Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
@@ -1382,7 +1396,7 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: () -> Unit, onAuthor: (String) -> Unit, onOpenChat: (String, String) -> Unit) {
+fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: () -> Unit, onAuthor: (String) -> Unit, onOpenChat: (String, String) -> Unit) {
     var detail by remember { mutableStateOf<Post?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1513,9 +1527,13 @@ private fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, o
 }
 
 @Composable
-private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: String?, onClose: () -> Unit) {
+private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: String?, onClose: () -> Unit, onDeleted: () -> Unit = {}) {
     var idx by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
+    var viewers by remember { mutableStateOf<List<StatusViewer>?>(null) }
+    var showViewers by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    val isOwn = group.userId == myId || group.user?.id == myId
     val item = group.items.getOrNull(idx)
     LaunchedEffect(item?.id) { if (item != null && group.userId != myId) { scope.launch { try { api2.viewStatus(item.id) } catch (_: Exception) {} } } }
     AlertDialog(onDismissRequest = onClose, title = { Text(group.user?.displayName ?: group.user?.username ?: "Story") }, text = {
@@ -1533,10 +1551,123 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                 Button(enabled = idx > 0, onClick = { idx-- }) { Text("Back") }
                 Button(enabled = idx < group.items.size - 1, onClick = { idx++ }) { Text("Next") }
             }
+            notice?.let { Spacer(Modifier.height(8.dp)); Text(it, fontSize = 13.sp, color = FrianzoBlue) }
+            if (isOwn) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            try { val r = api2.statusViewers(item?.id ?: ""); if (r.success && r.data != null) { viewers = r.data; showViewers = true } } catch (e: Exception) { notice = e.message }
+                        }
+                    }) { Text("Viewers") }
+                    TextButton(onClick = {
+                        scope.launch {
+                            try { if (item != null && api2.deleteStatus(item.id).success) onDeleted() } catch (e: Exception) { notice = e.message }
+                        }
+                    }) { Text("Delete story", color = Color.Red) }
+                }
+            } else {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { scope.launch { try { group.user?.id?.let { api2.muteStories(it); notice = "Stories muted" } } catch (_: Exception) {} } }) { Text("Mute stories") }
+                    OutlinedButton(onClick = { scope.launch { try { group.user?.id?.let { api2.unmuteStories(it); notice = "Stories unmuted" } } catch (_: Exception) {} } }) { Text("Unmute") }
+                }
+            }
         }
     }, confirmButton = { TextButton(onClick = onClose) { Text("Close") } }, dismissButton = {
-        if (group.userId != myId) TextButton(onClick = { item?.let { scope.launch { try { api2.toggleStatusLike(it.id) } catch (_: Exception) {} } } }) { Text("Like") }
+        if (!isOwn) TextButton(onClick = { item?.let { scope.launch { try { api2.toggleStatusLike(it.id) } catch (_: Exception) {} } } }) { Text("Like") }
     })
+    if (showViewers) {
+        AlertDialog(onDismissRequest = { showViewers = false }, title = { Text("Viewers") },
+            text = { Column { (viewers ?: emptyList()).forEach { v -> Text(v.displayName ?: v.username ?: "User", fontSize = 14.sp) }; if (viewers.isNullOrEmpty()) Text("No views yet", fontSize = 14.sp) } },
+            confirmButton = { TextButton(onClick = { showViewers = false }) { Text("Close") } })
+    }
+}
+
+// ---------- STORY CREATION: photo/video or text + background (POST /api/statuses) ----------
+@Composable
+private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: () -> Unit) {
+    val context = LocalContext.current
+    var mediaUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var mediaIsVideo by remember { mutableStateOf(false) }
+    var text by rememberSaveable { mutableStateOf("") }
+    var bgColor by rememberSaveable { mutableStateOf("#1E293B") }
+    var visibility by rememberSaveable { mutableStateOf("everyone") }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
+        if (uri != null) {
+            mediaUri = uri
+            val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+            mediaIsVideo = mime?.startsWith("video") == true
+        }
+    }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onClose) { Text("Cancel") }
+            Text("New story", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }, shape = RoundedCornerShape(28.dp)) { Text(if (mediaUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected") }
+        if (mediaUri != null && !mediaIsVideo) {
+            Spacer(Modifier.height(8.dp))
+            AsyncImage(model = mediaUri, contentDescription = null, modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(value = text, onValueChange = { if (it.length <= 500) text = it }, label = { Text("Text story (optional)") }, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        Text("Background colour", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(listOf("#1E293B", "#0EA5E9", "#8B5CF6", "#F43F5E", "#10B981", "#F97316")) { hex ->
+                val color = try { Color(android.graphics.Color.parseColor(hex)) } catch (_: Exception) { Color(0xFF1E293B) }
+                Box(Modifier.size(40.dp).clip(CircleShape).background(color).clickable { bgColor = hex }.border(if (bgColor == hex) 3.dp else 0.dp, if (bgColor == hex) FrianzoBlue else Color.Transparent, CircleShape))
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Who can see it", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("everyone" to "Everyone", "close_friends" to "Close friends").forEach { (v, label) ->
+                val sel = visibility == v
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { visibility = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(enabled = !busy && (mediaUri != null || text.isNotBlank()), onClick = {
+            busy = true
+            scope.launch {
+                try {
+                    var part: okhttp3.MultipartBody.Part? = null
+                    var tmpFile: java.io.File? = null
+                    val uri = mediaUri
+                    if (uri != null) {
+                        val input = context.contentResolver.openInputStream(uri) ?: throw Exception("Could not read the media")
+                        val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null } ?: if (mediaIsVideo) "video/mp4" else "image/jpeg"
+                        val ext = when (mime.substringAfter("/")) { "png" -> "png"; "webp" -> "webp"; "mp4" -> "mp4"; "mov" -> "mov"; else -> if (mediaIsVideo) "mp4" else "jpg" }
+                        val tmp = java.io.File(context.cacheDir, "story_upload.$ext")
+                        tmpFile = tmp
+                        input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
+                        part = okhttp3.MultipartBody.Part.createFormData("media", tmp.name, okhttp3.RequestBody.create(mime.toMediaTypeOrNull(), tmp))
+                    }
+                    val res = api2.createStatus(
+                        part,
+                        text.ifBlank { null }?.let { okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), it) },
+                        okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), bgColor),
+                        okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), visibility),
+                    )
+                    try { tmpFile?.delete() } catch (_: Exception) {}
+                    if (!res.success) throw Exception(res.error?.message ?: "Story failed")
+                    onDone()
+                } catch (e: Exception) { message = e.message ?: "Story failed" }
+                finally { busy = false }
+            }
+        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(28.dp)) { Text(if (busy) "Posting..." else "Share story") }
+        message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
+        if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
+    }
 }
 
 
