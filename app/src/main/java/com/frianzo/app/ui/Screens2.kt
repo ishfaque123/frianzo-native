@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
@@ -133,7 +134,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
             listOf("foryou" to "For You", "following" to "Following").forEach { (v, label) ->
                 val sel = feed == v
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.15f)).clickable { if (feed != v) feed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.Black else Color.White)
+                    Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.Black else Color.White, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.width(8.dp))
             }
@@ -311,10 +312,10 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { reel.author?.username?.let { onAuthor(it) } }) {
                 FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
                 Spacer(Modifier.width(8.dp))
-                Text("@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text("@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             reel.caption?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Color.White, fontSize = 14.sp, maxLines = 3) }
-            reel.category?.let { Spacer(Modifier.height(6.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) { Text(it, color = Color.White, fontSize = 12.sp) } }
+            reel.category?.let { Spacer(Modifier.height(6.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) { Text(it, color = Color.White, fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }
         }
     }
 }
@@ -359,7 +360,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.78f).padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                Text("$total comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("$total comments", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
@@ -373,19 +374,19 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         val isExpanded = c.id in expandedIds
                         Column(Modifier.fillMaxWidth().padding(start = 40.dp, top = 2.dp)) {
                             if (!isExpanded) {
-                                TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${replies.size} ${if (replies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${replies.size} ${if (replies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                             } else {
                                 replies.forEach { r ->
                                     ReelCommentRow(api2, r, reel, myId, isReply = true, parentAuthor = c.author, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0) })
                                 }
-                                TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                             }
                         }
                     }
                 }
                 if (hasMore) item {
                     Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        if (loadingMore) DotsLoading() else OutlinedButton(onClick = { load(nextCursor) }, shape = RoundedCornerShape(28.dp)) { Text("Load more comments") }
+                        if (loadingMore) DotsLoading() else OutlinedButton(onClick = { load(nextCursor) }, shape = RoundedCornerShape(28.dp)) { Text("Load more comments", maxLines = 1, softWrap = false) }
                     }
                 }
                 if (error != null) item { Text(error!!, fontSize = 13.sp, color = Color.Red, modifier = Modifier.padding(vertical = 8.dp)) }
@@ -397,7 +398,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                             append("Replying to ")
                             withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append("@${replyTo!!.author?.username ?: "User"}") }
                         },
-                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -431,7 +432,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                             } catch (e: Exception) { error = e.message; draft = text }
                         }
                     },
-                ) { Text("Send") }
+                ) { Text("Send", maxLines = 1, softWrap = false) }
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -459,17 +460,17 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
             Column(Modifier.weight(1f)) {
                 // Plain-text row (web reel comments): no bubble, no Follow pill.
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
                     Spacer(Modifier.width(8.dp))
-                    Text(reelTimeAgo(c.createdAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(reelTimeAgo(c.createdAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
                 Spacer(Modifier.height(2.dp))
                 if (editing) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(value = editDraft, onValueChange = { if (it.length <= 500) editDraft = it }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(10.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder))
-                        TextButton(onClick = { scope.launch { try { if (api2.editReelComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {} } }) { Text("Save", fontSize = 13.sp, color = FrianzoBlue) }
-                        TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 13.sp) }
+                        TextButton(onClick = { scope.launch { try { if (api2.editReelComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {} } }) { Text("Save", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false) }
+                        TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 13.sp, maxLines = 1, softWrap = false) }
                     }
                 } else {
                     val prefix = if (isReply && parentAuthor != null && !(c.content ?: "").trim().lowercase().startsWith("@${parentAuthor.username?.lowercase()}")) "@${parentAuthor.username} " else ""
@@ -494,10 +495,10 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                         scope.launch { try { if (!api2.reelCommentReaction(c.id, mapOf("type" to "like")).success) { localReaction = prevReaction; localCount = prevCount } } catch (_: Exception) { localReaction = prevReaction; localCount = prevCount } }
                     }, contentPadding = PaddingValues(0.dp)) {
                         if (localReaction != null) { ReactionIcon(localReaction, 16.dp); Spacer(Modifier.width(4.dp)) }
-                        Text("Like", fontSize = 13.sp, fontWeight = if (localReaction != null) FontWeight.SemiBold else FontWeight.Normal, color = if (localReaction != null) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Like", fontSize = 13.sp, fontWeight = if (localReaction != null) FontWeight.SemiBold else FontWeight.Normal, color = if (localReaction != null) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                     }
                     Spacer(Modifier.width(12.dp))
-                    TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                     if (localCount > 0) { Spacer(Modifier.width(12.dp)); Text(reelCount(localCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     Spacer(Modifier.weight(1f))
                     Box {
@@ -555,11 +556,11 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) videoUri = uri }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text("Cancel") }
-            Text("Upload reel", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            TextButton(onClick = onClose) { Text("Cancel", maxLines = 1, softWrap = false) }
+            Text("Upload reel", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }, shape = RoundedCornerShape(28.dp)) { Text(if (videoUri == null) "Pick a video" else "Video selected") }
+        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }, shape = RoundedCornerShape(28.dp)) { Text(if (videoUri == null) "Pick a video" else "Video selected", maxLines = 1, softWrap = false) }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = caption, onValueChange = { if (it.length <= 500) caption = it }, label = { Text("Caption (optional)") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
@@ -585,7 +586,7 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                 } catch (e: Exception) { message = e.message ?: "Upload failed" }
                 finally { busy = false }
             }
-        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(28.dp)) { Text(if (busy) "Uploading..." else "Upload reel") }
+        }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (busy) "Uploading..." else "Upload reel", maxLines = 1, softWrap = false) }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
     }
@@ -624,8 +625,8 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // v2.9: Cancel / Discard — confirms first when the post is dirty.
-            TextButton(onClick = { if (text.isNotBlank() || imageUri != null || bgStyle != null) showDiscard = true else onClose() }) { Text("Cancel") }
-            Text("New post", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            TextButton(onClick = { if (text.isNotBlank() || imageUri != null || bgStyle != null) showDiscard = true else onClose() }) { Text("Cancel", maxLines = 1, softWrap = false) }
+            Text("New post", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("What's on your mind?") }, modifier = Modifier.fillMaxWidth().height(140.dp), shape = RoundedCornerShape(12.dp))
@@ -642,7 +643,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
             }
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }) { Row(verticalAlignment = Alignment.CenterVertically) { if (imageUri != null) { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)) }; Text(if (imageUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected") } }
+        OutlinedButton(shape = RoundedCornerShape(28.dp), onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }) { Row(verticalAlignment = Alignment.CenterVertically) { if (imageUri != null) { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)) }; Text(if (imageUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected", maxLines = 1, softWrap = false) } }
         if (imageUri != null && !mediaIsVideo) {
             Spacer(Modifier.height(8.dp))
             AsyncImage(model = imageUri, contentDescription = null, modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
@@ -680,7 +681,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
                 } catch (e: Exception) { message = e.message ?: "Post failed" }
                 finally { busy = false }
             }
-        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(28.dp)) { Text("Post") }
+        }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Post", maxLines = 1, softWrap = false) }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it) }
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
     }
@@ -727,8 +728,8 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
         if (q.isNotBlank()) {
             items(found, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
-                    headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall) },
+                    headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
                     modifier = Modifier.clickable {
                         if (u.id != null) scope.launch {
@@ -743,12 +744,12 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
                 val other = c.otherUser
                 val last = c.lastMessage?.content ?: c.messages?.firstOrNull()?.content ?: ""
                 ListItem(
-                    headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text(last, style = MaterialTheme.typography.bodySmall) },
+                    headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text(last, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingContent = { FrianzoAvatar(other?.profilePictureUrl, 48.dp) },
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (c.unreadCount > 0) Badge(containerColor = FrianzoBadgeRed) { Text("${c.unreadCount}") }
+                            if (c.unreadCount > 0) Badge(containerColor = FrianzoBadgeRed) { Text("${c.unreadCount}", maxLines = 1, softWrap = false) }
                             IconButton(onClick = { scope.launch { try { if (api2.deleteConversation(c.id).success) list = list.filter { it.id != c.id } } catch (_: Exception) {} } }) { Icon(Icons.Filled.Delete, contentDescription = "Delete chat", modifier = Modifier.size(20.dp)) }
                         }
                     },
@@ -810,9 +811,9 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("Back") }
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(vertical = 16.dp))
-            if (timerLabel != "Off") Text(timerLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = onBack) { Text("Back", maxLines = 1, softWrap = false) }
+            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(vertical = 16.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (timerLabel != "Off") Text(timerLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
             Box {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Chat options") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -836,7 +837,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         if (showTimer) {
             AlertDialog(onDismissRequest = { showTimer = false }, title = { Text("Disappearing messages") },
                 text = { Column { listOf(null to "Off", 3600 to "1 hour", 86400 to "1 day", 604800 to "1 week").forEach { (secs, label) ->
-                    TextButton(onClick = { showTimer = false; timerLabel = label; scope.launch { try { api2.setDisappearing(conversationId, mapOf<String, Any?>("duration" to secs)) } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                    TextButton(onClick = { showTimer = false; timerLabel = label; scope.launch { try { api2.setDisappearing(conversationId, mapOf<String, Any?>("duration" to secs)) } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false) }
                 } } },
                 confirmButton = {}, dismissButton = { TextButton(onClick = { showTimer = false }) { Text("Cancel") } })
         }
@@ -865,7 +866,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 scope.launch {
                     try { api2.sendMessage(conversationId, SendMessageRequest(text)); load() } catch (e: Exception) { draft = text; sendError = e.message }
                 }
-            }) { Text("Send") }
+            }) { Text("Send", maxLines = 1, softWrap = false) }
         }
     }
 }
@@ -941,13 +942,13 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
         }
         if (selecting && selected.isNotEmpty()) {
             Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${selected.size} selected", modifier = Modifier.weight(1f))
-                Button(onClick = { scope.launch { try { if (api2.deleteNotifications(DeleteIdsRequest(selected.toList())).success) { items = items.filter { it.id !in selected }; selected = emptySet(); selecting = false } } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete selected") }
+                Text("${selected.size} selected", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Button(onClick = { scope.launch { try { if (api2.deleteNotifications(DeleteIdsRequest(selected.toList())).success) { items = items.filter { it.id !in selected }; selected = emptySet(); selecting = false } } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Delete selected", maxLines = 1, softWrap = false) }
             }
         }
         if (showDeleteAllConfirm) {
             AlertDialog(onDismissRequest = { showDeleteAllConfirm = false }, title = { Text("Delete all notifications?") }, text = { Text("This can't be undone.") },
-                confirmButton = { Button(onClick = { showDeleteAllConfirm = false; scope.launch { try { if (api2.deleteAllNotifications().success) items = emptyList() } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete all") } },
+                confirmButton = { Button(onClick = { showDeleteAllConfirm = false; scope.launch { try { if (api2.deleteAllNotifications().success) items = emptyList() } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete all", maxLines = 1, softWrap = false) } },
                 dismissButton = { TextButton(onClick = { showDeleteAllConfirm = false }) { Text("Cancel") } })
         }
         if (showMarkAllConfirm) {
@@ -955,7 +956,7 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                 onDismissRequest = { showMarkAllConfirm = false },
                 title = { Text("Mark all as read?") },
                 text = { Text("All notifications will be marked as read.") },
-                confirmButton = { Button(onClick = { showMarkAllConfirm = false; scope.launch { try { api2.markAllNotificationsRead(); load() } catch (_: Exception) {} } }) { Text("Mark all read") } },
+                confirmButton = { Button(onClick = { showMarkAllConfirm = false; scope.launch { try { api2.markAllNotificationsRead(); load() } catch (_: Exception) {} } }) { Text("Mark all read", maxLines = 1, softWrap = false) } },
                 dismissButton = { TextButton(onClick = { showMarkAllConfirm = false }) { Text("Cancel") } },
             )
         }
@@ -965,16 +966,16 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
             items(listOf("All", "Unread", "Likes", "Comments", "Follows", "Messages")) { f ->
                 val sel = filter == f
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { filter = f }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(f, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(f, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
         LazyColumn(Modifier.weight(1f)) {
             items(filtered, key = { it.id }) { n ->
                 ListItem(
-                    headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text(listOfNotNull(n.detail?.takeIf { it.isNotBlank() }, notifTimeAgo(n.createdAt).takeIf { it.isNotBlank() }).joinToString(" · "), style = MaterialTheme.typography.bodySmall) },
-                    trailingContent = { if (!n.read) Badge(containerColor = FrianzoBadgeRed) { Text("new") } },
+                    headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text(listOfNotNull(n.detail?.takeIf { it.isNotBlank() }, notifTimeAgo(n.createdAt).takeIf { it.isNotBlank() }).joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    trailingContent = { if (!n.read) Badge(containerColor = FrianzoBadgeRed) { Text("new", maxLines = 1, softWrap = false) } },
                     leadingContent = { if (selecting) Checkbox(checked = n.id in selected, onCheckedChange = { checked -> selected = if (checked) selected + n.id else selected - n.id }) else FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
                     colors = ListItemDefaults.colors(containerColor = if (!n.read) FrianzoBlueTint else MaterialTheme.colorScheme.surface),
                     modifier = Modifier.clickable {
@@ -1057,14 +1058,14 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
         if (searching) Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) { DotsLoading() }
         if (q.isBlank() && recents.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Recent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = { recents = emptyList(); saveRecents(emptyList()) }) { Text("Clear") }
+                Text("Recent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                TextButton(onClick = { recents = emptyList(); saveRecents(emptyList()) }) { Text("Clear", maxLines = 1, softWrap = false) }
             }
             recents.forEach { r ->
                 Row(Modifier.fillMaxWidth().clickable { q = r }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.History, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(12.dp))
-                    Text(r, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Text(r, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     IconButton(onClick = { val u = recents - r; recents = u; saveRecents(u) }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Remove", modifier = Modifier.size(16.dp)) }
                 }
                 HorizontalDivider()
@@ -1076,8 +1077,8 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
         LazyColumn {
             items(results, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
-                    headlineContent = { Text(u.displayName ?: "", style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall) },
+                    headlineContent = { Text(u.displayName ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
                     colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
                     modifier = Modifier.clickable { if (u.username != null) onUser(u.username) },
@@ -1224,38 +1225,56 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
         }
         item {
             profile?.let { p ->
-                p.coverPhotoUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().height(180.dp)) }
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    FrianzoAvatar(p.profilePictureUrl, 80.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge)
-                            if (p.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
-                        }
-                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall)
-                        p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                        // v2.9: website is a real link (was plain blue Text).
-                        p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.clickable { openWebUrl(context, it) }) }
-                        val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, countryDisplayName(p.country)).joinToString(", ")
-                        if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${posts.size} Posts", style = MaterialTheme.typography.titleMedium)
-                            // v2.9: real counts from GET /api/follows/{id}/counts
-                            // (PublicProfile itself returns NO counts).
-                            val fc = followCounts?.followers ?: (p.followerCount ?: p.followersCount)
-                            if (fc != null) { Spacer(Modifier.width(16.dp)); Text("$fc Followers", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { if (p.id != null) followList = "followers" }) }
-                            val fg = followCounts?.following ?: (p.followingCount ?: p.followingsCount)
-                            if (fg != null) { Spacer(Modifier.width(16.dp)); Text("$fg Following", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { if (p.id != null) followList = "following" }) }
-                        }
+                // v3.1: Facebook-style header — 200dp cover, 96dp avatar
+                // overlapping the cover's bottom edge with a white ring,
+                // name/bio/counts full-width below (was: 80dp avatar in a
+                // side-by-side Row, counts squeezed into the narrow column).
+                Box(Modifier.fillMaxWidth().height(248.dp)) {
+                    if (p.coverPhotoUrl != null) AsyncImage(model = p.coverPhotoUrl, contentDescription = null, modifier = Modifier.fillMaxWidth().height(200.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    else Box(Modifier.fillMaxWidth().height(200.dp).background(FrianzoBlueTint))
+                    Box(Modifier.align(Alignment.BottomStart).padding(start = 16.dp).size(96.dp).clip(CircleShape).background(Color.White), contentAlignment = Alignment.Center) {
+                        FrianzoAvatar(p.profilePictureUrl, 88.dp)
                     }
                 }
+                Column(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (p.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
+                        }
+                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis) }
+                        // v2.9: website is a real link (was plain blue Text).
+                        p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.clickable { openWebUrl(context, it) }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, countryDisplayName(p.country)).joinToString(", ")
+                        if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(8.dp))
+                        // v3.1: counts as a full-width row — three equal
+                        // columns, bold number over grey label (was: three
+                        // texts squeezed into the narrow side column).
+                        // v2.9: real counts from GET /api/follows/{id}/counts
+                        // (PublicProfile itself returns NO counts).
+                        Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                            val fc = followCounts?.followers ?: (p.followerCount ?: p.followersCount)
+                            val fg = followCounts?.following ?: (p.followingCount ?: p.followingsCount)
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("${posts.size}", style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false)
+                                Text("Posts", style = MaterialTheme.typography.bodySmall, maxLines = 1, softWrap = false)
+                            }
+                            if (fc != null) Column(Modifier.weight(1f).clickable { if (p.id != null) followList = "followers" }, horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("$fc", style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false)
+                                Text("Followers", style = MaterialTheme.typography.bodySmall, maxLines = 1, softWrap = false)
+                            }
+                            if (fg != null) Column(Modifier.weight(1f).clickable { if (p.id != null) followList = "following" }, horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("$fg", style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false)
+                                Text("Following", style = MaterialTheme.typography.bodySmall, maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
                 if (username == null && onLogout != null) {
                     Row(Modifier.padding(horizontal = 16.dp)) {
-                        OutlinedButton(onClick = { showEdit = true }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Edit profile") }
+                        Button(onClick = { showEdit = true }, modifier = Modifier.weight(1f).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue)) { Text("Edit profile", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         Spacer(Modifier.width(8.dp))
-                        OutlinedButton(onClick = onLogout, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Log out") }
+                        OutlinedButton(onClick = onLogout, modifier = Modifier.weight(1f).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Log out", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                     }
                     if (editError != null) Text(editError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
                 }
@@ -1282,8 +1301,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, label = { Text("Website") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 Spacer(Modifier.height(8.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(onClick = { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp)) { Text("Change photo") }
-                                    OutlinedButton(onClick = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp)) { Text("Change cover") }
+                                    OutlinedButton(onClick = { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change photo", maxLines = 1, softWrap = false) }
+                                    OutlinedButton(onClick = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change cover", maxLines = 1, softWrap = false) }
                                 }
                                 photoMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue) }
                             }
@@ -1312,7 +1331,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                     if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none" }
                                 } catch (_: Exception) {}
                             }
-                        }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text(if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow") }
+                        }, modifier = Modifier.weight(1f).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue)) { Text(if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow", maxLines = 1, softWrap = false) }
                         if (onOpenChat != null) {
                             Spacer(Modifier.width(8.dp))
                             OutlinedButton(onClick = {
@@ -1322,7 +1341,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                         if (r.success && r.data != null) onOpenChat(r.data.id, p.displayName ?: p.username ?: "")
                                     } catch (_: Exception) {}
                                 }
-                            }, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Message") }
+                            }, modifier = Modifier.weight(1f).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Message", maxLines = 1, softWrap = false) }
                         }
                     }
                 }
@@ -1343,7 +1362,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                     else Text((h.title ?: "H").take(1).uppercase(), color = FrianzoBlue, fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(Modifier.height(4.dp))
-                                Text(h.title ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Text(h.title ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         if (username == null) {
@@ -1351,7 +1370,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { showHighlightCreate = true }) {
                                     Box(Modifier.size(60.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = "New highlight", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     Spacer(Modifier.height(4.dp))
-                                    Text("New", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                    Text("New", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
@@ -1368,7 +1387,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
             }
         }
         items(if (profile?.isPrivate == true && username != null && !following) emptyList() else posts, key = { it.id }) { post ->
-            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).clickable { if (feedVm != null) detailPostId = post.id }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable { if (feedVm != null) detailPostId = post.id }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     post.imageUrl?.let { Spacer(Modifier.height(8.dp)); AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))) }
@@ -1441,19 +1460,19 @@ private fun HighlightViewerDialog(api2: FrianzoApi2, highlight: Highlight, isOwn
                 else -> AsyncImage(model = item.mediaUrl, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Fit, modifier = Modifier.fillMaxSize())
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(highlight.title ?: "Highlight", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                Text("${idx + 1}/${highlight.items.size}", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                Text(highlight.title ?: "Highlight", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${idx + 1}/${highlight.items.size}", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp, maxLines = 1, softWrap = false)
                 Spacer(Modifier.width(8.dp))
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White) }
             }
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
                 notice?.let { Text(it, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = idx > 0, onClick = { idx-- }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White)) { Text("Back") }
-                    Button(enabled = idx < highlight.items.size - 1, onClick = { idx++ }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White)) { Text("Next") }
+                    Button(enabled = idx > 0, onClick = { idx-- }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Back", maxLines = 1, softWrap = false) }
+                    Button(enabled = idx < highlight.items.size - 1, onClick = { idx++ }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Next", maxLines = 1, softWrap = false) }
                     if (isOwn) {
                         Spacer(Modifier.weight(1f))
-                        OutlinedButton(onClick = { showDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)) { Text("Delete highlight") }
+                        OutlinedButton(onClick = { showDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Delete highlight", maxLines = 1, softWrap = false) }
                     }
                 }
             }
@@ -1489,7 +1508,7 @@ private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusIte
                             Checkbox(checked = st.id in selected, onCheckedChange = { checked -> selected = if (checked) selected + st.id else selected - st.id })
                             if (!st.mediaUrl.isNullOrBlank()) AsyncImage(model = st.thumbnailUrl ?: st.mediaUrl, contentDescription = null, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                             Spacer(Modifier.width(8.dp))
-                            Text(st.textContent?.takeIf { it.isNotBlank() } ?: if (st.mediaType == "video") "Video story" else "Photo story", fontSize = 14.sp, maxLines = 1)
+                            Text(st.textContent?.takeIf { it.isNotBlank() } ?: if (st.mediaType == "video") "Video story" else "Photo story", fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -1506,7 +1525,7 @@ private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusIte
                     } catch (e: Exception) { error = e.message }
                     busy = false
                 }
-            }) { Text(if (busy) "Creating..." else "Create") }
+            }) { Text(if (busy) "Creating..." else "Create", maxLines = 1, softWrap = false) }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
     )
@@ -1528,14 +1547,14 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text("Back") }
-            Text(if (direction == "followers") "Followers" else "Following", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            TextButton(onClick = onClose) { Text("Back", maxLines = 1, softWrap = false) }
+            Text(if (direction == "followers") "Followers" else "Following", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         LazyColumn(Modifier.weight(1f)) {
             items(users, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
-                    headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium) },
-                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall) },
+                    headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
                     modifier = Modifier.clickable { if (u.username != null) onUser(u.username!!) },
                 )

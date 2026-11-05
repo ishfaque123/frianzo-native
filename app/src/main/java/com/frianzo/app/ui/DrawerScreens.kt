@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -64,9 +65,9 @@ fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onL
 @Composable
 fun DrawerScaffold(title: String, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
-            Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue)
+            Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
         }
         HorizontalDivider()
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp), content = content)
@@ -155,7 +156,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
             Text("Profile", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
-            Text("@${profile?.username ?: ""}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("@${profile?.username ?: ""}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(value = displayName, onValueChange = { displayName = it }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Spacer(Modifier.height(8.dp))
@@ -179,13 +180,13 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                     } catch (e: Exception) { error = e.message }
                     saving = false
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save") }
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             Spacer(Modifier.height(16.dp))
             Text("Notifications", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             if (prefs.isEmpty()) { Text("Notification settings could not be loaded.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             prefs.forEach { pref ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(pref.category.replaceFirstChar { it.uppercase() }, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text(pref.category.replaceFirstChar { it.uppercase() }, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     Switch(checked = pref.enabled, onCheckedChange = { checked ->
                         prefs = prefs.map { if (it.category == pref.category) it.copy(enabled = checked) else it }
                         scope.launch { try { api2.updateNotificationPref(mapOf("category" to pref.category, "enabled" to checked)) } catch (_: Exception) {} }
@@ -198,14 +199,14 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             devices.forEach { d ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text((d.label ?: "Device") + if (d.isCurrent) " (this device)" else "", fontSize = 14.sp)
-                        Text(listOfNotNull(d.location, d.lastActiveAt?.take(10)).joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text((d.label ?: "Device") + if (d.isCurrent) " (this device)" else "", fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text(listOfNotNull(d.location, d.lastActiveAt?.take(10)).joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
-                    if (!d.isCurrent && d.id != null) TextButton(onClick = { scope.launch { try { if (api2.revokeDevice(d.id).success) devices = devices.filter { it.id != d.id } } catch (_: Exception) {} } }) { Text("Revoke") }
+                    if (!d.isCurrent && d.id != null) TextButton(onClick = { scope.launch { try { if (api2.revokeDevice(d.id).success) devices = devices.filter { it.id != d.id } } catch (_: Exception) {} } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Revoke", maxLines = 1, softWrap = false) }
                 }
             }
             if (devices.size > 1) {
-                TextButton(onClick = { scope.launch { try { if (api2.revokeOtherDevices().success) devices = devices.filter { it.isCurrent } } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text("Revoke all other devices", modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = { scope.launch { try { if (api2.revokeOtherDevices().success) devices = devices.filter { it.isCurrent } } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text("Revoke all other devices", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             }
             Spacer(Modifier.height(16.dp))
             Text("Blocked accounts", fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -213,15 +214,15 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             blocked.forEach { entry ->
                 val u = entry.user
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(u?.displayName ?: u?.username ?: "User", fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    if (u?.id != null) TextButton(onClick = { scope.launch { try { if (api2.unblockUser(u.id).success) blocked = blocked.filter { it.user?.id != u.id } } catch (_: Exception) {} } }) { Text("Unblock") }
+                    Text(u?.displayName ?: u?.username ?: "User", fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    if (u?.id != null) TextButton(onClick = { scope.launch { try { if (api2.unblockUser(u.id).success) blocked = blocked.filter { it.user?.id != u.id } } catch (_: Exception) {} } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Unblock", maxLines = 1, softWrap = false) }
                 }
             }
             Spacer(Modifier.height(16.dp))
             Text("Preferences", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = { subScreen = "interests" }, modifier = Modifier.fillMaxWidth()) { Text("My Interests", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { subScreen = "verification" }, modifier = Modifier.fillMaxWidth()) { Text("Verification", modifier = Modifier.fillMaxWidth()) }
+            TextButton(onClick = { subScreen = "interests" }, modifier = Modifier.fillMaxWidth()) { Text("My Interests", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            TextButton(onClick = { subScreen = "verification" }, modifier = Modifier.fillMaxWidth()) { Text("Verification", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             Spacer(Modifier.height(16.dp))
             // v2.9: switch between accounts saved on this device
             // (POST /api/auth/switch). The new auth cookie is set by the
@@ -233,12 +234,12 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                     FrianzoAvatar(acc.profilePictureUrl, 40.dp)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(acc.displayName ?: acc.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("@${acc.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(acc.displayName ?: acc.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text("@${acc.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
                     val isCurrent = acc.id != null && acc.id == profile?.id
-                    if (isCurrent) Text("Current", fontSize = 12.sp, color = FrianzoBlue)
-                    else if (acc.id != null) TextButton(enabled = switchingId != acc.id, onClick = {
+                    if (isCurrent) Text("Current", fontSize = 12.sp, color = FrianzoBlue, maxLines = 1, softWrap = false)
+                    else if (acc.id != null) TextButton(enabled = switchingId != acc.id, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), onClick = {
                         switchingId = acc.id
                         scope.launch {
                             try {
@@ -247,7 +248,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                             } catch (e: Exception) { error = e.message }
                             switchingId = null
                         }
-                    }) { Text("Switch") }
+                    }) { Text("Switch", maxLines = 1, softWrap = false) }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -256,13 +257,13 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             TextButton(onClick = {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/privacy"))
                 context.startActivity(intent)
-            }, modifier = Modifier.fillMaxWidth()) { Text("Privacy Policy", modifier = Modifier.fillMaxWidth()) }
+            }, modifier = Modifier.fillMaxWidth()) { Text("Privacy Policy", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             TextButton(onClick = {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/terms"))
                 context.startActivity(intent)
-            }, modifier = Modifier.fillMaxWidth()) { Text("Terms of Service", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("Logout", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete Account", color = Color.Red, modifier = Modifier.fillMaxWidth()) }
+            }, modifier = Modifier.fillMaxWidth()) { Text("Terms of Service", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("Logout", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            TextButton(onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete Account", color = Color.Red, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         }
         }
       }
@@ -270,7 +271,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
     if (showDelete) {
         AlertDialog(
             onDismissRequest = { showDelete = false },
-            title = { Text("Delete Account") },
+            title = { Text("Delete Account", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
             text = { Text("This permanently removes your profile, posts, and messages. This cannot be undone.") },
             // v2.9 FIX: only log out when the delete actually succeeded.
             // On failure show the error and STAY logged in.
@@ -284,9 +285,9 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                             else error = r.error?.message ?: "Could not delete account. Please try again."
                         } catch (e: Exception) { error = e.message ?: "Could not delete account. Please try again." }
                     }
-                }) { Text("Delete", color = Color.Red) }
+                }) { Text("Delete", color = Color.Red, maxLines = 1, softWrap = false) }
             },
-            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { showDelete = false }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Cancel", maxLines = 1, softWrap = false) } },
         )
     }
 }
@@ -325,11 +326,11 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             // Chips in rows of 3 (a simple wrap; no flow-layout dep).
             Column(Modifier.fillMaxWidth()) {
                 available.chunked(3).forEach { chunk ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         chunk.forEach { interest ->
                             val sel = interest in selected
-                            Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { selected = if (sel) selected - interest else selected + interest }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                                Text(interest.replaceFirstChar { it.uppercase() }, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                            Box(Modifier.weight(1f, fill = false).clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { selected = if (sel) selected - interest else selected + interest }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                                Text(interest.replaceFirstChar { it.uppercase() }, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -345,7 +346,7 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     } catch (e: Exception) { error = e.message }
                     saving = false
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save interests") }
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save interests", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         }
       }
     }
@@ -405,7 +406,7 @@ fun VerificationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                 Spacer(Modifier.height(12.dp))
             }
             if (request != null) {
-                Text("Your request: ${request.status ?: ""}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text("Your request: ${request.status ?: ""}", fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 request.reason?.let { Text(it, fontSize = 13.sp) }
                 request.adminNote?.let { Text("Note from Frianzo: $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Spacer(Modifier.height(12.dp))
@@ -421,8 +422,8 @@ fun VerificationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(if (req.met) Icons.Filled.CheckCircle else Icons.Outlined.RadioButtonUnchecked, contentDescription = if (req.met) "Met" else "Not met", tint = if (req.met) Color(0xFF16A34A) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(labels[key] ?: key, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    Text("${verificationValue(req.current)} / ${verificationValue(req.required)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(labels[key] ?: key, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Text("${verificationValue(req.current)} / ${verificationValue(req.required)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
             }
             if (eligibility?.requirements.isNullOrEmpty()) Text("Requirements could not be loaded.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -444,7 +445,7 @@ fun VerificationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     pending -> "Request pending"
                     eligibility?.eligible != true -> "Meet all requirements first"
                     else -> if (submitting) "Submitting..." else "Submit request"
-                })
+                }, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             }
         }
       }
@@ -553,7 +554,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(7, 30, 90).forEach { d ->
                 val selected = d == range
-                Button(onClick = { range = d }, colors = ButtonDefaults.buttonColors(containerColor = if (selected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (selected) Color.White else MaterialTheme.colorScheme.onSurface)) { Text("${d}d") }
+                Button(onClick = { range = d }, colors = ButtonDefaults.buttonColors(containerColor = if (selected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (selected) Color.White else MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("${d}d", maxLines = 1, softWrap = false) }
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -567,18 +568,18 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                 Text("$${"%.2f".format(data!!.earnings)}", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(12.dp))
                 data!!.monetization?.let { m ->
-                    Text("Monetization: ${if (m.status == "eligible") "Eligible" else "Locked"}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text("${m.referrals} / ${m.requiredReferrals} referrals - ${m.progress}%", fontSize = 13.sp)
+                    Text("Monetization: ${if (m.status == "eligible") "Eligible" else "Locked"}", fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Text("${m.referrals} / ${m.requiredReferrals} referrals - ${m.progress}%", fontSize = 13.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(4.dp))
                     if (m.referralLink.isNotBlank()) {
-                        TextButton(onClick = { clipboard.setText(AnnotatedString(m.referralLink)); copied = true }) { Text(if (copied) "Referral link copied" else "Copy referral link") }
+                        TextButton(onClick = { clipboard.setText(AnnotatedString(m.referralLink)); copied = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (copied) "Referral link copied" else "Copy referral link", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                     }
                     Spacer(Modifier.height(12.dp))
                 }
                 if (stats != null) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Column(Modifier.weight(1f)) { Text("Views", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${stats.views}", fontSize = 20.sp, fontWeight = FontWeight.Bold); stats.viewsTrendPct?.let { Text("${if (it >= 0) "+" else ""}${it}%", fontSize = 12.sp) } }
-                        Column(Modifier.weight(1f)) { Text("Engagement", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${stats.engagement}", fontSize = 20.sp, fontWeight = FontWeight.Bold); stats.engagementBreakdown?.let { Text("Likes ${it.likes} - Comments ${it.comments} - Shares ${it.shares}", fontSize = 11.sp) } }
+                        Column(Modifier.weight(1f)) { Text("Engagement", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${stats.engagement}", fontSize = 20.sp, fontWeight = FontWeight.Bold); stats.engagementBreakdown?.let { Text("Likes ${it.likes} - Comments ${it.comments} - Shares ${it.shares}", fontSize = 11.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -588,8 +589,8 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     Spacer(Modifier.height(16.dp))
                     stats.topPerforming?.let { top ->
                         Text("Top performing content", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("${top.type} - ${top.views} views", fontSize = 13.sp)
-                        Text(top.title ?: "", fontSize = 13.sp)
+                        Text("${top.type} - ${top.views} views", fontSize = 13.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text(top.title ?: "", fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(12.dp))
                     }
                     Text("Content views - Last $range days", fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -598,8 +599,8 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     Text("Achievements", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     if (achievements.isEmpty()) { Text("No achievements yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     achievements.forEach { a ->
-                        Text(a.name ?: a.key ?: "Achievement", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        a.description?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        Text(a.name ?: a.key ?: "Achievement", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        a.description?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
                         Spacer(Modifier.height(4.dp))
                     }
                     Spacer(Modifier.height(12.dp))
@@ -607,10 +608,10 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     val totalStrikes = strikes?.total ?: 0
                     if (totalStrikes == 0) { Text("No strikes — good.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     strikes?.strikes?.forEach { s ->
-                        Text(listOfNotNull(s.reason, s.action, s.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp)
+                        Text(listOfNotNull(s.reason, s.action, s.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                     strikes?.removals?.forEach { r ->
-                        Text(listOfNotNull(r.type, r.detail, r.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp)
+                        Text(listOfNotNull(r.type, r.detail, r.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                     Spacer(Modifier.height(8.dp))
                 }
@@ -621,8 +622,8 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
             items(daily) { d ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(d.date, fontSize = 13.sp)
-                    Text("${d.views} views", fontSize = 13.sp)
+                    Text(d.date, fontSize = 13.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Text("${d.views} views", fontSize = 13.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
                 HorizontalDivider()
             }
@@ -666,8 +667,8 @@ fun CloseFriendsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     FrianzoAvatar(user.profilePictureUrl, 44.dp)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(user.displayName ?: user.username, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("@${user.username}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(user.displayName ?: user.username, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text("@${user.username}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
                     IconButton(enabled = busyId != user.id, onClick = {
                         busyId = user.id
@@ -732,10 +733,10 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("9:16", "16:9").forEach { a ->
-                    Button(onClick = { aspect = a }, colors = ButtonDefaults.buttonColors(containerColor = if (aspect == a) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (aspect == a) Color.White else MaterialTheme.colorScheme.onSurface)) { Text(a) }
+                    Button(onClick = { aspect = a }, colors = ButtonDefaults.buttonColors(containerColor = if (aspect == a) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (aspect == a) Color.White else MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(a, maxLines = 1, softWrap = false) }
                 }
                 listOf(4, 8).forEach { d ->
-                    Button(onClick = { duration = d }, colors = ButtonDefaults.buttonColors(containerColor = if (duration == d) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (duration == d) Color.White else MaterialTheme.colorScheme.onSurface)) { Text("${d}s") }
+                    Button(onClick = { duration = d }, colors = ButtonDefaults.buttonColors(containerColor = if (duration == d) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (duration == d) Color.White else MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("${d}s", maxLines = 1, softWrap = false) }
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -764,18 +765,18 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
                         }
                     } catch (e: Exception) { phase = "error"; error = e.message }
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text(if (phase == "generating") "Creating your video... (${elapsed}s)" else "Generate") }
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (phase == "generating") "Creating your video... (${elapsed}s)" else "Generate", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             Spacer(Modifier.height(12.dp))
             ErrorText(error)
             if (phase == "generating") Text("Creating your video...", fontSize = 14.sp)
             if (phase == "done" && videoUrl != null) {
                 Text("Your video is ready.", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(videoUrl!!, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(videoUrl!!, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = {
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(videoUrl))
                     context.startActivity(intent)
-                }) { Text("Open video") }
+                }) { Text("Open video", maxLines = 1, softWrap = false) }
                 Spacer(Modifier.height(8.dp))
                 if (onPostAsReel != null) {
                     Button(enabled = !postingReel, onClick = {
@@ -792,7 +793,7 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
                             } catch (e: Exception) { error = e.message ?: "Could not download the video" }
                             postingReel = false
                         }
-                    }, modifier = Modifier.fillMaxWidth()) { Text(if (postingReel) "Preparing..." else "Post as Reel") }
+                    }, modifier = Modifier.fillMaxWidth()) { Text(if (postingReel) "Preparing..." else "Post as Reel", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                     Spacer(Modifier.height(8.dp))
                 }
             }
@@ -814,8 +815,8 @@ fun IsaiScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var remaining by remember { mutableStateOf<Int?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     DrawerScaffold("ISAI Assistant", onBack) {
-        Text("Frianzo AI Assistant", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (remaining != null) Text("$remaining left today", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Frianzo AI Assistant", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        if (remaining != null) Text("$remaining left today", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
             items(messages) { m ->
@@ -850,7 +851,7 @@ fun IsaiScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                         messages = next + IsaiMessage("assistant", e.message ?: "Something went wrong. Please try again.")
                     }
                 }
-            }) { Text(if (sending) "..." else "Send") }
+            }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (sending) "..." else "Send", maxLines = 1, softWrap = false) }
         }
     }
 }

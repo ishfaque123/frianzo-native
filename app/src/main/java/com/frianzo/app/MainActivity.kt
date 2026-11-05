@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.frianzo.app.data.*
 import com.frianzo.app.ui.*
@@ -68,9 +69,9 @@ class MainActivity : ComponentActivity() {
                         Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
                             Text((state as AuthState.Error).message, style = MaterialTheme.typography.bodyMedium)
                             Spacer(Modifier.height(12.dp))
-                            Button(onClick = { session.refresh() }) { Text("Retry") }
+                            Button(onClick = { session.refresh() }) { Text("Retry", maxLines = 1, softWrap = false) }
                             Spacer(Modifier.height(12.dp))
-                            TextButton(onClick = { session.markLoggedOut() }) { Text("Continue to login") }
+                            TextButton(onClick = { session.markLoggedOut() }) { Text("Continue to login", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         }
                     }
                     else -> LoginScreen(api, session, cookieJar) { session.refresh() }
@@ -153,7 +154,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = { drawerOpen = true }) { Icon(Icons.Outlined.Menu, contentDescription = "Menu", tint = Color(0xFF0F172A), modifier = Modifier.size(24.dp)) }
-                            Text("Frianzo", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue)
+                            Text("Frianzo", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, maxLines = 1, softWrap = false)
                         }
                     },
                     actions = {
@@ -162,7 +163,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                             IconButton(onClick = { tab = Tab.CHAT; openChat = null; openProfile = null }) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Messages", tint = Color(0xFF0F172A), modifier = Modifier.size(24.dp)) }
                             if (unreadMessages > 0) {
                                 Badge(containerColor = FrianzoBadgeRed, modifier = Modifier.offset(x = (-2).dp, y = 2.dp)) {
-                                    Text(if (unreadMessages > 9) "9+" else "$unreadMessages", fontSize = 10.sp)
+                                    Text(if (unreadMessages > 9) "9+" else "$unreadMessages", fontSize = 10.sp, maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -184,7 +185,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                                 Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(24.dp))
                                 if (t == Tab.NOTIFS && unread > 0) {
                                     Badge(containerColor = FrianzoBadgeRed, modifier = Modifier.offset(x = 8.dp, y = (-4).dp)) {
-                                        Text(if (unread > 99) "99+" else "$unread", fontSize = 10.sp)
+                                        Text(if (unread > 99) "99+" else "$unread", fontSize = 10.sp, maxLines = 1, softWrap = false)
                                     }
                                 }
                             }
@@ -218,7 +219,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             // Each item opens a real native screen (DrawerScreens.kt), never a placeholder.
             AlertDialog(
                 onDismissRequest = { drawerOpen = false },
-                title = { Text("Frianzo") },
+                title = { Text("Frianzo", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
                 text = {
                     Column {
                         // v2.9: real profile row (avatar + name + @username).
@@ -226,28 +227,28 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                             FrianzoAvatar(myProfile?.profilePictureUrl, 48.dp)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(myProfile?.displayName ?: myProfile?.username ?: "Frianzo", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text("@${myProfile?.username ?: ""}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(myProfile?.displayName ?: myProfile?.username ?: "Frianzo", fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                Text("@${myProfile?.username ?: ""}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
-                            Text("View Profile", fontSize = 13.sp, color = FrianzoBlue)
+                            Text("View Profile", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         }
                         HorizontalDivider()
                         HorizontalDivider()
                         val items = listOf("Settings", "Your Activity", "Professional Dashboard", "Close Friends", "AI Video Generator", "ISAI Assistant")
                         items.forEach { label ->
-                            TextButton(onClick = { drawerOpen = false; drawerScreen = label }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                            TextButton(onClick = { drawerOpen = false; drawerScreen = label }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         }
                         HorizontalDivider()
                         TextButton(onClick = {
                             drawerOpen = false
                             val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Frianzo - share posts, videos and connect with people. Download: https://play.google.com/store/apps/details?id=com.frianzo.nativeapp") }
                             context.startActivity(Intent.createChooser(intent, "Share Frianzo"))
-                        }, modifier = Modifier.fillMaxWidth()) { Text("Share Frianzo", modifier = Modifier.fillMaxWidth()) }
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Share Frianzo", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         HorizontalDivider()
-                        TextButton(onClick = { drawerOpen = false; logout() }, modifier = Modifier.fillMaxWidth()) { Text("Logout", color = Color.Red, modifier = Modifier.fillMaxWidth()) }
+                        TextButton(onClick = { drawerOpen = false; logout() }, modifier = Modifier.fillMaxWidth()) { Text("Logout", color = Color.Red, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                     }
                 },
-                confirmButton = { TextButton(onClick = { drawerOpen = false }) { Text("Close") } },
+                confirmButton = { TextButton(onClick = { drawerOpen = false }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Close", maxLines = 1, softWrap = false) } },
             )
         }
 

@@ -56,6 +56,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
@@ -241,7 +242,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         ) {
             GoogleGIcon()
             Spacer(Modifier.width(10.dp))
-            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = loginDark, fontWeight = FontWeight.SemiBold)
+            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = loginDark, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
         }
 
         Spacer(Modifier.height(24.dp))
@@ -301,7 +302,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                 containerColor = Color(0xFF0F172A),
                 contentColor = androidx.compose.ui.graphics.Color.White,
             ),
-        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         if (codeSent) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
@@ -708,7 +709,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                 }
                                 if (isOwn) { Box(Modifier.offset(y = (-16).dp).size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) } }
                                 Spacer(Modifier.height(4.dp))
-                                Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         if (statusGroups.none { it.userId == myId || it.user?.id == myId }) {
@@ -719,7 +720,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                         Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
                                     }
                                     Spacer(Modifier.height(4.dp))
-                                    Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                    Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
@@ -737,14 +738,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                     Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
                                 }
                                 Spacer(Modifier.height(4.dp))
-                                Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         items(storyAuthors) { author ->
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { storyInfo = author.displayName ?: author.username ?: "User" }) {
                                 Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { FrianzoAvatar(author.profilePictureUrl, 56.dp) }
                                 Spacer(Modifier.height(4.dp))
-                                Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -768,12 +769,12 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f).clickable { post.author?.username?.let { onAuthor(it) } }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(post.author?.displayName ?: post.author?.username ?: "User", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                            Text(post.author?.displayName ?: post.author?.username ?: "User", modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             if (post.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val time = feedTime(post.createdAt)
-                            Text((if (time.isNotBlank()) time else "Just now") + (post.location?.let { " · $it" } ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            Text((if (time.isNotBlank()) time else "Just now") + (post.location?.let { " · $it" } ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             if (post.isPinned) { Spacer(Modifier.width(6.dp)); Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("Pinned", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                         }
                     }
@@ -795,7 +796,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             },
                             modifier = Modifier.height(36.dp),
                             shape = RoundedCornerShape(28.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         ) { Text(ftext, fontSize = 13.sp, color = FrianzoBlue) }
                         Spacer(Modifier.width(8.dp))
                     }
@@ -969,7 +970,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
             Spacer(Modifier.height(8.dp))
             // Web link box: bordered box with the URL, then a dark Copy link button.
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White).border(1.dp, FrianzoBorder, RoundedCornerShape(8.dp)).padding(10.dp)) {
-                Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); scope.launch { kotlinx.coroutines.delay(2000); copied = false } },
@@ -1032,7 +1033,7 @@ private fun ShareTile(label: String, color: Color, letter: String, onClick: () -
             Text(letter, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
         }
         Spacer(Modifier.height(4.dp))
-        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1043,7 +1044,7 @@ private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, myId: String? = nu
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
             // FB-style header: just "Comments" centred + X. No Top/Newest pill.
             // Sorting is newest first, so a new comment lands at the top like FB.
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
                 Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
@@ -1162,9 +1163,9 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                         append("Replying to ")
                         withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append("@${replyTo!!.author?.username ?: "User"}") }
                     },
-                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.weight(1f))
                 IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             Spacer(Modifier.height(8.dp))
@@ -1180,9 +1181,9 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                     }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         FrianzoAvatar(u.profilePictureUrl, 28.dp)
                         Spacer(Modifier.width(8.dp))
-                        Column {
-                            Text(u.displayName ?: u.username ?: "", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            Text("@${u.username}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Column(Modifier.weight(1f)) {
+                            Text(u.displayName ?: u.username ?: "", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            Text("@${u.username}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -1278,7 +1279,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                 Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else Color(0xFFF0F2F5)).padding(horizontal = 12.dp, vertical = 10.dp)) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                            Text(c.author?.displayName ?: c.author?.username ?: "User", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
                         }
                         c.mediaUrl?.let { AsyncImage(model = it, contentDescription = "Comment image", modifier = Modifier.fillMaxWidth().heightIn(max = 192.dp).padding(top = 8.dp).clip(RoundedCornerShape(12.dp))) }
@@ -1382,8 +1383,8 @@ private fun OriginalPostCard(original: Post, onAuthor: (String) -> Unit = {}, on
             Box(Modifier.clickable { original.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(original.author?.profilePictureUrl, 28.dp) }
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text(original.author?.displayName ?: original.author?.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                Text(feedTime(original.createdAt).ifBlank { "Just now" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(original.author?.displayName ?: original.author?.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Text(feedTime(original.createdAt).ifBlank { "Just now" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             }
         }
         original.content?.let { Spacer(Modifier.height(8.dp)); Text(it, fontSize = 14.sp) }
@@ -1497,22 +1498,22 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
             if (loading) { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { DotsLoading() }; return@Column }
             if (error != null || detail == null) { Text(error ?: "Post not found", modifier = Modifier.padding(16.dp)); return@Column }
             val post = detail!!
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.clickable { post.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(post.author?.profilePictureUrl, 40.dp) }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(post.author?.displayName ?: post.author?.username ?: "User", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text(post.author?.displayName ?: post.author?.username ?: "User", modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         if (post.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
                     }
-                    Text((feedTime(post.createdAt).ifBlank { "Just now" }) + (post.location?.let { " · $it" } ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text((feedTime(post.createdAt).ifBlank { "Just now" }) + (post.location?.let { " · $it" } ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
             }
-            post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp)) }
+            post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp)) }
             post.imageUrl?.let { Spacer(Modifier.height(10.dp)); PostPhoto(it) }
             post.originalPost?.let { Spacer(Modifier.height(10.dp)); OriginalPostCard(it, onAuthor = onAuthor, onDetail = {}) }
             Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 val detailTop = (post.reactionCounts?.entries?.sortedByDescending { it.value }?.map { it.key } ?: listOfNotNull(detailReaction)).take(3)
                 if (likeCount > 0) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1533,7 +1534,7 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
             HorizontalDivider(color = FrianzoBorder)
             if (detailPicker) {
                 // Web picker above the Like button, left-aligned, icons 40.
-                Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.Start) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.Start) {
                     ReactionPickerPill(40.dp, reactionTypes()) { type ->
                         detailPicker = false
                         val wasLiked = liked; val wasReaction = detailReaction; val wasCount = likeCount
@@ -1688,8 +1689,8 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                     FrianzoAvatar(group.user?.profilePictureUrl, 36.dp)
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(group.user?.displayName ?: group.user?.username ?: "Story", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1)
-                        Text(commentTimeAgo(item?.createdAt), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                        Text(group.user?.displayName ?: group.user?.username ?: "Story", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text(commentTimeAgo(item?.createdAt), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     if (isVideo) IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
                     if (!isOwn) {
@@ -1708,8 +1709,8 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                 notice?.let { Text(it, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
                 if (isOwn) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { scope.launch { try { val r = api2.statusViewers(item?.id ?: ""); if (r.success && r.data != null) { viewers = r.data.viewers; showViewers = true } else notice = r.error?.message } catch (e: Exception) { notice = e.message } } }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Viewers") }
-                        OutlinedButton(onClick = { showDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Delete story") }
+                        OutlinedButton(onClick = { scope.launch { try { val r = api2.statusViewers(item?.id ?: ""); if (r.success && r.data != null) { viewers = r.data.viewers; showViewers = true } else notice = r.error?.message } catch (e: Exception) { notice = e.message } } }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("Viewers") }
+                        OutlinedButton(onClick = { showDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("Delete story") }
                     }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1731,7 +1732,7 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
         }
         if (showViewers) {
             AlertDialog(onDismissRequest = { showViewers = false }, title = { Text("Viewers") },
-                text = { Column { (viewers ?: emptyList()).forEach { v -> Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) { FrianzoAvatar(v.profilePictureUrl, 32.dp); Spacer(Modifier.width(8.dp)); Text(v.displayName ?: v.username ?: "User", fontSize = 14.sp) } }; if (viewers.isNullOrEmpty()) Text("No views yet", fontSize = 14.sp) } },
+                text = { Column { (viewers ?: emptyList()).forEach { v -> Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) { FrianzoAvatar(v.profilePictureUrl, 32.dp); Spacer(Modifier.width(8.dp)); Text(v.displayName ?: v.username ?: "User", fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }; if (viewers.isNullOrEmpty()) Text("No views yet", fontSize = 14.sp) } },
                 confirmButton = { TextButton(onClick = { showViewers = false }) { Text("Close") } })
         }
         if (showDelete) {
@@ -1764,10 +1765,10 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Cancel") }
-            Text("New story", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            Text("New story", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }, shape = RoundedCornerShape(28.dp)) { Text(if (mediaUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected") }
+        OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }, shape = RoundedCornerShape(28.dp)) { Text(if (mediaUri == null) "Add photo or video" else if (mediaIsVideo) "Video selected" else "Photo selected", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         if (mediaUri != null && !mediaIsVideo) {
             Spacer(Modifier.height(8.dp))
             AsyncImage(model = mediaUri, contentDescription = null, modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
@@ -1822,7 +1823,7 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
                 } catch (e: Exception) { message = e.message ?: "Story failed" }
                 finally { busy = false }
             }
-        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(28.dp)) { Text(if (busy) "Posting..." else "Share story") }
+        }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (busy) "Posting..." else "Share story", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
     }

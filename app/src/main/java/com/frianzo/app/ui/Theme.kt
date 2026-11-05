@@ -43,6 +43,42 @@ val FrianzoTextDark = Color(0xFF0F172A)
 val FrianzoTextSecondary = Color(0xFF64748B)
 val FrianzoBorder = Color(0xFFE2E8F0)
 val FrianzoBadgeRed = Color(0xFFDC2626)
+val FrianzoSuccess = Color(0xFF16A34A)
+
+/**
+ * v3.1 DESIGN SYSTEM — one consistent look for every screen (Facebook /
+ * live-web style). Decide once, use everywhere:
+ * - Buttons: ONE height 44dp, ONE radius 12dp, 15sp SemiBold. Primary =
+ *   blue fill + white text; secondary = outlined (blue text, slate border);
+ *   danger = red ONLY for delete; text buttons = blue, no background.
+ *   Pills/chips keep the 28dp radius (feed tabs, filters, interests).
+ * - Colours: FrianzoBlue primary; slate-900 text, slate-500 secondary,
+ *   slate-200 borders, slate-50 page bg; red only destructive, green only
+ *   success/online. No random per-screen colours.
+ * - Pages: 16dp horizontal padding, 20sp bold screen titles, 16sp bold
+ *   section titles, 15sp body, 13sp caption, 12sp small.
+ * - Avatars: feed 40dp, comment 32dp, story/highlight 60-64dp, profile 96dp.
+ * - Cards: 16dp radius, 1dp elevation; list rows 12dp vertical spacing.
+ * - Long names/titles: maxLines=1 + ellipsis, never wrap mid-word.
+ */
+object FrianzoUi {
+    val ButtonHeight = 44.dp
+    val ButtonRadius = 12.dp
+    val ChipRadius = 28.dp
+    val CardRadius = 16.dp
+    val ScreenPadding = 16.dp
+    val RowSpacing = 12.dp
+    val SectionSpacing = 16.dp
+    val AvatarFeed = 40.dp
+    val AvatarComment = 32.dp
+    val AvatarStory = 64.dp
+    val AvatarProfile = 96.dp
+    val TitleSize = 20.sp
+    val SectionTitleSize = 16.sp
+    val BodySize = 15.sp
+    val CaptionSize = 13.sp
+    val SmallSize = 12.sp
+}
 
 private val FrianzoDarkColorScheme = darkColorScheme(
     primary = FrianzoBlue,
