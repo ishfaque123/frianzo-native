@@ -578,7 +578,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     val galleryPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) onPickMedia(uri)
     }
-    val pickMedia = rememberPermissionGate(galleryPermissions()) { pickMedia() }
+    val pickMedia = rememberPermissionGate(galleryPermissions()) { galleryPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }
     LaunchedEffect(Unit) {
         try {
             val sf = vm.api2.statusFeed()
@@ -684,7 +684,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     Spacer(Modifier.width(10.dp))
                     Box(
                         Modifier.size(40.dp).clip(CircleShape).background(FrianzoBlueTint).clickable {
-                            galleryPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo))
+                            pickMedia()
                         },
                         contentAlignment = Alignment.Center,
                     ) {
