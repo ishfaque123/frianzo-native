@@ -156,7 +156,8 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
                     onDeleted = { reels = reels.filter { it.id != reel.id } },
                 )
                 }
-            } else if (!loading && error == null) {
+            }
+        } else if (!loading && error == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No reels yet", color = Color.White) }
         }
     }
