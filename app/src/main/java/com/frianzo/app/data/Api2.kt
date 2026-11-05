@@ -24,8 +24,9 @@ data class ReelsConfigData(val enabled: Boolean = true, val maxDurationSec: Int 
 data class ReelUploadData(val reel: Reel?)
 data class ReelFavoriteData(val favorited: Boolean = false)
 data class ReelLikeData(val liked: Boolean = false, val likeCount: Int = 0)
-data class ReelComment(val id: String, val content: String?, val author: Author?, val createdAt: String?)
-data class ReelCommentsData(val comments: List<ReelComment>)
+data class ReelComment(val id: String, val content: String?, val author: Author?, val createdAt: String?, val reactionCount: Int = 0, val myReaction: String? = null, val replies: List<ReelComment> = emptyList())
+data class ReelCommentsPagination(val hasMore: Boolean = false, val nextCursor: String? = null)
+data class ReelCommentsData(val comments: List<ReelComment>, val pagination: ReelCommentsPagination? = null)
 
 // ---------- Posts: detail / reactions / comments ----------
 data class ReactionData(val myReaction: String? = null, val reaction: String? = null, val likeCount: Int? = null, val reactionCounts: Map<String, Int>? = null)
@@ -64,6 +65,9 @@ data class StatusGroup(
 data class StatusFeedData(val feed: List<StatusGroup>? = null)
 data class StatusCreateData(val status: StatusItem?)
 data class StatusViewer(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val viewedAt: String? = null, val liked: Boolean = false)
+// v2.9 FIX: GET /api/statuses/{id}/viewers returns { viewers: [...] },
+// NOT a bare array — Envelope<List<StatusViewer>> failed at runtime.
+data class StatusViewersData(val viewers: List<StatusViewer> = emptyList())
 data class PostCreateData(val post: Post?)
 /** Backend GET /api/posts/{id} returns { post }, not a bare post. (Currently unused in UI.) */
 data class PostResponse(val post: Post?)
@@ -129,6 +133,8 @@ data class FollowData(val following: Boolean = false, val isFollowing: Boolean =
 data class FollowStatusData(val status: String?)
 data class FollowListUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val isVerified: Boolean = false, val isFollowing: Boolean = false)
 data class FollowListData(val users: List<FollowListUser>? = null)
+// v2.9: GET /api/follows/{userId}/counts returns { followers, following, friends }.
+data class FollowCountsData(val followers: Int = 0, val following: Int = 0, val friends: Int = 0)
 data class Achievement(val key: String?, val name: String?, val description: String?, val icon: String? = null, val earnedAt: String? = null)
 data class AchievementsData(val achievements: List<Achievement>? = null)
 data class Strike(val id: String?, val severity: String?, val reason: String?, val action: String?, val createdAt: String?)
@@ -170,6 +176,44 @@ data class VideoGenStatus(val enabled: Boolean = false, val hasAccess: Boolean =
 data class VideoGenGenerateRequest(val prompt: String, val aspectRatio: String, val durationSeconds: Int)
 data class VideoGenGenerateData(val operationName: String?)
 data class VideoGenOperation(val done: Boolean = false, val videoUrl: String?, val error: String?)
+// ---------- Highlights (v2.9) ----------
+// GET /api/highlights/user/{username} returns { highlights: [...] }.
+// Highlight DTO (highlightService.toHighlightDTO): id, title, coverUrl,
+// createdAt, itemCount, items[{ id, mediaUrl, mediaType, createdAt }].
+data class HighlightItem(val id: String, val mediaUrl: String?, val mediaType: String?, val createdAt: String? = null)
+data class Highlight(val id: String, val title: String?, val coverUrl: String?, val createdAt: String? = null, val itemCount: Int = 0, val items: List<HighlightItem> = emptyList())
+data class HighlightsData(val highlights: List<Highlight>? = null)
+
+// ---------- Interests (v2.9) ----------
+// GET /api/users/interests returns { interests: [12 fixed names] }.
+// PUT /api/users/me/interests { interests: [...] } returns { interests }.
+// There is NO GET for the user's current interests, so the screen starts
+// unselected and shows the saved list returned by PUT.
+data class InterestsData(val interests: List<String>? = null)
+
+// ---------- Verification (v2.9) ----------
+// GET /api/users/me/verification-request returns
+// { request: { id, status, reason, adminNote, reviewedAt, createdAt } | null,
+//   eligibility: { eligible, isVerified,
+//     requirements: { referrals, followers, accountAge, posts, profile,
+//       cleanRecord: { current, required, met } } } }.
+// Requirements (fresh userController.getVerificationEligibility): referrals
+// 25, followers 100, accountAge 30 days, posts 5, profile Photo+Bio,
+// cleanRecord no violations in 90 days. `current` is a number OR a string,
+// so it is a JsonElement, rendered by verificationValue() in DrawerScreens.
+data class VerificationRequirement(val current: com.google.gson.JsonElement? = null, val required: com.google.gson.JsonElement? = null, val met: Boolean = false)
+data class VerificationEligibility(val eligible: Boolean = false, val requirements: Map<String, VerificationRequirement>? = null, val isVerified: Boolean = false)
+data class VerificationRequestData(val id: String?, val status: String?, val reason: String?, val adminNote: String?, val reviewedAt: String?, val createdAt: String?)
+data class VerificationData(val request: VerificationRequestData? = null, val eligibility: VerificationEligibility? = null)
+
+// ---------- Saved accounts (v2.9) ----------
+// GET /api/auth/accounts returns { accounts: [{ id, username,
+// displayName, profilePictureUrl, profileCompleted }] } (the user's own
+// accounts saved on this device). POST /api/auth/switch { accountId }
+// sets the new auth cookie and returns { user }.
+data class SavedAccount(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?)
+data class SavedAccountsData(val accounts: List<SavedAccount>? = null)
+
 data class IsaiMessage(val role: String, val content: String)
 data class IsaiChatRequest(val messages: List<IsaiMessage>)
 data class IsaiReply(val reply: String?, val remaining: Int? = null)
@@ -177,7 +221,7 @@ data class IsaiReply(val reply: String?, val remaining: Int? = null)
 interface FrianzoApi2 {
     // Reels (auth required)
     @GET("api/reels")
-    suspend fun reelFeed(@Query("offset") offset: Int = 0, @Query("feed") feed: String = "foryou"): Envelope<ReelFeedData>
+    suspend fun reelFeed(@Query("offset") offset: Int = 0, @Query("feed") feed: String = "foryou", @Query("exclude") exclude: String? = null): Envelope<ReelFeedData>
     @GET("api/reels/config")
     suspend fun reelsConfig(): Envelope<ReelsConfigData>
     @Multipart
@@ -199,7 +243,7 @@ interface FrianzoApi2 {
     @POST("api/reels/{id}/view")
     suspend fun recordReelView(@Path("id") id: String, @Body body: Map<String, Int>): Envelope<Any>
     @GET("api/reels/{id}/comments")
-    suspend fun reelComments(@Path("id") id: String): Envelope<ReelCommentsData>
+    suspend fun reelComments(@Path("id") id: String, @Query("cursor") cursor: String? = null, @Query("limit") limit: Int = 20): Envelope<ReelCommentsData>
     @POST("api/reels/{id}/comments")
     suspend fun addReelComment(@Path("id") id: String, @Body body: CommentCreateRequest): Envelope<Any>
     @POST("api/reels/comments/{commentId}/reaction")
@@ -250,6 +294,9 @@ interface FrianzoApi2 {
     suspend fun reportPost(@Path("id") id: String, @Body body: Map<String, String>): Envelope<Any>
     @POST("api/posts/{id}/hide")
     suspend fun hidePost(@Path("id") id: String): Envelope<Any>
+    // v2.9: POST /api/posts/{id}/view { watchSec } records a post view.
+    @POST("api/posts/{id}/view")
+    suspend fun recordPostView(@Path("id") id: String, @Body body: Map<String, Int>): Envelope<Any>
     @POST("api/posts/{id}/pin")
     suspend fun togglePin(@Path("id") id: String): Envelope<Any>
     @PATCH("api/posts/{id}")
@@ -273,7 +320,7 @@ interface FrianzoApi2 {
         @Part("visibility") visibility: RequestBody?,
     ): Envelope<StatusCreateData>
     @GET("api/statuses/{id}/viewers")
-    suspend fun statusViewers(@Path("id") id: String): Envelope<List<StatusViewer>>
+    suspend fun statusViewers(@Path("id") id: String): Envelope<StatusViewersData>
     @POST("api/statuses/mute/{userId}")
     suspend fun muteStories(@Path("userId") userId: String): Envelope<Any>
     @DELETE("api/statuses/mute/{userId}")
@@ -330,6 +377,9 @@ interface FrianzoApi2 {
     suspend fun toggleFollow(@Path("userId") userId: String): Envelope<FollowData>
     @GET("api/follows/{userId}/status")
     suspend fun followStatus(@Path("userId") userId: String): Envelope<FollowStatusData>
+    // v2.9: the ONLY follower-count endpoint (PublicProfile returns none).
+    @GET("api/follows/{userId}/counts")
+    suspend fun followCounts(@Path("userId") userId: String): Envelope<FollowCountsData>
     @GET("api/follows/{userId}/{direction}")
     suspend fun followUsers(@Path("userId") userId: String, @Path("direction") direction: String): Envelope<FollowListData>
     @GET("api/users/me/achievements")
@@ -379,6 +429,32 @@ interface FrianzoApi2 {
     // Comment parity (web: PATCH /api/comments/{id})
     @PATCH("api/comments/{commentId}")
     suspend fun editComment(@Path("commentId") commentId: String, @Body body: Map<String, String>): Envelope<Any>
+    // v2.9: POST /api/users/me/not-interested { type: "creator"|"category"|
+    // "interested_category", value } — "Not interested" is NOT hidePost.
+    @POST("api/users/me/not-interested")
+    suspend fun notInterested(@Body body: Map<String, String>): Envelope<Any>
+    // v2.9: highlights
+    @GET("api/highlights/user/{username}")
+    suspend fun highlights(@Path("username") username: String): Envelope<HighlightsData>
+    @POST("api/highlights")
+    suspend fun createHighlight(@Body body: Map<String, Any>): Envelope<Any>
+    @DELETE("api/highlights/{id}")
+    suspend fun deleteHighlight(@Path("id") id: String): Envelope<Any>
+    // v2.9: interests (GET is /api/users/interests, PUT is /api/users/me/interests)
+    @GET("api/users/interests")
+    suspend fun interests(): Envelope<InterestsData>
+    @PUT("api/users/me/interests")
+    suspend fun updateMyInterests(@Body body: Map<String, List<String>>): Envelope<InterestsData>
+    // v2.9: verification
+    @GET("api/users/me/verification-request")
+    suspend fun verificationRequest(): Envelope<VerificationData>
+    @POST("api/users/me/verification-request")
+    suspend fun createVerificationRequest(@Body body: Map<String, String>): Envelope<VerificationData>
+    // v2.9: saved accounts
+    @GET("api/auth/accounts")
+    suspend fun savedAccounts(): Envelope<SavedAccountsData>
+    @POST("api/auth/switch")
+    suspend fun switchAccount(@Body body: Map<String, String>): Envelope<ProfileResponse>
     // Settings (web: PATCH / DELETE /api/users/me)
     @PATCH("api/users/me")
     suspend fun updateMe(@Body body: Map<String, Any>): Envelope<Any>

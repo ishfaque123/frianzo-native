@@ -46,6 +46,9 @@ data class Post(
     val reactionCounts: Map<String, Int>? = null,
     val myReaction: String? = null,
     val shareCode: String? = null,
+    // v2.9: a repost carries the original post (backend toPostDTO
+    // returns originalPost recursively); null for original posts.
+    val originalPost: Post? = null,
 )
 
 data class FeedData(

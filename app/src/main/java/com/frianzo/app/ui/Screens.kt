@@ -1,6 +1,9 @@
 package com.frianzo.app.ui
 
 import android.content.Context
+import android.net.Uri
+import android.media.MediaPlayer
+import android.widget.VideoView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -11,6 +14,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.graphics.Brush
 import coil.compose.rememberAsyncImagePainter
 import coil.compose.AsyncImagePainter
@@ -48,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.layout.ContentScale
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
@@ -319,27 +327,47 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
 
         Spacer(Modifier.height(28.dp))
-        Text(
-            androidx.compose.ui.text.buildAnnotatedString {
-                append("By continuing with an account located in ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append(loginCountry) }
-                append(", you agree to Frianzo's ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append("Terms of Service") }
-                append(" and acknowledge that you have read our ")
-                withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append("Privacy Policy") }
-                append(".")
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = loginGrey,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        // v2.9: Terms / Privacy / About are real links now (they were
+        // plain Text with no click). Pages verified live 2026-11-05:
+        // frianzo.online/terms, /privacy, /about all load.
+        val legalText = androidx.compose.ui.text.buildAnnotatedString {
+            append("By continuing with an account located in ")
+            withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append(loginCountry) }
+            append(", you agree to Frianzo's ")
+            pushStringAnnotation("url", "https://frianzo.online/terms")
+            withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append("Terms of Service") }
+            pop()
+            append(" and acknowledge that you have read our ")
+            pushStringAnnotation("url", "https://frianzo.online/privacy")
+            withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue)) { append("Privacy Policy") }
+            pop()
+            append(".")
+        }
+        ClickableText(
+            text = legalText,
+            style = MaterialTheme.typography.bodySmall.copy(color = loginGrey, textAlign = androidx.compose.ui.text.style.TextAlign.Center),
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { offset -> legalText.getStringAnnotations("url", offset, offset).firstOrNull()?.let { openWebUrl(context, it.item) } },
         )
         Spacer(Modifier.height(28.dp))
-        Text(
-            "About · Privacy · Terms",
-            style = MaterialTheme.typography.bodySmall,
-            color = loginGrey,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        val footerText = androidx.compose.ui.text.buildAnnotatedString {
+            pushStringAnnotation("url", "https://frianzo.online/about")
+            withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey)) { append("About") }
+            pop()
+            append(" · ")
+            pushStringAnnotation("url", "https://frianzo.online/privacy")
+            withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey)) { append("Privacy") }
+            pop()
+            append(" · ")
+            pushStringAnnotation("url", "https://frianzo.online/terms")
+            withStyle(androidx.compose.ui.text.SpanStyle(color = loginGrey)) { append("Terms") }
+            pop()
+        }
+        ClickableText(
+            text = footerText,
+            style = MaterialTheme.typography.bodySmall.copy(textAlign = androidx.compose.ui.text.style.TextAlign.Center),
             modifier = Modifier.fillMaxWidth(),
+            onClick = { offset -> footerText.getStringAnnotations("url", offset, offset).firstOrNull()?.let { openWebUrl(context, it.item) } },
         )
     }
 }
@@ -371,6 +399,13 @@ private fun randomNonce(): String {
 
 // FB-style relative time: "5m", "3h", "2d", else yyyy-MM-dd. Raw ISO
 // timestamps must never be shown to the user.
+// v2.9: open a web page in the browser. Adds https:// when the stored
+// value has no scheme (profile websites are often bare domains).
+internal fun openWebUrl(context: Context, url: String) {
+    val fixed = if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
+    try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fixed))) } catch (_: Exception) {}
+}
+
 private fun feedTime(createdAt: String?): String {
     if (createdAt.isNullOrBlank()) return ""
     return try {
@@ -408,6 +443,15 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
     var refreshing by mutableStateOf(false); private set
 
     fun hidePost(postId: String) { posts = posts.filterNot { it.id == postId } }
+
+    // v2.9: POST /api/posts/{id}/view { watchSec } — once per post per
+    // feed session, fire-and-forget (a failed view must never break feed).
+    private val viewedPostIds = mutableSetOf<String>()
+    fun recordPostView(postId: String) {
+        if (postId in viewedPostIds) return
+        viewedPostIds += postId
+        viewModelScope.launch { try { api2.recordPostView(postId, mapOf("watchSec" to 3)) } catch (_: Exception) {} }
+    }
 
     fun loadMore() {
         if (loading || !hasMore) return
@@ -709,6 +753,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         }
         items(posts, key = { it.id }) { post ->
+            LaunchedEffect(post.id) { vm.recordPostView(post.id) }
             val liked = post.id in likedIds
             val myReaction = vm.reactionByPost[post.id]
             var menuPost by remember { mutableStateOf(false) }
@@ -781,6 +826,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     Spacer(Modifier.height(10.dp))
                     PostPhoto(it, onClick = { detailPostId = post.id })
                 }
+                post.originalPost?.let { Spacer(Modifier.height(10.dp)); OriginalPostCard(it, onAuthor = onAuthor, onDetail = { detailPostId = post.id }) }
                 Spacer(Modifier.height(10.dp))
                 // Counts row, live style: up to 3 overlapping reaction icons + total, shares pill.
                 if (post.likeCount > 0 || post.commentCount > 0 || post.shareCount > 0) {
@@ -1052,7 +1098,9 @@ private fun flattenReplies(replies: List<Comment>, parentAuthor: Author?): List<
 }
 
 @Composable
-private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, sortBy: String = "top", fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
+// v2.9: dead sortBy param removed (it was never read — the web has a
+// Top/Newest sort, but the owner ordered native to keep NO sort).
+private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
     val context = LocalContext.current
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
@@ -1319,6 +1367,30 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     }
 }
 
+// v2.9: a repost renders the original post as a bordered inner card
+// (web PostCard), with the original author, text and photo.
+@Composable
+private fun OriginalPostCard(original: Post, onAuthor: (String) -> Unit = {}, onDetail: () -> Unit = {}) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .border(1.dp, FrianzoBorder, RoundedCornerShape(12.dp))
+            .clickable { onDetail() }
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.clickable { original.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(original.author?.profilePictureUrl, 28.dp) }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(original.author?.displayName ?: original.author?.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                Text(feedTime(original.createdAt).ifBlank { "Just now" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        original.content?.let { Spacer(Modifier.height(8.dp)); Text(it, fontSize = 14.sp) }
+        original.imageUrl?.let { Spacer(Modifier.height(8.dp)); AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop) }
+    }
+}
+
 @Composable
 private fun PostPhoto(url: String, onClick: () -> Unit = {}) {
     var reload by remember { mutableStateOf(0) }
@@ -1361,7 +1433,11 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
             TextButton(onClick = { onClose(); onShare() }, modifier = Modifier.fillMaxWidth()) { Text("Share", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onComments() }, modifier = Modifier.fillMaxWidth()) { Text("Comments", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { act("Hidden") { vm.api2.hidePost(post.id); vm.hidePost(post.id); onClose() } }, modifier = Modifier.fillMaxWidth()) { Text("Hide post", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { act("Not interested") { vm.api2.hidePost(post.id); vm.hidePost(post.id); onClose() } }, modifier = Modifier.fillMaxWidth()) { Text("Not interested", modifier = Modifier.fillMaxWidth()) }
+            // v2.9: "Not interested" records creator feedback
+            // (POST /api/users/me/not-interested { type: "creator",
+            // value: authorId }) and hides the post locally. It is NOT
+            // the same as "Hide post" any more.
+            TextButton(onClick = { act("Not interested") { post.author?.id?.let { vm.api2.notInterested(mapOf("type" to "creator", "value" to it)) }; vm.hidePost(post.id); onClose() } }, modifier = Modifier.fillMaxWidth()) { Text("Not interested", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { act("Reported") { vm.api2.reportPost(post.id, mapOf("reason" to "other")) } }, modifier = Modifier.fillMaxWidth()) { Text("Report post", modifier = Modifier.fillMaxWidth()) }
             if (followStatus == "following" || followStatus == "friends") {
                 TextButton(onClick = { act("Unfollowed") { post.author?.id?.let { vm.api2.toggleFollow(it) } } }, modifier = Modifier.fillMaxWidth()) { Text("Unfollow", modifier = Modifier.fillMaxWidth()) }
@@ -1408,6 +1484,7 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
     var detailPicker by remember { mutableStateOf(false) }
     val detailScroll = rememberScrollState()
     LaunchedEffect(postId) {
+        vm.recordPostView(postId)
         try {
             val r = vm.api2.postById(postId)
             if (r.success && r.data?.post != null) { detail = r.data.post; likeCount = r.data.post.likeCount; liked = r.data.post.myReaction != null; detailReaction = r.data.post.myReaction }
@@ -1433,6 +1510,7 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
             }
             post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp)) }
             post.imageUrl?.let { Spacer(Modifier.height(10.dp)); PostPhoto(it) }
+            post.originalPost?.let { Spacer(Modifier.height(10.dp)); OriginalPostCard(it, onAuthor = onAuthor, onDetail = {}) }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 val detailTop = (post.reactionCounts?.entries?.sortedByDescending { it.value }?.map { it.key } ?: listOfNotNull(detailReaction)).take(3)
@@ -1530,57 +1608,137 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
 private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: String?, onClose: () -> Unit, onDeleted: () -> Unit = {}) {
     var idx by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
+    var paused by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var muted by remember { mutableStateOf(false) }
     var viewers by remember { mutableStateOf<List<StatusViewer>?>(null) }
     var showViewers by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var replyText by rememberSaveable { mutableStateOf("") }
+    var replySent by remember { mutableStateOf(false) }
+    var liked by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
+    var isMuted by remember { mutableStateOf(false) }
+    var storyPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val isOwn = group.userId == myId || group.user?.id == myId
     val item = group.items.getOrNull(idx)
-    LaunchedEffect(item?.id) { if (item != null && group.userId != myId) { scope.launch { try { api2.viewStatus(item.id) } catch (_: Exception) {} } } }
-    AlertDialog(onDismissRequest = onClose, title = { Text(group.user?.displayName ?: group.user?.username ?: "Story") }, text = {
-        Column(Modifier.fillMaxWidth()) {
-            if (item == null) { Text("No stories") }
-            else if (!item.textContent.isNullOrBlank() && item.mediaUrl.isNullOrBlank()) {
-                val bg = try { Color(android.graphics.Color.parseColor(item.bgColor ?: "#1E293B")) } catch (_: Exception) { Color(0xFF1E293B) }
-                Box(Modifier.fillMaxWidth().height(320.dp).clip(RoundedCornerShape(12.dp)).background(bg), contentAlignment = Alignment.Center) { Text(item.textContent!!, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(16.dp)) }
-            } else if (!item.mediaUrl.isNullOrBlank()) {
-                AsyncImage(model = item.thumbnailUrl ?: item.mediaUrl, contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
-                if (item.mediaType == "video") Text("Video story", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else { Text(item.textContent ?: "") }
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = idx > 0, onClick = { idx-- }) { Text("Back") }
-                Button(enabled = idx < group.items.size - 1, onClick = { idx++ }) { Text("Next") }
-            }
-            notice?.let { Spacer(Modifier.height(8.dp)); Text(it, fontSize = 13.sp, color = FrianzoBlue) }
-            if (isOwn) {
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        scope.launch {
-                            try { val r = api2.statusViewers(item?.id ?: ""); if (r.success && r.data != null) { viewers = r.data; showViewers = true } } catch (e: Exception) { notice = e.message }
-                        }
-                    }) { Text("Viewers") }
-                    TextButton(onClick = {
-                        scope.launch {
-                            try { if (item != null && api2.deleteStatus(item.id).success) onDeleted() } catch (e: Exception) { notice = e.message }
-                        }
-                    }) { Text("Delete story", color = Color.Red) }
+    val isVideo = item?.mediaType == "video" && !item.mediaUrl.isNullOrBlank()
+    // Image/text stories: 5s. Video stories: 15s cap (the VideoView
+    // completion listener advances earlier). The ticker only advances
+    // while !paused, so a hold-pause keeps the progress; the effect
+    // restarts only when idx changes.
+    val durationMs = if (isVideo) 15000L else 5000L
+    fun advance() { if (idx < group.items.size - 1) idx++ else onClose() }
+    fun goBack() { if (idx > 0) idx-- }
+    LaunchedEffect(item?.id) {
+        if (item != null && !isOwn) { try { api2.viewStatus(item.id) } catch (_: Exception) {} }
+        liked = item?.liked == true
+    }
+    LaunchedEffect(idx) {
+        progress = 0f
+        while (progress < 1f) {
+            delay(100)
+            if (!paused) progress = (progress + 100f / durationMs).coerceAtMost(1f)
+        }
+        advance()
+    }
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            // Media
+            when {
+                item == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No stories", color = Color.White) }
+                !item.textContent.isNullOrBlank() && item.mediaUrl.isNullOrBlank() -> {
+                    val bg = try { Color(android.graphics.Color.parseColor(item.bgColor ?: "#1E293B")) } catch (_: Exception) { Color(0xFF1E293B) }
+                    Box(Modifier.fillMaxSize().background(bg), contentAlignment = Alignment.Center) { Text(item.textContent!!, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(24.dp), textAlign = TextAlign.Center) }
                 }
-            } else {
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { scope.launch { try { group.user?.id?.let { api2.muteStories(it); notice = "Stories muted" } } catch (_: Exception) {} } }) { Text("Mute stories") }
-                    OutlinedButton(onClick = { scope.launch { try { group.user?.id?.let { api2.unmuteStories(it); notice = "Stories unmuted" } } catch (_: Exception) {} } }) { Text("Unmute") }
+                isVideo -> {
+                    key(item.id) {
+                        AndroidView(factory = { ctx -> VideoView(ctx).apply {
+                            setVideoURI(Uri.parse(item.mediaUrl))
+                            setOnPreparedListener { mp -> storyPlayer = mp; mp.isLooping = false; mp.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f); start() }
+                            setOnCompletionListener { advance() }
+                        } }, modifier = Modifier.fillMaxSize(), update = { view -> storyPlayer?.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f); if (paused) view.pause() else view.start() }, onRelease = { storyPlayer = null; it.stopPlayback() })
+                    }
+                }
+                !item.mediaUrl.isNullOrBlank() -> AsyncImage(model = item.mediaUrl, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(item.textContent ?: "", color = Color.White) }
+            }
+            // Tap zones: left 30% back, right 70% next; hold anywhere pauses.
+            // This Box sits UNDER the header/bottom rows, so their buttons
+            // still receive touches first.
+            Box(Modifier.fillMaxSize().pointerInput(item?.id) {
+                detectTapGestures(
+                    onTap = { offset -> if (offset.x < size.width * 0.3f) goBack() else advance() },
+                    onPress = { paused = true; tryAwaitRelease(); paused = false },
+                )
+            })
+            // Top: progress segments + header
+            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    group.items.forEachIndexed { i, _ ->
+                        val fill = when { i < idx -> 1f; i == idx -> progress; else -> 0f }
+                        Box(Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.35f))) {
+                            Box(Modifier.fillMaxHeight().fillMaxWidth(fill).background(Color.White))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FrianzoAvatar(group.user?.profilePictureUrl, 36.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(group.user?.displayName ?: group.user?.username ?: "Story", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1)
+                        Text(commentTimeAgo(item?.createdAt), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                    }
+                    if (isVideo) IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
+                    if (!isOwn) {
+                        Box {
+                            IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White) }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(text = { Text(if (isMuted) "Unmute stories" else "Mute stories") }, onClick = { menuOpen = false; scope.launch { try { val uid = group.user?.id ?: group.userId; if (isMuted) { api2.unmuteStories(uid); isMuted = false; notice = "Stories unmuted" } else { api2.muteStories(uid); isMuted = true; notice = "Stories muted" } } catch (e: Exception) { notice = e.message } } })
+                            }
+                        }
+                    }
+                    IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White) }
+                }
+            }
+            // Bottom: own = Viewers + Delete; others = reply + Like
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
+                notice?.let { Text(it, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+                if (isOwn) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { scope.launch { try { val r = api2.statusViewers(item?.id ?: ""); if (r.success && r.data != null) { viewers = r.data.viewers; showViewers = true } else notice = r.error?.message } catch (e: Exception) { notice = e.message } } }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Viewers") }
+                        OutlinedButton(onClick = { showDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Delete story") }
+                    }
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = replyText, onValueChange = { if (it.length <= 500) replyText = it }, placeholder = { Text("Reply...", color = Color.White.copy(alpha = 0.6f)) }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(28.dp), colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedContainerColor = Color.Black.copy(alpha = 0.4f), unfocusedContainerColor = Color.Black.copy(alpha = 0.4f), focusedBorderColor = Color.White.copy(alpha = 0.5f), unfocusedBorderColor = Color.White.copy(alpha = 0.5f), cursorColor = Color.White))
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(onClick = {
+                            val text = replyText.trim(); if (text.isBlank()) return@IconButton
+                            replyText = ""
+                            // Web story reply goes to the author's DM; the
+                            // backend has no story-reply endpoint, so the
+                            // reply is sent as a real chat message.
+                            scope.launch { try { val uid = group.user?.id ?: group.userId; val conv = api2.createConversation(CreateConversationRequest(uid)); val cid = conv.data?.id; if (cid != null && api2.sendMessage(cid, SendMessageRequest(text)).success) { replySent = true; notice = "Reply sent" } else notice = "Could not send reply" } catch (e: Exception) { notice = e.message } }
+                        }) { Icon(Icons.Filled.Send, contentDescription = "Send reply", tint = Color.White) }
+                        IconButton(onClick = { val was = liked; liked = !was; scope.launch { try { if (item != null) api2.toggleStatusLike(item.id) } catch (_: Exception) { liked = was } } }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(28.dp)) }
+                    }
+                    if (replySent) Text("Reply sent as a message.", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                 }
             }
         }
-    }, confirmButton = { TextButton(onClick = onClose) { Text("Close") } }, dismissButton = {
-        if (!isOwn) TextButton(onClick = { item?.let { scope.launch { try { api2.toggleStatusLike(it.id) } catch (_: Exception) {} } } }) { Text("Like") }
-    })
-    if (showViewers) {
-        AlertDialog(onDismissRequest = { showViewers = false }, title = { Text("Viewers") },
-            text = { Column { (viewers ?: emptyList()).forEach { v -> Text(v.displayName ?: v.username ?: "User", fontSize = 14.sp) }; if (viewers.isNullOrEmpty()) Text("No views yet", fontSize = 14.sp) } },
-            confirmButton = { TextButton(onClick = { showViewers = false }) { Text("Close") } })
+        if (showViewers) {
+            AlertDialog(onDismissRequest = { showViewers = false }, title = { Text("Viewers") },
+                text = { Column { (viewers ?: emptyList()).forEach { v -> Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) { FrianzoAvatar(v.profilePictureUrl, 32.dp); Spacer(Modifier.width(8.dp)); Text(v.displayName ?: v.username ?: "User", fontSize = 14.sp) } }; if (viewers.isNullOrEmpty()) Text("No views yet", fontSize = 14.sp) } },
+                confirmButton = { TextButton(onClick = { showViewers = false }) { Text("Close") } })
+        }
+        if (showDelete) {
+            AlertDialog(onDismissRequest = { showDelete = false }, title = { Text("Delete story?") }, text = { Text("This can't be undone.") },
+                confirmButton = { TextButton(onClick = { showDelete = false; scope.launch { try { if (item != null && api2.deleteStatus(item.id).success) onDeleted() else notice = "Could not delete story" } catch (e: Exception) { notice = e.message } } }) { Text("Delete", color = Color.Red) } },
+                dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } })
+        }
     }
 }
 

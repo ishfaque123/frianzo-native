@@ -28,8 +28,8 @@ android {
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 11
-        versionName = "2.8"
+        versionCode = 12
+        versionName = "2.9"
     }
 
     buildFeatures { compose = true }
@@ -65,6 +65,7 @@ dependencies {
     // extended-only icon used in future UI work.
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.foundation:foundation-pager") // v2.9: VerticalPager (reels snap paging)
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.navigation:navigation-compose:2.8.5")

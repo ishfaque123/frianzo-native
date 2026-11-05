@@ -1,19 +1,29 @@
 package com.frianzo.app.ui
 
 import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.net.Uri
 import android.widget.VideoView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.pager.PageSize
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -23,10 +33,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.frianzo.app.data.*
@@ -39,9 +55,14 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 
-// ---------- REELS: vertical list, tap video to play/pause, like + view ----------
+// ---------- REELS (v2.9): full-screen BLACK vertical snap paging, like the web ----------
+// One reel per screen, auto-play the current reel, progress bar, mute
+// toggle, double-tap to like, right rail (Like / Comment / Share / Views /
+// Save / More), Following / For You tabs, caption pill. Upload, favourite
+// and more-menu behaviour are kept from v2.8.
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> Unit = {}) {
+fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> Unit = {}, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}) {
     val context = LocalContext.current
     var reels by remember { mutableStateOf<List<Reel>>(emptyList()) }
     var offset by remember { mutableStateOf(0) }
@@ -51,21 +72,19 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
     var error by remember { mutableStateOf<String?>(null) }
     var feed by remember { mutableStateOf("foryou") }
     var showUpload by remember { mutableStateOf(false) }
+    var muted by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(pageCount = { reels.size })
     fun load() {
         if (loading || !hasMore) return
         loading = true
         scope.launch {
             try {
-                val res = api2.reelFeed(offset, feed)
+                // v2.9: exclude= stops repeats on load-more (backend
+                // getReelFeedHandler reads req.query.exclude, max 400 ids).
+                val exclude = reels.joinToString(",") { it.id }.takeIf { it.isNotBlank() }
+                val res = api2.reelFeed(offset, feed, exclude)
                 if (res.success && res.data != null) {
-                    // PERMANENT FIX for H2: the backend has no exclude
-                    // param and re-ranks on every page, so offset pages
-                    // can repeat reels. Dedupe by id client-side so a
-                    // reel already shown is never shown twice, and trust
-                    // the backend hasMore instead of isNotEmpty (a page
-                    // that exactly fills the page size used to show
-                    // "Load more" once more, then an empty page).
                     val seen = reels.map { it.id }.toSet()
                     reels = reels + res.data.reels.filter { it.id !in seen }
                     offset += res.data.reels.size
@@ -78,198 +97,448 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
     var reelComment by remember { mutableStateOf<Reel?>(null) }
     var reelCommentCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }) }
-    if (showUpload) { ReelUploadScreen(api2, onDone = { showUpload = false; reels = emptyList(); offset = 0; hasMore = true; load() }, onClose = { showUpload = false }) }
+    if (showUpload) { ReelUploadScreen(api2, initialVideoUri = uploadUri, onDone = { showUpload = false; onUploadUriConsumed(); reels = emptyList(); offset = 0; hasMore = true; load() }, onClose = { showUpload = false; onUploadUriConsumed() }) }
+    LaunchedEffect(uploadUri) { if (uploadUri != null) showUpload = true }
     LaunchedEffect(feed) { reels = emptyList(); offset = 0; hasMore = true; load() }
-    LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentPadding = PaddingValues(vertical = 8.dp)) {
-        item {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                listOf("foryou" to "For You", "following" to "Following").forEach { (v, label) ->
-                    val sel = feed == v
-                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { if (feed != v) feed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                        Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Spacer(Modifier.width(8.dp))
-                }
-                Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick = { showUpload = true }, shape = RoundedCornerShape(28.dp)) { Text("Upload reel") }
-            }
+    // Deep-link: jump to a reel (from a notification) once it is loaded.
+    LaunchedEffect(reels, focusReelId) {
+        val target = focusReelId ?: return@LaunchedEffect
+        val idx = reels.indexOfFirst { it.id == target }
+        if (idx >= 0) { pagerState.scrollToPage(idx); onFocusConsumed() }
+    }
+    // Load more when the user nears the end of the loaded reels.
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            if (reels.isNotEmpty() && page >= reels.size - 3) load()
         }
-        items(reels, key = { it.id }) { reel ->
-            var liked by remember { mutableStateOf(reel.liked) }
-            var likes by remember { mutableStateOf(reel.likeCount) }
-            var playing by remember { mutableStateOf(false) }
-            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { reel.author?.username?.let { onAuthor(it) } }) {
-                        FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text("@${reel.author?.username ?: ""}", style = MaterialTheme.typography.titleMedium)
-                            Text("${reel.viewCount} views", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                    reel.caption?.let { Text(it) }
-                    Spacer(Modifier.height(8.dp))
-                    // PERF: previously EVERY reel card created a VideoView and
-                    // called setVideoURI on composition, so opening Reels
-                    // started downloading video headers for all visible
-                    // reels at once. Now only a thumbnail/play button is
-                    // shown until the user taps; the VideoView (and its
-                    // download) is created only for the reel being played.
-                    if (reel.videoUrl != null && playing) {
-                        AndroidView(
-                            factory = { ctx -> VideoView(ctx).apply {
-                                setVideoURI(Uri.parse(reel.videoUrl))
-                                setOnCompletionListener { v -> v.seekTo(0); v.start() }
-                            } },
-                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable { playing = false },
-                            update = { view -> view.start() },
-                            onRelease = { view -> view.stopPlayback() },
-                        )
-                    } else if (reel.videoUrl != null) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black).clickable {
-                                playing = true
-                                // Views were counted at 0 seconds before.
-                                // Now gated: only after 3s of real playback,
-                                // and only if still playing then.
-                                if (reel.id !in viewedIds) {
-                                    scope.launch {
-                                        delay(3000)
-                                        if (playing && reel.id !in viewedIds) {
-                                            viewedIds = viewedIds + reel.id
-                                            try { api2.recordReelView(reel.id, mapOf("watchSec" to 3)) } catch (_: Exception) {}
-                                        }
-                                    }
-                                }
-                            },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
-                            Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(64.dp))
-                        }
-                    } else {
-                        reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))) }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Button(shape = RoundedCornerShape(28.dp), onClick = {
-                            scope.launch {
-                                try {
-                                    val r = api2.toggleReelLike(reel.id)
-                                    if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount }
-                                } catch (_: Exception) {}
-                            }
-                        }) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("$likes") } }
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { reelComment = reel }) { Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("${reelCommentCounts[reel.id] ?: reel.commentCount}") }
-                        TextButton(onClick = {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(android.content.Intent.EXTRA_TEXT, "https://frianzo.online/reel/${reel.id}")
-                            }
-                            context.startActivity(android.content.Intent.createChooser(intent, "Share reel"))
-                        }) { Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Share") }
-                        var fav by remember { mutableStateOf(reel.favorited) }
-                        IconButton(onClick = {
-                            scope.launch {
-                                try { val r = api2.toggleReelFavorite(reel.id); if (r.success && r.data != null) fav = r.data.favorited } catch (_: Exception) {}
-                            }
-                        }) { Icon(if (fav) Icons.Filled.Star else Icons.Outlined.StarBorder, contentDescription = "Save reel", tint = if (fav) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant) }
-                        var moreOpen by remember { mutableStateOf(false) }
-                        Box {
-                            IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
-                            DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
-                                DropdownMenuItem(text = { Text("Copy link") }, onClick = { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", "https://frianzo.online/reel/${reel.id}")) })
-                                DropdownMenuItem(text = { Text("Report") }, onClick = { moreOpen = false; scope.launch { try { api2.reportReel(reel.id, mapOf("reason" to "other")) } catch (_: Exception) {} } })
-                                if (reel.author?.id == myId) DropdownMenuItem(text = { Text("Delete reel", color = Color.Red) }, onClick = { moreOpen = false; scope.launch { try { if (api2.deleteReel(reel.id).success) reels = reels.filter { it.id != reel.id } } catch (_: Exception) {} } })
-                            }
-                        }
-                    }
+    }
+    // View counting: 3s of the current reel actually on screen, once.
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            val reel = reels.getOrNull(page) ?: return@collect
+            if (reel.id !in viewedIds) {
+                delay(3000)
+                if (pagerState.currentPage == page && reel.id !in viewedIds) {
+                    viewedIds = viewedIds + reel.id
+                    try { api2.recordReelView(reel.id, mapOf("watchSec" to 3)) } catch (_: Exception) {}
                 }
             }
         }
-        item {
-            if (error != null) Text(error!!, Modifier.padding(16.dp))
-            if (loading) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
-            else if (hasMore) OutlinedButton(onClick = { load() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) { Text("Load more reels") }
+    }
+    Column(Modifier.fillMaxSize().background(Color.Black)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf("foryou" to "For You", "following" to "Following").forEach { (v, label) ->
+                val sel = feed == v
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.15f)).clickable { if (feed != v) feed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.Black else Color.White)
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
+            OutlinedButton(onClick = { showUpload = true }, shape = RoundedCornerShape(28.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)) { Text("Upload reel") }
+        }
+        if (error != null && reels.isEmpty()) { Text(error!!, color = Color.White, modifier = Modifier.padding(16.dp)) }
+        if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() } }
+        if (reels.isNotEmpty()) {
+            VerticalPager(state = pagerState, pageSize = PageSize.Fill, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
+                val reel = reels[page]
+                ReelPage(
+                    api2 = api2, reel = reel, myId = myId,
+                    isActive = page == pagerState.currentPage,
+                    muted = muted,
+                    commentCount = reelCommentCounts[reel.id] ?: reel.commentCount,
+                    onAuthor = onAuthor,
+                    onComment = { reelComment = reel },
+                    onDeleted = { reels = reels.filter { it.id != reel.id } },
+                )
+            }
+        } else if (!loading && error == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No reels yet", color = Color.White) }
         }
     }
 }
 
+// v2.9: relative time for reel comments (commentTimeAgo is private to Screens.kt).
+private fun reelTimeAgo(createdAt: String?): String {
+    if (createdAt.isNullOrBlank()) return ""
+    val formats = listOf(
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US),
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US),
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US),
+    )
+    var millis: Long? = null
+    for (f in formats) {
+        f.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        try { millis = f.parse(createdAt)?.time; if (millis != null) break } catch (_: Exception) {}
+    }
+    if (millis == null) return ""
+    val seconds = ((System.currentTimeMillis() - millis) / 1000).coerceAtLeast(0)
+    return when {
+        seconds < 60 -> "now"
+        seconds < 3600 -> "${seconds / 60}m"
+        seconds < 86400 -> "${seconds / 3600}h"
+        seconds < 604800 -> "${seconds / 86400}d"
+        seconds < 2592000 -> "${seconds / 604800}w"
+        seconds < 31536000 -> "${seconds / 2592000}mo"
+        else -> "${seconds / 31536000}y"
+    }
+}
 
-// ---------- REEL COMMENTS: read + add via existing api2 reelComments endpoints ----------
+// v2.9: compact counts for the reel rail (formatCount is private to Screens.kt).
+private fun reelCount(n: Int): String {
+    if (n < 1000) return "$n"
+    if (n < 1000000) { val k = n / 1000.0; return if (k % 1.0 == 0.0) "${k.toInt()}k" else "%.1fk".format(k) }
+    val m = n / 1000000.0; return if (m % 1.0 == 0.0) "${m.toInt()}M" else "%.1fM".format(m)
+}
+
+@Composable
+private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var liked by remember(reel.id) { mutableStateOf(reel.liked) }
+    var likes by remember(reel.id) { mutableStateOf(reel.likeCount) }
+    var fav by remember(reel.id) { mutableStateOf(reel.favorited) }
+    var paused by remember { mutableStateOf(false) }
+    var burst by remember { mutableStateOf(false) }
+    var prepared by remember { mutableStateOf(false) }
+    var durationMs by remember { mutableStateOf(0) }
+    var positionMs by remember { mutableStateOf(0) }
+    // NOTE: player/prepared are set ONLY in VideoView callbacks (never in
+    // the AndroidView factory — writing state during composition is not
+    // allowed). The progress ticker reads player.currentPosition.
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var moreOpen by remember { mutableStateOf(false) }
+    val burstScale by animateFloatAsState(if (burst) 1.4f else 1f, label = "heartBurst")
+    fun doLike() {
+        scope.launch {
+            try {
+                val r = api2.toggleReelLike(reel.id)
+                if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount }
+            } catch (_: Exception) {}
+        }
+    }
+    LaunchedEffect(burst) { if (burst) { delay(700); burst = false } }
+    // Progress ticker: reads the real VideoView position while active.
+    LaunchedEffect(isActive, prepared) {
+        while (isActive && prepared) {
+            delay(200)
+            positionMs = player?.currentPosition ?: 0
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (reel.videoUrl != null) {
+            key(reel.id) {
+                AndroidView(
+                    factory = { ctx -> VideoView(ctx).apply {
+                        setVideoURI(Uri.parse(reel.videoUrl))
+                        setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; mp.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f); if (isActive && !paused) start() }
+                        setOnCompletionListener { v -> v.seekTo(0); v.start() }
+                    } },
+                    modifier = Modifier.fillMaxSize().pointerInput(reel.id) {
+                        detectTapGestures(
+                            onTap = { paused = !paused },
+                            onDoubleTap = { if (!liked) doLike(); burst = true },
+                        )
+                    },
+                    update = { view ->
+                        player?.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f)
+                        if (isActive && !paused) { if (!view.isPlaying) view.start() } else view.pause()
+                    },
+                    onRelease = { player = null; it.stopPlayback() },
+                )
+            }
+            if (!prepared) {
+                reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() }
+            }
+        } else {
+            reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+        }
+        if (paused && prepared) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = "Paused", tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(72.dp))
+            }
+        }
+        if (burst) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Favorite, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(96.dp).graphicsLayer(scaleX = burstScale, scaleY = burstScale))
+            }
+        }
+        // Progress bar (top of the reel).
+        if (prepared && durationMs > 0) {
+            LinearProgressIndicator(progress = (positionMs.toFloat() / durationMs).coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth().height(3.dp), color = Color.White, trackColor = Color.White.copy(alpha = 0.3f))
+        }
+        // Right rail: Like / Comment / Share / Views / Save / More.
+        Column(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp, bottom = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                IconButton(onClick = { doLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(32.dp)) }
+                Text(reelCount(likes), color = Color.White, fontSize = 12.sp)
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                IconButton(onClick = onComment) { Icon(Icons.Filled.Chat, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(30.dp)) }
+                Text(reelCount(commentCount), color = Color.White, fontSize = 12.sp)
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                IconButton(onClick = {
+                    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(android.content.Intent.EXTRA_TEXT, "https://frianzo.online/reel/${reel.id}") }
+                    context.startActivity(android.content.Intent.createChooser(intent, "Share reel"))
+                }) { Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(30.dp)) }
+                Text(reelCount(reel.shareCount), color = Color.White, fontSize = 12.sp)
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Filled.Visibility, contentDescription = "Views", tint = Color.White, modifier = Modifier.size(28.dp))
+                Text(reelCount(reel.viewCount), color = Color.White, fontSize = 12.sp)
+            }
+            IconButton(onClick = { scope.launch { try { val r = api2.toggleReelFavorite(reel.id); if (r.success && r.data != null) fav = r.data.favorited } catch (_: Exception) {} } }) { Icon(if (fav) Icons.Filled.Star else Icons.Outlined.StarBorder, contentDescription = "Save reel", tint = if (fav) Color(0xFFF59E0B) else Color.White, modifier = Modifier.size(28.dp)) }
+            Box {
+                IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White) }
+                DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                    DropdownMenuItem(text = { Text("Copy link") }, onClick = { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", "https://frianzo.online/reel/${reel.id}")) })
+                    DropdownMenuItem(text = { Text("Report") }, onClick = { moreOpen = false; scope.launch { try { api2.reportReel(reel.id, mapOf("reason" to "other")) } catch (_: Exception) {} } })
+                    if (reel.author?.id == myId) DropdownMenuItem(text = { Text("Delete reel", color = Color.Red) }, onClick = { moreOpen = false; scope.launch { try { if (api2.deleteReel(reel.id).success) onDeleted() } catch (_: Exception) {} } })
+                }
+            }
+        }
+        // Bottom-left: author + caption pill.
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, end = 72.dp, bottom = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { reel.author?.username?.let { onAuthor(it) } }) {
+                FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            reel.caption?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Color.White, fontSize = 14.sp, maxLines = 3) }
+            reel.category?.let { Spacer(Modifier.height(6.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) { Text(it, color = Color.White, fontSize = 12.sp) } }
+        }
+    }
+}
+
+// ---------- REEL COMMENTS (v2.9): bottom sheet like the WEB reel comments ----------
+// Web reel comments are DIFFERENT from post comments: 78vh sheet, true-total
+// header count, plain-text rows (no bubble), no Follow pill, no sort, 500-char
+// limit, infinite scroll (cursor pagination). Rows: 32px avatar, name +
+// timestamp, Like / Reply / count, "..." menu (Edit / Delete / Copy /
+// Report). Replies use parentCommentId. Backend DTO (fresh reelService):
+// { comments: [{ id, content, createdAt, author, reactionCount, myReaction,
+// replies: [...] }], pagination: { hasMore, nextCursor } }.
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = null, onClose: () -> Unit, onCommentAdded: () -> Unit = {}) {
     var comments by remember { mutableStateOf<List<ReelComment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-    var editTarget by remember { mutableStateOf<ReelComment?>(null) }
-    var editText by remember { mutableStateOf("") }
+    var replyTo by remember { mutableStateOf<ReelComment?>(null) }
+    var total by remember { mutableStateOf(reel.commentCount) }
+    var nextCursor by remember { mutableStateOf<String?>(null) }
+    var hasMore by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var expandedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val scope = rememberCoroutineScope()
-    fun load() {
+    fun load(cursor: String? = null) {
+        if (cursor != null) loadingMore = true
         scope.launch {
             try {
-                val res = api2.reelComments(reel.id)
-                if (res.success && res.data != null) comments = res.data.comments else error = res.error?.message
+                val res = api2.reelComments(reel.id, cursor)
+                if (res.success && res.data != null) {
+                    comments = if (cursor == null) res.data.comments else comments + res.data.comments
+                    nextCursor = res.data.pagination?.nextCursor
+                    hasMore = res.data.pagination?.hasMore == true
+                } else error = res.error?.message
             } catch (e: Exception) { error = e.message }
+            loadingMore = false
         }
     }
     LaunchedEffect(reel.id) { load() }
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("Comments") },
-        text = {
-            Column {
-                LazyColumn(Modifier.fillMaxWidth().height(320.dp)) {
-                    items(comments, key = { it.id }) { c ->
-                        Column(Modifier.padding(vertical = 6.dp)) {
-                            Text(c.author?.displayName ?: c.author?.username ?: "User", style = MaterialTheme.typography.titleMedium)
-                            Text(c.content ?: "", style = MaterialTheme.typography.bodyMedium)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(onClick = { scope.launch { try { api2.reelCommentReaction(c.id, mapOf("type" to "like")) } catch (_: Exception) {} } }) { Text("Like") }
-                                TextButton(onClick = { scope.launch { try { api2.reportReelComment(c.id, mapOf("reason" to "other")) } catch (_: Exception) {} } }) { Text("Report") }
-                                if (c.author?.id == myId) {
-                                    TextButton(onClick = { editTarget = c; editText = c.content ?: "" }) { Text("Edit") }
-                                    TextButton(onClick = { scope.launch { try { if (api2.deleteReelComment(c.id).success) comments = comments.filter { it.id != c.id } } catch (_: Exception) {} } }) { Text("Delete", color = Color.Red) }
+    ModalBottomSheet(onDismissRequest = onClose) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.78f).padding(horizontal = 16.dp)) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.weight(1f))
+                Text("$total comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            HorizontalDivider(color = FrianzoBorder)
+            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                if (comments.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { Text("No comments yet. Be the first to comment.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                items(comments, key = { it.id }) { c ->
+                    ReelCommentRow(api2, c, reel, myId, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0) })
+                    val replies = c.replies
+                    if (replies.isNotEmpty()) {
+                        val isExpanded = c.id in expandedIds
+                        Column(Modifier.fillMaxWidth().padding(start = 40.dp, top = 2.dp)) {
+                            if (!isExpanded) {
+                                TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${replies.size} ${if (replies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            } else {
+                                replies.forEach { r ->
+                                    ReelCommentRow(api2, r, reel, myId, isReply = true, parentAuthor = c.author, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0) })
                                 }
+                                TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
                         }
-                        HorizontalDivider()
                     }
-                    if (comments.isEmpty() && error == null) item { Text("No comments yet") }
-                    if (error != null) item { Text(error!!) }
+                }
+                if (hasMore) item {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        if (loadingMore) DotsLoading() else OutlinedButton(onClick = { load(nextCursor) }, shape = RoundedCornerShape(28.dp)) { Text("Load more comments") }
+                    }
+                }
+                if (error != null) item { Text(error!!, fontSize = 13.sp, color = Color.Red, modifier = Modifier.padding(vertical = 8.dp)) }
+            }
+            if (replyTo != null) {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(FrianzoBlueTint).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = androidx.compose.ui.text.buildAnnotatedString {
+                            append("Replying to ")
+                            withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append("@${replyTo!!.author?.username ?: "User"}") }
+                        },
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(value = draft, onValueChange = { draft = it }, label = { Text("Write a comment") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             }
-        },
-        confirmButton = {
-            Button(onClick = {
-                if (draft.isBlank()) { error = "Type a comment first"; return@Button }
-                val text = draft; draft = ""
-                scope.launch {
-                    try {
-                        val res = api2.addReelComment(reel.id, CommentCreateRequest(text))
-                        if (res.success) { load(); onCommentAdded() } else error = res.error?.message
-                    } catch (e: Exception) { error = e.message; draft = text }
+            Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { if (it.length <= 500) draft = it },
+                    placeholder = { Text("Add a comment...") },
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    maxLines = 4,
+                    singleLine = false,
+                    shape = RoundedCornerShape(24.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.White, unfocusedContainerColor = Color.White, focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder),
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    enabled = draft.isNotBlank(),
+                    modifier = Modifier.height(48.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
+                    onClick = {
+                        val text = draft; val parent = replyTo?.id; draft = ""; replyTo = null
+                        scope.launch {
+                            try {
+                                val res = api2.addReelComment(reel.id, CommentCreateRequest(text, parent))
+                                if (res.success) { total += 1; onCommentAdded(); load() } else error = res.error?.message ?: "Could not send comment"
+                            } catch (e: Exception) { error = e.message; draft = text }
+                        }
+                    },
+                ) { Text("Send") }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: String?, isReply: Boolean = false, parentAuthor: Author? = null, onReply: (ReelComment) -> Unit, onChanged: () -> Unit, onDeleted: () -> Unit = {}) {
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var editing by remember { mutableStateOf(false) }
+    var editDraft by rememberSaveable { mutableStateOf(c.content ?: "") }
+    var localReaction by remember { mutableStateOf(c.myReaction) }
+    var localCount by remember { mutableStateOf(c.reactionCount) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
+    var reported by remember { mutableStateOf(false) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
+    val isOwner = myId != null && c.author?.id == myId
+    val canDelete = isOwner || (myId != null && reel.author?.id == myId)
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            FrianzoAvatar(c.author?.profilePictureUrl, 32.dp)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                // Plain-text row (web reel comments): no bubble, no Follow pill.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(c.author?.displayName ?: c.author?.username ?: "User", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
+                    Spacer(Modifier.width(8.dp))
+                    Text(reelTimeAgo(c.createdAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            }) { Text("Send") }
-        },
-        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
-    )
-    if (editTarget != null) {
-        AlertDialog(onDismissRequest = { editTarget = null }, title = { Text("Edit comment") },
-            text = { OutlinedTextField(value = editText, onValueChange = { editText = it }, modifier = Modifier.fillMaxWidth()) },
-            confirmButton = { Button(onClick = { val target = editTarget!!; scope.launch { try { if (api2.editReelComment(target.id, mapOf("content" to editText)).success) { comments = comments.map { if (it.id == target.id) it.copy(content = editText) else it }; editTarget = null } } catch (_: Exception) {} } }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { editTarget = null }) { Text("Cancel") } })
+                Spacer(Modifier.height(2.dp))
+                if (editing) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = editDraft, onValueChange = { if (it.length <= 500) editDraft = it }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(10.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder))
+                        TextButton(onClick = { scope.launch { try { if (api2.editReelComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {} } }) { Text("Save", fontSize = 13.sp, color = FrianzoBlue) }
+                        TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 13.sp) }
+                    }
+                } else {
+                    val prefix = if (isReply && parentAuthor != null && !(c.content ?: "").trim().lowercase().startsWith("@${parentAuthor.username?.lowercase()}")) "@${parentAuthor.username} " else ""
+                    Text(
+                        text = androidx.compose.ui.text.buildAnnotatedString {
+                            if (prefix.isNotEmpty()) { withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append(prefix) } }
+                            append(c.content ?: "")
+                        },
+                        fontSize = 14.sp,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        // Backend returns { reaction } only; toggle "like"
+                        // locally and revert on failure.
+                        val prevReaction = localReaction; val prevCount = localCount
+                        val removing = prevReaction == "like"
+                        val switching = prevReaction != null && !removing
+                        localReaction = if (removing) null else "like"
+                        localCount = (prevCount + if (removing) -1 else if (switching) 0 else 1).coerceAtLeast(0)
+                        scope.launch { try { if (!api2.reelCommentReaction(c.id, mapOf("type" to "like")).success) { localReaction = prevReaction; localCount = prevCount } } catch (_: Exception) { localReaction = prevReaction; localCount = prevCount } }
+                    }, contentPadding = PaddingValues(0.dp)) {
+                        if (localReaction != null) { ReactionIcon(localReaction, 16.dp); Spacer(Modifier.width(4.dp)) }
+                        Text("Like", fontSize = 13.sp, fontWeight = if (localReaction != null) FontWeight.SemiBold else FontWeight.Normal, color = if (localReaction != null) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    if (localCount > 0) { Spacer(Modifier.width(12.dp)); Text(reelCount(localCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; editDraft = c.content ?: ""; editing = true })
+                            if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; showDelete = true })
+                            DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")) })
+                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = {
+                                menuOpen = false
+                                scope.launch { try { if (api2.reportReelComment(c.id, mapOf("reason" to "other")).success) reported = true } catch (_: Exception) {} }
+                            })
+                        }
+                    }
+                }
+                if (reported) Text("Comment reported. Thanks for letting us know.", fontSize = 12.sp, color = Color(0xFF16A34A))
+                if (deleteError != null) Text(deleteError!!, fontSize = 12.sp, color = Color.Red)
+            }
+        }
+    }
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            title = { Text("Delete comment?") },
+            text = { Text("This can't be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDelete = false
+                    scope.launch {
+                        try {
+                            val r = api2.deleteReelComment(c.id)
+                            if (r.success) { onChanged(); onDeleted() }
+                            else deleteError = r.error?.message ?: "Could not delete comment"
+                        } catch (e: Exception) { deleteError = e.message ?: "Could not delete comment" }
+                    }
+                }) { Text("Delete", color = Color.Red) }
+            },
+            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
+        )
     }
 }
 
 // ---------- REEL UPLOAD: video + caption + category (POST /api/reels) ----------
 @Composable
-private fun ReelUploadScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: () -> Unit) {
+private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, onDone: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
-    var videoUri by remember { mutableStateOf<Uri?>(null) }
+    var videoUri by remember { mutableStateOf<Uri?>(initialVideoUri) }
     var caption by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf("") }
     var maxSec by remember { mutableStateOf(180) }
@@ -318,8 +587,9 @@ private fun ReelUploadScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: () 
 
 // ---------- CREATE POST: text + optional photo ----------
 @Composable
-fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onPosted: () -> Unit) {
+fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onPosted: () -> Unit, onClose: () -> Unit = {}) {
     val context = LocalContext.current
+    var showDiscard by remember { mutableStateOf(false) }
     var text by rememberSaveable { mutableStateOf("") }
     var imageUri by remember { mutableStateOf<Uri?>(initialUri) }
     var mediaIsVideo by remember { mutableStateOf(false) }
@@ -346,7 +616,11 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
         }
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
-        Text("New post", style = MaterialTheme.typography.titleLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // v2.9: Cancel / Discard — confirms first when the post is dirty.
+            TextButton(onClick = { if (text.isNotBlank() || imageUri != null || bgStyle != null) showDiscard = true else onClose() }) { Text("Cancel") }
+            Text("New post", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+        }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("What's on your mind?") }, modifier = Modifier.fillMaxWidth().height(140.dp), shape = RoundedCornerShape(12.dp))
         if (imageUri == null) {
@@ -403,6 +677,15 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
         }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(28.dp)) { Text("Post") }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it) }
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
+    }
+    if (showDiscard) {
+        AlertDialog(
+            onDismissRequest = { showDiscard = false },
+            title = { Text("Discard post?") },
+            text = { Text("Your post will be lost.") },
+            confirmButton = { TextButton(onClick = { showDiscard = false; onClose() }) { Text("Discard", color = Color.Red) } },
+            dismissButton = { TextButton(onClick = { showDiscard = false }) { Text("Keep editing") } },
+        )
     }
 }
 
@@ -609,7 +892,10 @@ private fun notifTimeAgo(createdAt: String?): String {
 }
 
 @Composable
-fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
+// v2.9: tapping a notification deep-links — postId opens the post detail,
+// reelId opens that reel, a message opens the chat with the actor, a follow
+// opens the actor's profile. It no longer always opens the actor profile.
+fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOpenPost: (String) -> Unit = {}, onOpenReel: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
     var items by remember { mutableStateOf<List<NotificationItem>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var filter by remember { mutableStateOf("All") }
@@ -684,7 +970,23 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}) {
                         if (selecting) { selected = if (n.id in selected) selected - n.id else selected + n.id }
                         else {
                             scope.launch { try { api2.markNotificationRead(n.id); load() } catch (_: Exception) {} }
-                            n.actor?.username?.let { onAuthor(it) }
+                            when {
+                                n.postId != null -> onOpenPost(n.postId)
+                                n.reelId != null -> onOpenReel(n.reelId)
+                                n.type == "message" && n.actor?.id != null -> {
+                                    // No conversation id on the notification:
+                                    // open (or create) the DM with the actor.
+                                    scope.launch {
+                                        try {
+                                            val r = api2.createConversation(CreateConversationRequest(n.actor!!.id!!))
+                                            val cid = r.data?.id
+                                            if (cid != null) onOpenChat(cid, n.actor?.displayName ?: n.actor?.username ?: "Chat")
+                                            else n.actor?.username?.let { onAuthor(it) }
+                                        } catch (_: Exception) { n.actor?.username?.let { onAuthor(it) } }
+                                    }
+                                }
+                                else -> n.actor?.username?.let { onAuthor(it) }
+                            }
                         }
                     },
                 )
@@ -824,6 +1126,15 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var followList by remember { mutableStateOf<String?>(null) }
     var detailPostId by remember { mutableStateOf<String?>(null) }
     var photoMsg by remember { mutableStateOf<String?>(null) }
+    // v2.9: real follow counts, highlights, per-post like state.
+    var followCounts by remember { mutableStateOf<FollowCountsData?>(null) }
+    var highlights by remember { mutableStateOf<List<Highlight>>(emptyList()) }
+    var highlightViewer by remember { mutableStateOf<Highlight?>(null) }
+    var showHighlightCreate by remember { mutableStateOf(false) }
+    var ownStatusItems by remember { mutableStateOf<List<StatusItem>>(emptyList()) }
+    var highlightError by remember { mutableStateOf<String?>(null) }
+    var postReactions by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var postLikeCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val avatarPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
@@ -843,6 +1154,18 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
         }
     }
     followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }) }
+    highlightViewer?.let { h ->
+        HighlightViewerDialog(api2, h, username == null, onClose = { highlightViewer = null }, onDeleted = {
+            highlightViewer = null
+            scope.launch { try { val r = api2.highlights(profile?.username ?: ""); if (r.success && r.data != null) highlights = r.data.highlights ?: emptyList() } catch (_: Exception) {} }
+        })
+    }
+    if (showHighlightCreate) {
+        HighlightCreateDialog(api2, ownStatusItems, onClose = { showHighlightCreate = false }, onCreated = {
+            showHighlightCreate = false
+            scope.launch { try { val r = api2.highlights(profile?.username ?: ""); if (r.success && r.data != null) highlights = r.data.highlights ?: emptyList() } catch (_: Exception) {} }
+        })
+    }
     if (detailPostId != null && feedVm != null) {
         PostDetailScreen(feedVm, detailPostId!!, myId, onClose = { detailPostId = null }, onAuthor = { u -> detailPostId = null; onUser?.invoke(u) }, onOpenChat = { id, name -> detailPostId = null; onOpenChat?.invoke(id, name) })
     }
@@ -859,6 +1182,19 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         if (pr.success && pr.data != null) posts = pr.data.posts ?: emptyList()
                         else postsError = pr.error?.message
                         postsLoading = false
+                    }
+                    if (res.data.user.id != null) {
+                        try { val fc = api2.followCounts(res.data.user.id); if (fc.success && fc.data != null) followCounts = fc.data } catch (_: Exception) {}
+                    }
+                    if (uname != null) {
+                        try { val hr = api2.highlights(uname); if (hr.success && hr.data != null) highlights = hr.data.highlights ?: emptyList() } catch (e: Exception) { highlightError = e.message }
+                    }
+                    if (username == null) {
+                        try {
+                            val sf = api2.statusFeed()
+                            val own = sf.data?.feed?.firstOrNull { it.userId == myId || it.user?.id == myId }
+                            ownStatusItems = own?.items ?: emptyList()
+                        } catch (_: Exception) {}
                     }
                     if (res.data.user.id != null && res.data.user.id != myId) {
                         val fs = api2.followStatus(res.data.user.id)
@@ -888,15 +1224,18 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         }
                         Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall)
                         p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                        p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue) }
+                        // v2.9: website is a real link (was plain blue Text).
+                        p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.clickable { openWebUrl(context, it) }) }
                         val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, countryDisplayName(p.country)).joinToString(", ")
                         if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("${posts.size} Posts", style = MaterialTheme.typography.titleMedium)
-                            val fc = p.followerCount ?: p.followersCount
+                            // v2.9: real counts from GET /api/follows/{id}/counts
+                            // (PublicProfile itself returns NO counts).
+                            val fc = followCounts?.followers ?: (p.followerCount ?: p.followersCount)
                             if (fc != null) { Spacer(Modifier.width(16.dp)); Text("$fc Followers", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { if (p.id != null) followList = "followers" }) }
-                            val fg = p.followingCount ?: p.followingsCount
+                            val fg = followCounts?.following ?: (p.followingCount ?: p.followingsCount)
                             if (fg != null) { Spacer(Modifier.width(16.dp)); Text("$fg Following", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { if (p.id != null) followList = "following" }) }
                         }
                     }
@@ -980,6 +1319,35 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 if (p.isPrivate && username != null && !following) {
                     Text("This account is private", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
                 }
+                // v2.9: Highlights row (GET /api/highlights/user/{username}).
+                if (highlights.isNotEmpty() || username == null) {
+                    Text("Highlights", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(highlights, key = { it.id }) { h ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { highlightViewer = h }) {
+                                Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
+                                    val cover = h.coverUrl ?: h.items.firstOrNull { !it.mediaUrl.isNullOrBlank() }?.mediaUrl
+                                    if (cover != null) AsyncImage(model = cover, contentDescription = null, modifier = Modifier.size(60.dp).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                    else Text((h.title ?: "H").take(1).uppercase(), color = FrianzoBlue, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(h.title ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            }
+                        }
+                        if (username == null) {
+                            item {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { showHighlightCreate = true }) {
+                                    Box(Modifier.size(60.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = "New highlight", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("New", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
+                    }
+                    highlightError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+                    Spacer(Modifier.height(12.dp))
+                }
                 Text("Posts", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
                 if (postsLoading) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { DotsLoading() }
                 if (postsError != null) Text(postsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp))
@@ -994,21 +1362,144 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     post.imageUrl?.let { Spacer(Modifier.height(8.dp)); AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))) }
                     Spacer(Modifier.height(8.dp))
+                    // v2.9: Like / Comment are tappable now (they were static
+                    // icons). Like toggles via POST /api/posts/{id}/reaction;
+                    // Comment opens the post detail (which has comments).
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Favorite, contentDescription = "Likes", modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("${post.likeCount}", style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.width(12.dp))
-                    Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
-                }
+                        val myReaction = postReactions[post.id] ?: post.myReaction
+                        val likeTotal = postLikeCounts[post.id] ?: post.likeCount
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable {
+                            val current = postReactions[post.id] ?: post.myReaction
+                            val sendType = current ?: "like"
+                            val prevReactions = postReactions; val prevCounts = postLikeCounts
+                            val wasCount = postLikeCounts[post.id] ?: post.likeCount
+                            if (current == null) { postReactions = postReactions + (post.id to "like"); postLikeCounts = postLikeCounts + (post.id to wasCount + 1) }
+                            else { postReactions = postReactions - post.id; postLikeCounts = postLikeCounts + (post.id to (wasCount - 1).coerceAtLeast(0)) }
+                            scope.launch {
+                                try {
+                                    val r = api2.setReaction(post.id, mapOf("type" to sendType))
+                                    if (r.success && r.data != null) {
+                                        val eff = r.data.myReaction ?: r.data.reaction
+                                        val effC = r.data.likeCount
+                                        if (eff != null) postReactions = postReactions + (post.id to eff) else postReactions = postReactions - post.id
+                                        if (effC != null) postLikeCounts = postLikeCounts + (post.id to effC)
+                                    } else { postReactions = prevReactions; postLikeCounts = prevCounts }
+                                } catch (_: Exception) { postReactions = prevReactions; postLikeCounts = prevCounts }
+                            }
+                        }) {
+                            Icon(if (myReaction != null) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (myReaction != null) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("$likeTotal", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { if (feedVm != null) detailPostId = post.id }) {
+                            Icon(Icons.Filled.Chat, contentDescription = "Comments", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.width(4.dp))
+                            Text("${post.commentCount}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+
+// ---------- HIGHLIGHTS (v2.9): viewer + create ----------
+// Viewer: full-screen black, Prev/Next through the highlight's items,
+// photo or video playback, Delete for the owner (DELETE /api/highlights/{id}).
+@Composable
+private fun HighlightViewerDialog(api2: FrianzoApi2, highlight: Highlight, isOwn: Boolean, onClose: () -> Unit, onDeleted: () -> Unit) {
+    var idx by remember { mutableStateOf(0) }
+    var showDelete by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val item = highlight.items.getOrNull(idx)
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            when {
+                item == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Empty highlight", color = Color.White) }
+                item.mediaType == "video" -> {
+                    key(item.id) {
+                        AndroidView(factory = { ctx -> VideoView(ctx).apply {
+                            setVideoURI(Uri.parse(item.mediaUrl))
+                            setOnPreparedListener { mp -> mp.isLooping = true; mp.start() }
+                        } }, modifier = Modifier.fillMaxSize(), onRelease = { it.stopPlayback() })
+                    }
+                }
+                else -> AsyncImage(model = item.mediaUrl, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(highlight.title ?: "Highlight", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                Text("${idx + 1}/${highlight.items.size}", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White) }
+            }
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
+                notice?.let { Text(it, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(enabled = idx > 0, onClick = { idx-- }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White)) { Text("Back") }
+                    Button(enabled = idx < highlight.items.size - 1, onClick = { idx++ }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White)) { Text("Next") }
+                    if (isOwn) {
+                        Spacer(Modifier.weight(1f))
+                        OutlinedButton(onClick = { showDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)) { Text("Delete highlight") }
+                    }
+                }
+            }
+        }
+        if (showDelete) {
+            AlertDialog(onDismissRequest = { showDelete = false }, title = { Text("Delete highlight?") }, text = { Text("This can't be undone.") },
+                confirmButton = { TextButton(onClick = { showDelete = false; scope.launch { try { if (api2.deleteHighlight(highlight.id).success) onDeleted() else notice = "Could not delete highlight" } catch (e: Exception) { notice = e.message } } }) { Text("Delete", color = Color.Red) } },
+                dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } })
+        }
+    }
+}
+
+// Create: pick a title + your current (non-expired) statuses, then
+// POST /api/highlights { title, statusIds }.
+@Composable
+private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusItem>, onClose: () -> Unit, onCreated: () -> Unit) {
+    var title by rememberSaveable { mutableStateOf("") }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("New highlight") },
+        text = {
+            Column {
+                OutlinedTextField(value = title, onValueChange = { if (it.length <= 30) title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                if (statusItems.isEmpty()) Text("No current stories to add. Post a story first.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
+                    items(statusItems, key = { it.id }) { st ->
+                        Row(Modifier.fillMaxWidth().clickable { selected = if (st.id in selected) selected - st.id else selected + st.id }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = st.id in selected, onCheckedChange = { checked -> selected = if (checked) selected + st.id else selected - st.id })
+                            if (!st.mediaUrl.isNullOrBlank()) AsyncImage(model = st.thumbnailUrl ?: st.mediaUrl, contentDescription = null, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                            Spacer(Modifier.width(8.dp))
+                            Text(st.textContent?.takeIf { it.isNotBlank() } ?: if (st.mediaType == "video") "Video story" else "Photo story", fontSize = 14.sp, maxLines = 1)
+                        }
+                    }
+                }
+                if (error != null) { Spacer(Modifier.height(8.dp)); Text(error!!, fontSize = 13.sp, color = Color.Red) }
+            }
+        },
+        confirmButton = {
+            Button(enabled = !busy && title.isNotBlank() && selected.isNotEmpty(), onClick = {
+                busy = true
+                scope.launch {
+                    try {
+                        val r = api2.createHighlight(mapOf("title" to title.trim(), "statusIds" to selected.toList()))
+                        if (r.success) onCreated() else error = r.error?.message ?: "Could not create highlight"
+                    } catch (e: Exception) { error = e.message }
+                    busy = false
+                }
+            }) { Text(if (busy) "Creating..." else "Create") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+    )
+}
 
 // ---------- FOLLOWERS / FOLLOWING LIST (GET /api/follows/{id}/{direction}) ----------
 @Composable

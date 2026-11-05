@@ -95,14 +95,25 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var unreadMessages by remember { mutableStateOf(0) }
     var drawerOpen by remember { mutableStateOf(false) }
     var drawerScreen by remember { mutableStateOf<String?>(null) }
+    // v2.9: notification deep-links + AI Video "Post as Reel" handoff.
+    var openPostId by remember { mutableStateOf<String?>(null) }
+    var focusReelId by remember { mutableStateOf<String?>(null) }
+    var pendingReelUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var myProfile by remember { mutableStateOf<PublicProfile?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // v2.9: drawer profile row data (loaded once; a failure just leaves
+    // the row showing the fallback name).
+    LaunchedEffect(Unit) {
+        try { val r = api2.myProfile(); if (r.success) myProfile = r.data?.user } catch (_: Exception) {}
+    }
 
     // PERMANENT FIX for H1: Android Back from a chat thread or an opened
     // profile returns to the previous screen instead of exiting the app.
     BackHandler(enabled = openChat != null) { openChat = null }
     BackHandler(enabled = openProfile != null) { openProfile = null }
     BackHandler(enabled = drawerScreen != null) { drawerScreen = null }
+    BackHandler(enabled = openPostId != null) { openPostId = null }
 
     // Unread badge for the Alerts tab (M1): refresh whenever the tab changes
     // and after returning to it; a failed count simply shows no badge.
@@ -187,14 +198,15 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when {
-                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() })
+                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS })
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId) { openChat = null }
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it })
+                openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
                 tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
-                tab == Tab.REELS -> ReelsScreen(api2, myId) { username -> openProfile = username }
-                tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia) { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }
+                tab == Tab.REELS -> ReelsScreen(api2, myId, onAuthor = { username -> openProfile = username }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null })
+                tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED })
                 tab == Tab.CHAT -> ChatListScreen(api2) { id, name -> openChat = id to name }
-                tab == Tab.NOTIFS -> NotificationsScreen(api2) { username -> openProfile = username }
+                tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name })
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
                 tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it })
             }
@@ -209,7 +221,17 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 title = { Text("Frianzo") },
                 text = {
                     Column {
-                        TextButton(onClick = { drawerOpen = false; tab = Tab.PROFILE; openChat = null; openProfile = null }, modifier = Modifier.fillMaxWidth()) { Text("View Profile", modifier = Modifier.fillMaxWidth()) }
+                        // v2.9: real profile row (avatar + name + @username).
+                        Row(Modifier.fillMaxWidth().clickable { drawerOpen = false; tab = Tab.PROFILE; openChat = null; openProfile = null }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            FrianzoAvatar(myProfile?.profilePictureUrl, 48.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(myProfile?.displayName ?: myProfile?.username ?: "Frianzo", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                Text("@${myProfile?.username ?: ""}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text("View Profile", fontSize = 13.sp, color = FrianzoBlue)
+                        }
+                        HorizontalDivider()
                         HorizontalDivider()
                         val items = listOf("Settings", "Your Activity", "Professional Dashboard", "Close Friends", "AI Video Generator", "ISAI Assistant")
                         items.forEach { label ->
@@ -218,7 +240,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                         HorizontalDivider()
                         TextButton(onClick = {
                             drawerOpen = false
-                            val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Frianzo - share posts, videos and connect with people. Download: https://play.google.com/store/apps/details?id=com.frianzo.app") }
+                            val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Frianzo - share posts, videos and connect with people. Download: https://play.google.com/store/apps/details?id=com.frianzo.nativeapp") }
                             context.startActivity(Intent.createChooser(intent, "Share Frianzo"))
                         }, modifier = Modifier.fillMaxWidth()) { Text("Share Frianzo", modifier = Modifier.fillMaxWidth()) }
                         HorizontalDivider()

@@ -2,6 +2,9 @@ package com.frianzo.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.URL
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -11,7 +14,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -42,13 +47,13 @@ import kotlinx.coroutines.launch
 // real gate (for example AI Video referrals) instead of a fake result.
 
 @Composable
-fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit) {
+fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null) {
     when (label) {
-        "Settings" -> SettingsScreen(api2, onBack, onLogout)
+        "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched)
         "Your Activity" -> ActivityScreen(api2, onBack)
         "Professional Dashboard" -> DashboardScreen(api2, onBack)
         "Close Friends" -> CloseFriendsScreen(api2, onBack)
-        "AI Video Generator" -> AiVideoScreen(api2, onBack)
+        "AI Video Generator" -> AiVideoScreen(api2, onBack, onPostAsReel)
         "ISAI Assistant" -> IsaiScreen(api2, onBack)
         else -> DrawerScaffold(label, onBack) { Text("This screen is not available.") }
     }
@@ -93,9 +98,13 @@ private fun formatMinutes(mins: Int): String {
 // needs a native re-login flow, and it is not faked here.
 
 @Composable
-fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) {
+fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // v2.9: in-settings sub-screens (My Interests, Verification).
+    var subScreen by remember { mutableStateOf<String?>(null) }
+    if (subScreen == "interests") { MyInterestsScreen(api2, onBack = { subScreen = null }); return }
+    if (subScreen == "verification") { VerificationScreen(api2, onBack = { subScreen = null }); return }
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -108,6 +117,9 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
     var prefs by remember { mutableStateOf<List<NotificationPref>>(emptyList()) }
     var devices by remember { mutableStateOf<List<DeviceItem>>(emptyList()) }
     var blocked by remember { mutableStateOf<List<BlockedEntry>>(emptyList()) }
+    // v2.9: saved accounts on this device (GET /api/auth/accounts).
+    var savedAccounts by remember { mutableStateOf<List<SavedAccount>>(emptyList()) }
+    var switchingId by remember { mutableStateOf<String?>(null) }
     fun load() {
         scope.launch {
             try {
@@ -128,6 +140,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
             try { val r = api2.notificationPrefs(); if (r.success && r.data?.preferences != null) prefs = r.data.preferences } catch (_: Exception) {}
             try { val r = api2.devices(); if (r.success && r.data != null) devices = r.data.devices ?: emptyList() } catch (_: Exception) {}
             try { val r = api2.blockedUsers(); if (r.success && r.data?.blocked != null) blocked = r.data.blocked } catch (_: Exception) {}
+            try { val r = api2.savedAccounts(); if (r.success && r.data?.accounts != null) savedAccounts = r.data.accounts } catch (_: Exception) {}
         }
     }
     DrawerScaffold("Settings", onBack) {
@@ -203,6 +216,39 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
                 }
             }
             Spacer(Modifier.height(16.dp))
+            Text("Preferences", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = { subScreen = "interests" }, modifier = Modifier.fillMaxWidth()) { Text("My Interests", modifier = Modifier.fillMaxWidth()) }
+            TextButton(onClick = { subScreen = "verification" }, modifier = Modifier.fillMaxWidth()) { Text("Verification", modifier = Modifier.fillMaxWidth()) }
+            Spacer(Modifier.height(16.dp))
+            // v2.9: switch between accounts saved on this device
+            // (POST /api/auth/switch). The new auth cookie is set by the
+            // server; onSwitched refreshes the session to the new user.
+            Text("Switch account", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (savedAccounts.isEmpty()) { Text("No saved accounts on this device yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            savedAccounts.forEach { acc ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    FrianzoAvatar(acc.profilePictureUrl, 40.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(acc.displayName ?: acc.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("@${acc.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    val isCurrent = acc.id != null && acc.id == profile?.id
+                    if (isCurrent) Text("Current", fontSize = 12.sp, color = FrianzoBlue)
+                    else if (acc.id != null) TextButton(enabled = switchingId != acc.id, onClick = {
+                        switchingId = acc.id
+                        scope.launch {
+                            try {
+                                val r = api2.switchAccount(mapOf("accountId" to acc.id))
+                                if (r.success) onSwitched() else error = r.error?.message ?: "Could not switch account"
+                            } catch (e: Exception) { error = e.message }
+                            switchingId = null
+                        }
+                    }) { Text("Switch") }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
             Text("Login & Security", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = {
@@ -224,17 +270,182 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit) 
             onDismissRequest = { showDelete = false },
             title = { Text("Delete Account") },
             text = { Text("This permanently removes your profile, posts, and messages. This cannot be undone.") },
+            // v2.9 FIX: only log out when the delete actually succeeded.
+            // On failure show the error and STAY logged in.
             confirmButton = {
                 TextButton(onClick = {
                     showDelete = false
                     scope.launch {
-                        try { api2.deleteMe() } catch (_: Exception) {}
-                        onLogout()
+                        try {
+                            val r = api2.deleteMe()
+                            if (r.success) onLogout()
+                            else error = r.error?.message ?: "Could not delete account. Please try again."
+                        } catch (e: Exception) { error = e.message ?: "Could not delete account. Please try again." }
                     }
                 }) { Text("Delete", color = Color.Red) }
             },
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
         )
+    }
+}
+
+// ---------- My Interests (v2.9) ----------
+// GET /api/users/interests returns the 12 fixed interests; PUT
+// /api/users/me/interests { interests: [...] } saves them and returns the
+// saved list. There is NO endpoint for the user's current interests, so the
+// screen starts unselected and shows the saved list after Save.
+@Composable
+fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var available by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        scope.launch {
+            try {
+                val r = api2.interests()
+                if (r.success && r.data?.interests != null) available = r.data.interests else error = r.error?.message ?: "Could not load interests"
+            } catch (e: Exception) { error = e.message }
+            loading = false
+        }
+    }
+    DrawerScaffold("My Interests", onBack) {
+      Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text("Pick what you like. Frianzo uses this to show you more of it.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(12.dp))
+        if (loading) { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() } }
+        else {
+            ErrorText(error)
+            if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
+            // Chips in rows of 3 (a simple wrap; no flow-layout dep).
+            Column(Modifier.fillMaxWidth()) {
+                available.chunked(3).forEach { chunk ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                        chunk.forEach { interest ->
+                            val sel = interest in selected
+                            Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { selected = if (sel) selected - interest else selected + interest }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                                Text(interest.replaceFirstChar { it.uppercase() }, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Button(enabled = !saving && selected.isNotEmpty(), onClick = {
+                saving = true
+                scope.launch {
+                    try {
+                        val r = api2.updateMyInterests(mapOf("interests" to selected.toList()))
+                        if (r.success && r.data?.interests != null) { selected = r.data.interests.toSet(); notice = "Interests saved." } else error = r.error?.message ?: "Could not save interests"
+                    } catch (e: Exception) { error = e.message }
+                    saving = false
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save interests") }
+        }
+      }
+    }
+}
+
+// Renders a verification requirement `current`/`required` value, which the
+// backend sends as a number (25) or a string ("Complete").
+private fun verificationValue(v: com.google.gson.JsonElement?): String {
+    if (v == null || v.isJsonNull) return "-"
+    if (!v.isJsonPrimitive) return v.toString()
+    val prim = v.asJsonPrimitive
+    return when {
+        prim.isNumber -> { val d = prim.asDouble; if (d % 1.0 == 0.0) "${d.toInt()}" else "$d" }
+        prim.isString -> prim.asString
+        prim.isBoolean -> if (prim.asBoolean) "Yes" else "No"
+        else -> prim.toString()
+    }
+}
+
+// ---------- Verification (v2.9) ----------
+// GET /api/users/me/verification-request returns the latest request (if
+// any) plus eligibility: 6 requirements — referrals 25, followers 100,
+// account age 30 days, posts 5, profile Photo+Bio, clean record (no
+// violations in 90 days). POST with { reason } only works when eligible;
+// the backend rejects it otherwise (403), so Submit stays off until then.
+@Composable
+fun VerificationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var data by remember { mutableStateOf<VerificationData?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var reason by rememberSaveable { mutableStateOf("") }
+    var submitting by remember { mutableStateOf(false) }
+    fun load() {
+        scope.launch {
+            try {
+                val r = api2.verificationRequest()
+                if (r.success && r.data != null) data = r.data else error = r.error?.message ?: "Could not load verification"
+            } catch (e: Exception) { error = e.message }
+            loading = false
+        }
+    }
+    LaunchedEffect(Unit) { load() }
+    DrawerScaffold("Verification", onBack) {
+      Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text("The blue tick is for genuine, established accounts. Check the requirements below, then tell us why you should be verified.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(12.dp))
+        if (loading) { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() } }
+        else {
+            ErrorText(error)
+            if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
+            val eligibility = data?.eligibility
+            val request = data?.request
+            if (eligibility?.isVerified == true) {
+                Text("You are verified.", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = FrianzoBlue)
+                Spacer(Modifier.height(12.dp))
+            }
+            if (request != null) {
+                Text("Your request: ${request.status ?: ""}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                request.reason?.let { Text(it, fontSize = 13.sp) }
+                request.adminNote?.let { Text("Note from Frianzo: $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Spacer(Modifier.height(12.dp))
+            }
+            Text("Requirements", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Spacer(Modifier.height(8.dp))
+            val labels = mapOf(
+                "referrals" to "Referrals", "followers" to "Followers",
+                "accountAge" to "Account age (days)", "posts" to "Posts",
+                "profile" to "Profile", "cleanRecord" to "Clean record",
+            )
+            (eligibility?.requirements ?: emptyMap()).forEach { (key, req) ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(if (req.met) Icons.Filled.CheckCircle else Icons.Outlined.RadioButtonUnchecked, contentDescription = if (req.met) "Met" else "Not met", tint = if (req.met) Color(0xFF16A34A) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(labels[key] ?: key, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("${verificationValue(req.current)} / ${verificationValue(req.required)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (eligibility?.requirements.isNullOrEmpty()) Text("Requirements could not be loaded.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(value = reason, onValueChange = { if (it.length <= 1000) reason = it }, label = { Text("Why should you be verified?") }, modifier = Modifier.fillMaxWidth().height(120.dp))
+            Spacer(Modifier.height(12.dp))
+            val pending = request?.status == "pending"
+            Button(enabled = !submitting && (eligibility?.eligible == true) && reason.isNotBlank() && !pending && eligibility?.isVerified != true, onClick = {
+                submitting = true
+                scope.launch {
+                    try {
+                        val r = api2.createVerificationRequest(mapOf("reason" to reason.trim()))
+                        if (r.success) { notice = "Verification request submitted."; reason = ""; load() } else error = r.error?.message ?: "Could not submit request"
+                    } catch (e: Exception) { error = e.message }
+                    submitting = false
+                }
+            }, modifier = Modifier.fillMaxWidth()) {
+                Text(when {
+                    pending -> "Request pending"
+                    eligibility?.eligible != true -> "Meet all requirements first"
+                    else -> if (submitting) "Submitting..." else "Submit request"
+                })
+            }
+        }
+      }
     }
 }
 
@@ -481,9 +692,14 @@ fun CloseFriendsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
 // reel is NOT in this native build yet.
 
 @Composable
-fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit) {
+// v2.9: after generation, "Post as Reel" downloads the generated video
+// to the phone cache and opens the reel uploader with it. The backend reel
+// upload takes a video FILE (multipart), not a URL, so a URL alone cannot
+// be posted — the download is the real step, not a fake upload.
+fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android.net.Uri) -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var postingReel by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<VideoGenStatus?>(null) }
     var statusError by remember { mutableStateOf<String?>(null) }
     var prompt by rememberSaveable { mutableStateOf("") }
@@ -559,7 +775,24 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     context.startActivity(intent)
                 }) { Text("Open video") }
                 Spacer(Modifier.height(8.dp))
-                Text("Posting this video as a reel is not in this native build yet.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (onPostAsReel != null) {
+                    Button(enabled = !postingReel, onClick = {
+                        postingReel = true
+                        val url = videoUrl!!
+                        scope.launch {
+                            try {
+                                val file = withContext(Dispatchers.IO) {
+                                    val tmp = java.io.File(context.cacheDir, "ai_video.mp4")
+                                    URL(url).openStream().use { input -> tmp.outputStream().use { out -> input.copyTo(out) } }
+                                    tmp
+                                }
+                                onPostAsReel(android.net.Uri.fromFile(file))
+                            } catch (e: Exception) { error = e.message ?: "Could not download the video" }
+                            postingReel = false
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) { Text(if (postingReel) "Preparing..." else "Post as Reel") }
+                    Spacer(Modifier.height(8.dp))
+                }
             }
             if (phase == "error" && error == null) Text("Generation failed. Please try again.", fontSize = 14.sp)
         }
