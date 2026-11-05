@@ -146,6 +146,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
         if (reels.isNotEmpty()) {
             LazyColumn(state = listState, flingBehavior = flingBehavior, modifier = Modifier.weight(1f).fillMaxWidth()) {
                 itemsIndexed(reels, key = { _, r -> r.id }) { page, reel ->
+                Box(Modifier.fillParentMaxSize()) {
                 ReelPage(
                     api2 = api2, reel = reel, myId = myId,
                     isActive = page == listState.firstVisibleItemIndex,
@@ -155,6 +156,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
                     onComment = { reelComment = reel },
                     onDeleted = { reels = reels.filter { it.id != reel.id } },
                 )
+                }
                 }
             }
         } else if (!loading && error == null) {
