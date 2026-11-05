@@ -1183,14 +1183,14 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     // same endpoint the Dashboard screen already uses).
     var strikes by remember { mutableStateOf<StrikesData?>(null) }
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     fun profileUrl(u: String?) = "https://frianzo.online/u/${u ?: ""}"
     fun copyProfileLink(u: String?) {
         clipboard.setText(AnnotatedString(profileUrl(u)))
         linkMsg = "Link copied"
         scope.launch { delay(2000); linkMsg = null }
     }
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val avatarPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
             try {
