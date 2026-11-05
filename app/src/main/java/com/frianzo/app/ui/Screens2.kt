@@ -1,6 +1,9 @@
 package com.frianzo.app.ui
 
+import android.app.Activity
+import android.content.Intent
 import android.media.MediaMetadataRetriever
+import android.provider.MediaStore
 import android.media.MediaPlayer
 import android.net.Uri
 import android.widget.VideoView
@@ -558,10 +561,14 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     // user taps "Record a video" (owner-confirmed permissions).
     val pickReelVideo = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }
     var recordUri by remember { mutableStateOf<Uri?>(null) }
-    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.TakeVideo()) { success: Boolean -> if (success) { val u = recordUri; if (u != null) videoUri = u } }
+    // v3.1 fix: TakeVideo contract would not compile here (generic inference
+    // failed twice) — use the plain video-capture intent instead, same result.
+    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) { val u = recordUri; if (u != null) videoUri = u }
+    }
     val recordReelVideo = rememberPermissionGate(cameraMicPermissions()) {
         val u = createVideoUri(context)
-        if (u != null) { recordUri = u; takeVideo.launch(u) } else message = "Could not start camera"
+        if (u != null) { recordUri = u; takeVideo.launch(Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply { putExtra(MediaStore.EXTRA_OUTPUT, u); addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }) } else message = "Could not start camera"
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
