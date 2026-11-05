@@ -73,8 +73,8 @@ data class PostCreateData(val post: Post?)
 data class PostResponse(val post: Post?)
 
 // ---------- Chat ----------
-data class ConversationUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?)
-data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?)
+data class ConversationUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val lastActiveAt: String? = null, val isOnline: Boolean = false, val showOnlineStatus: Boolean? = null)
+data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?, val mediaUrl: String? = null, val mediaType: String? = null, val voiceDuration: Int? = null, val isDeleted: Boolean = false)
 data class Conversation(
     val id: String,
     val otherUser: ConversationUser?,
@@ -82,6 +82,10 @@ data class Conversation(
     /** Backend list returns lastMessage (singular), not a messages array. */
     val lastMessage: ConversationMessage? = null,
     val unreadCount: Int = 0,
+    // v3.4: listConversations returns these per conversation.
+    val lastMessageStatus: String? = null,
+    val disappearingDuration: Int? = null,
+    val updatedAt: String? = null,
 )
 data class MessagesData(val messages: List<ConversationMessage>)
 data class CreateConversationRequest(val userId: String)
@@ -126,6 +130,12 @@ data class PublicProfile(
     val isOnline: Boolean = false,
     // Shown only when the backend actually returns them (null = hidden,
     // never a misleading 0). Backend field names vary, so accept both.
+    // v3.4: toPrivateProfile returns these; Account Privacy screen reads/saves them.
+    val showOnlineStatus: Boolean? = null,
+    val messagePermission: String? = null,
+    val tagPermission: String? = null,
+    val phone: String? = null,
+    val commentsDisabled: Boolean? = null,
     val followerCount: Int? = null,
     val followersCount: Int? = null,
     val followingCount: Int? = null,
@@ -138,7 +148,9 @@ data class FollowData(val following: Boolean = false, val isFollowing: Boolean =
 /** Backend GET /api/follows/{id}/status returns { status: "none"|"following"|"follow_back"|"friends"|"self" }. */
 data class FollowStatusData(val status: String?)
 data class FollowListUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val isVerified: Boolean = false, val isFollowing: Boolean = false)
-data class FollowListData(val users: List<FollowListUser>? = null)
+data class FollowListData(val users: List<FollowListUser>? = null, val pagination: FollowPagination? = null)
+// v3.4: GET /api/follows/{id}/{direction}?page=&limit= returns this pagination block.
+data class FollowPagination(val page: Int = 1, val limit: Int = 20, val total: Int = 0, val pages: Int = 1, val hasNext: Boolean = false, val hasPrevious: Boolean = false)
 // v2.9: GET /api/follows/{userId}/counts returns { followers, following, friends }.
 data class FollowCountsData(val followers: Int = 0, val following: Int = 0, val friends: Int = 0)
 data class Achievement(val key: String?, val name: String?, val description: String?, val icon: String? = null, val earnedAt: String? = null)
@@ -175,9 +187,22 @@ data class DashboardStats(
     val topPerforming: TopPerforming? = null,
 )
 data class Monetization(val status: String?, val referrals: Int = 0, val requiredReferrals: Int = 0, val progress: Int = 0, val referralLink: String = "")
-data class DashboardData(val earnings: Double = 0.0, val monetization: Monetization? = null, val stats: DashboardStats? = null)
+// v3.4: GET /api/users/me/dashboard returns weekly goals + allGoalsMet +
+// newAchievement { key, name } | null (userController.getMyDashboard).
+data class DashboardGoal(val current: Int = 0, val target: Int = 0)
+data class DashboardGoals(val posts: DashboardGoal? = null, val reels: DashboardGoal? = null, val stories: DashboardGoal? = null)
+data class DashboardAchievement(val key: String?, val name: String?)
+data class DashboardData(val earnings: Double = 0.0, val monetization: Monetization? = null, val stats: DashboardStats? = null, val goals: DashboardGoals? = null, val allGoalsMet: Boolean = false, val newAchievement: DashboardAchievement? = null)
 data class CloseFriendCandidate(val id: String, val username: String, val displayName: String?, val profilePictureUrl: String?, val isCloseFriend: Boolean = false)
 data class CloseFriendsData(val users: List<CloseFriendCandidate>? = null)
+// v3.4: GET /api/statuses/muted returns { muted: [user...] } (statusMuteService:
+// rows map to the muted user, same select as chat users).
+data class MutedUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val isVerified: Boolean = false)
+data class MutedStoriesData(val muted: List<MutedUser>? = null)
+// v3.4: GET /api/users/me/referral returns { count, referralLink }.
+data class ReferralData(val count: Int = 0, val referralLink: String? = null)
+// v3.4: GET /api/geo/reverse?lat=&lng= returns { location: "City, Country" }.
+data class GeoReverseData(val location: String? = null)
 data class VideoGenStatus(val enabled: Boolean = false, val hasAccess: Boolean = false, val referralCount: Int = 0, val referralsNeeded: Int = 25)
 data class VideoGenGenerateRequest(val prompt: String, val aspectRatio: String, val durationSeconds: Int)
 data class VideoGenGenerateData(val operationName: String?)
@@ -241,6 +266,15 @@ interface FrianzoApi2 {
         @Part("caption") caption: RequestBody?,
         @Part("category") category: RequestBody?,
         @Part("durationSec") durationSec: RequestBody,
+        // v3.4: only values the UI really has are sent (cover = picked image,
+        // speed = 0.5|1|1.5|2, textOverlay <= 100 chars, trim seconds).
+        // No filter part: server filter enum is only
+        // normal,warm,cool,bw,vintage,vivid,beauty — never invent others.
+        @Part cover: MultipartBody.Part? = null,
+        @Part("speed") speed: RequestBody? = null,
+        @Part("textOverlay") textOverlay: RequestBody? = null,
+        @Part("trimStartSec") trimStartSec: RequestBody? = null,
+        @Part("trimEndSec") trimEndSec: RequestBody? = null,
     ): Envelope<ReelUploadData>
     @POST("api/reels/{id}/like")
     suspend fun toggleReelLike(@Path("id") id: String): Envelope<ReelLikeData>
@@ -266,17 +300,19 @@ interface FrianzoApi2 {
     suspend fun deleteReelComment(@Path("commentId") commentId: String): Envelope<Any>
 
     // Posts
+    // v3.4: one create call — every part is optional except content, so the
+    // composer sends visibility / commentAudience / taggedUserIds (JSON
+    // array) / location / backgroundStyle only when the user set them.
     @Multipart
     @POST("api/posts")
     suspend fun createPost(
         @Part("content") content: RequestBody,
         @Part image: MultipartBody.Part?,
-    ): Envelope<PostCreateData>
-    @Multipart
-    @POST("api/posts")
-    suspend fun createPostWithBg(
-        @Part("content") content: RequestBody,
-        @Part("backgroundStyle") backgroundStyle: RequestBody,
+        @Part("backgroundStyle") backgroundStyle: RequestBody? = null,
+        @Part("visibility") visibility: RequestBody? = null,
+        @Part("commentAudience") commentAudience: RequestBody? = null,
+        @Part("taggedUserIds") taggedUserIds: RequestBody? = null,
+        @Part("location") location: RequestBody? = null,
     ): Envelope<PostCreateData>
     @GET("api/posts/{id}")
     suspend fun postById(@Path("id") id: String): Envelope<PostResponse>
@@ -329,6 +365,12 @@ interface FrianzoApi2 {
         @Part("bgColor") bgColor: RequestBody?,
         @Part("visibility") visibility: RequestBody?,
     ): Envelope<StatusCreateData>
+    @GET("api/statuses/muted")
+    suspend fun mutedStories(): Envelope<MutedStoriesData>
+    @GET("api/users/me/referral")
+    suspend fun referral(): Envelope<ReferralData>
+    @GET("api/geo/reverse")
+    suspend fun reverseGeo(@Query("lat") lat: Double, @Query("lng") lng: Double): Envelope<GeoReverseData>
     @GET("api/statuses/{id}/viewers")
     suspend fun statusViewers(@Path("id") id: String): Envelope<StatusViewersData>
     @POST("api/statuses/mute/{userId}")
@@ -391,7 +433,7 @@ interface FrianzoApi2 {
     @GET("api/follows/{userId}/counts")
     suspend fun followCounts(@Path("userId") userId: String): Envelope<FollowCountsData>
     @GET("api/follows/{userId}/{direction}")
-    suspend fun followUsers(@Path("userId") userId: String, @Path("direction") direction: String): Envelope<FollowListData>
+    suspend fun followUsers(@Path("userId") userId: String, @Path("direction") direction: String, @Query("page") page: Int = 1, @Query("limit") limit: Int = 20): Envelope<FollowListData>
     @GET("api/users/me/achievements")
     suspend fun myAchievements(): Envelope<AchievementsData>
     @GET("api/users/me/strikes")
@@ -443,6 +485,13 @@ interface FrianzoApi2 {
     // "interested_category", value } — "Not interested" is NOT hidePost.
     @POST("api/users/me/not-interested")
     suspend fun notInterested(@Body body: Map<String, String>): Envelope<Any>
+    // v3.4: POST /api/users/{userId}/report { reason, details? } (userRoutes).
+    @POST("api/users/{userId}/report")
+    suspend fun reportUser(@Path("userId") userId: String, @Body body: Map<String, String>): Envelope<Any>
+    // v3.4: PATCH /api/comments/settings/toggle { disabled: boolean }
+    // (commentRoutes) — toggles the user's commentsDisabled flag.
+    @PATCH("api/comments/settings/toggle")
+    suspend fun toggleComments(@Body body: Map<String, Boolean>): Envelope<Any>
     // v2.9: highlights
     @GET("api/highlights/user/{username}")
     suspend fun highlights(@Path("username") username: String): Envelope<HighlightsData>

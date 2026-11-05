@@ -1432,7 +1432,19 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
             if (post.author?.username != null) TextButton(onClick = { onClose(); onAuthor(post.author!!.username!!) }, modifier = Modifier.fillMaxWidth()) { Text("View profile", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onDetail() }, modifier = Modifier.fillMaxWidth()) { Text("View post", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { clipboard.setText(AnnotatedString("https://frianzo.online/post/${post.id}")); notice = "Link copied"; }, modifier = Modifier.fillMaxWidth()) { Text("Copy link", modifier = Modifier.fillMaxWidth()) }
+            // v3.4: copy the SHORT /s/<code> link like the share sheet
+            // (POST /api/share); direct /post/{id} only if that call fails.
+            TextButton(onClick = {
+                scope.launch {
+                    var url = "https://frianzo.online/post/${post.id}"
+                    try {
+                        val code = post.shareCode?.takeIf { it.isNotBlank() }
+                            ?: vm.api2.createShareLink(mapOf("type" to "post", "id" to post.id)).data?.code
+                        if (!code.isNullOrBlank()) url = "https://frianzo.online/s/$code"
+                    } catch (_: Exception) {}
+                    clipboard.setText(AnnotatedString(url)); notice = "Link copied"
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text("Copy link", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onShare() }, modifier = Modifier.fillMaxWidth()) { Text("Share", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onComments() }, modifier = Modifier.fillMaxWidth()) { Text("Comments", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { act("Hidden") { vm.api2.hidePost(post.id); vm.hidePost(post.id); onClose() } }, modifier = Modifier.fillMaxWidth()) { Text("Hide post", modifier = Modifier.fillMaxWidth()) }

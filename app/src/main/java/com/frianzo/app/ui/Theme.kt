@@ -149,14 +149,55 @@ private val FrianzoTypography = Typography(
     ),
 )
 
+// ---------- v3.4 Theme + Data Saver (local-only, SharedPreferences) ----------
+// The web Theme page is local-only (System/Light/Dark); there is no
+// backend theme field, so the choice lives on the phone. FrianzoThemeState
+// is a Compose State read inside FrianzoTheme, so changing it in Settings
+// re-themes the whole app immediately without a restart. MainActivity
+// initialises it from prefs once at startup.
+object FrianzoThemeState {
+    var mode by androidx.compose.runtime.mutableStateOf("system")
+    var dataSaver by androidx.compose.runtime.mutableStateOf(false)
+}
+
+private const val THEME_PREFS = "frianzo_prefs"
+const val THEME_MODE_SYSTEM = "system"
+const val THEME_MODE_LIGHT = "light"
+const val THEME_MODE_DARK = "dark"
+
+fun readThemeMode(context: android.content.Context): String =
+    context.getSharedPreferences(THEME_PREFS, android.content.Context.MODE_PRIVATE)
+        .getString("theme_mode", THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
+
+fun saveThemeMode(context: android.content.Context, mode: String) {
+    context.getSharedPreferences(THEME_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit().putString("theme_mode", mode).apply()
+    FrianzoThemeState.mode = mode
+}
+
+fun readDataSaver(context: android.content.Context): Boolean =
+    context.getSharedPreferences(THEME_PREFS, android.content.Context.MODE_PRIVATE)
+        .getBoolean("data_saver", false)
+
+fun saveDataSaver(context: android.content.Context, enabled: Boolean) {
+    context.getSharedPreferences(THEME_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit().putBoolean("data_saver", enabled).apply()
+    FrianzoThemeState.dataSaver = enabled
+}
+
 @Composable
-fun FrianzoTheme(darkTheme: Boolean = false, content: @Composable () -> Unit) {
-    // WEB MATCH: the web app is always light, and the login screen is
-    // already forced light. System dark mode made the whole feed dark
-    // (see owner screenshots 2026-11-04), which does not match the web.
-    // Always use the light scheme, regardless of phone theme.
+fun FrianzoTheme(content: @Composable () -> Unit) {
+    // v3.4: the theme now follows the Settings picker (System/Light/Dark).
+    // System = phone setting; Light/Dark force that scheme. Default is
+    // System, which on most phones is light — the web look is preserved
+    // unless the user picks Dark in Settings.
+    val darkTheme = when (FrianzoThemeState.mode) {
+        THEME_MODE_DARK -> true
+        THEME_MODE_LIGHT -> false
+        else -> isSystemInDarkTheme()
+    }
     MaterialTheme(
-        colorScheme = FrianzoColorScheme,
+        colorScheme = if (darkTheme) FrianzoDarkColorScheme else FrianzoColorScheme,
         shapes = FrianzoShapes,
         typography = FrianzoTypography,
         content = content,

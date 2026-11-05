@@ -31,6 +31,13 @@ data class Author(
     val isVerified: Boolean = false,
 )
 
+data class TaggedUser(
+    val id: String?,
+    val username: String?,
+    val displayName: String?,
+    val profilePictureUrl: String?,
+)
+
 data class Post(
     val id: String,
     val content: String?,
@@ -46,6 +53,10 @@ data class Post(
     val reactionCounts: Map<String, Int>? = null,
     val myReaction: String? = null,
     val shareCode: String? = null,
+    // v3.4: backend toPostDTO already returns these; the composer sends them.
+    val visibility: String? = null,
+    val commentAudience: String? = null,
+    val taggedUsers: List<TaggedUser>? = null,
     // v2.9: a repost carries the original post (backend toPostDTO
     // returns originalPost recursively); null for original posts.
     val originalPost: Post? = null,

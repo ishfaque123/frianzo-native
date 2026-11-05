@@ -26,6 +26,8 @@ import androidx.compose.ui.platform.LocalContext
  * owner wants the Gallery permission asked at pick time, so the gate
  * requests READ_MEDIA_IMAGES/VIDEO (Android 13+) or READ_EXTERNAL_STORAGE
  * (older) before opening the picker.
+ * Location (v3.4) is a fifth, composer-only permission: ACCESS_FINE_LOCATION
+ * + ACCESS_COARSE_LOCATION, asked only when the user taps "Add location".
  */
 
 /** Gallery permission set for this device's Android version. */
@@ -39,6 +41,13 @@ fun galleryPermissions(): Array<String> =
 /** Camera + microphone, needed together to record a video with sound. */
 fun cameraMicPermissions(): Array<String> =
     arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+
+// v3.4: Location — used ONLY by the composer "Add location" button
+// (device GPS -> GET /api/geo/reverse -> location name). Asked at tap
+// time, never at launch. If denied, the composer falls back to a plain
+// text field for the location instead of faking one.
+fun locationPermissions(): Array<String> =
+    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
 /**
  * Returns a function that runs [onGranted] immediately if all [permissions]

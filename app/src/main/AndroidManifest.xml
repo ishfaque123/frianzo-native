@@ -9,7 +9,9 @@
            READ_EXTERNAL_STORAGE): when the user taps a photo/video pick
            button (composer, comments, story, reel upload, avatar/cover).
          - CAMERA + RECORD_AUDIO: when the user taps "Record a video" in
-           reel upload (TakeVideo needs both for picture + sound). -->
+           reel upload (TakeVideo needs both for picture + sound).
+         - ACCESS_FINE_LOCATION + ACCESS_COARSE_LOCATION (v3.4): when the
+           user taps "Add location" in the composer. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -17,6 +19,10 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- v3.4: composer "Add location" only (GPS -> GET /api/geo/reverse).
+         Asked at tap time, never at launch. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:allowBackup="true"

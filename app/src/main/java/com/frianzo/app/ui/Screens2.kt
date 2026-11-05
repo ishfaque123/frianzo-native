@@ -137,7 +137,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
     }
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            listOf("foryou" to "For You", "following" to "Following").forEach { (v, label) ->
+            listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
                 val sel = feed == v
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.15f)).clickable { if (feed != v) feed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
                     Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.Black else Color.White, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
@@ -146,7 +146,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
             }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
-            OutlinedButton(onClick = { showUpload = true }, shape = RoundedCornerShape(28.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Upload reel", maxLines = 1, softWrap = false, fontSize = 13.sp) }
+            IconButton(onClick = { showUpload = true }) { Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(28.dp)) }
         }
         if (error != null && reels.isEmpty()) { Text(error!!, color = Color.White, modifier = Modifier.padding(16.dp)) }
         if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() } }
@@ -222,6 +222,14 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     // allowed). The progress ticker reads player.currentPosition.
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var moreOpen by remember { mutableStateOf(false) }
+    // v3.4: Follow / Follow Back pill on the author (GET /api/follows/{id}/status).
+    var authorFollow by remember(reel.author?.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(reel.author?.id) {
+        val aid = reel.author?.id
+        if (aid != null && aid != myId) {
+            try { val r = api2.followStatus(aid); if (r.success) authorFollow = r.data?.status } catch (_: Exception) {}
+        }
+    }
     val burstScale by animateFloatAsState(if (burst) 1.4f else 1f, label = "heartBurst")
     fun doLike() {
         scope.launch {
@@ -319,9 +327,28 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
                 Spacer(Modifier.width(8.dp))
                 Text("@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val authorId = reel.author?.id
+                if (authorId != null && authorId != myId && authorFollow != null && authorFollow != "self") {
+                    Spacer(Modifier.width(8.dp))
+                    val label = when (authorFollow) { "following", "friends" -> "Following"; "follow_back" -> "Follow Back"; else -> "Follow" }
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable {
+                        scope.launch {
+                            try {
+                                val r = api2.toggleFollow(authorId)
+                                if (r.success && r.data != null) authorFollow = r.data.friendStatus ?: if (r.data.following || r.data.isFollowing) "following" else "none"
+                            } catch (_: Exception) {}
+                        }
+                    }.padding(horizontal = 10.dp, vertical = 4.dp)) {
+                        Text(label, color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                }
             }
             reel.caption?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Color.White, fontSize = 14.sp, maxLines = 3) }
             reel.category?.let { Spacer(Modifier.height(6.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) { Text(it, color = Color.White, fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White.copy(alpha = 0.2f)).clickable { onComment() }.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Text("Write a comment...", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+            }
         }
     }
 }
@@ -554,12 +581,21 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     var videoUri by remember { mutableStateOf<Uri?>(initialVideoUri) }
     var caption by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf("") }
+    // v3.4: real upload options the backend accepts (POST /api/reels):
+    // cover image, speed 0.5|1|1.5|2, text overlay (<=100), trim seconds.
+    var coverUri by remember { mutableStateOf<Uri?>(null) }
+    var speed by rememberSaveable { mutableStateOf("1") }
+    var textOverlay by rememberSaveable { mutableStateOf("") }
+    var trimStart by rememberSaveable { mutableStateOf("") }
+    var trimEnd by rememberSaveable { mutableStateOf("") }
     var maxSec by remember { mutableStateOf(180) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { scope.launch { try { val r = api2.reelsConfig(); if (r.success && r.data != null) maxSec = r.data.maxDurationSec } catch (_: Exception) {} } }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) videoUri = uri }
+    val coverPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) coverUri = uri }
+    val pickCover = rememberPermissionGate(galleryPermissions()) { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
     // v3.1: Gallery asked at pick time; Camera + Microphone asked when the
     // user taps "Record a video" (owner-confirmed permissions).
     val pickReelVideo = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }
@@ -588,6 +624,25 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(value = category, onValueChange = { category = it }, label = { Text("Category (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Text("Max length: ${maxSec}s", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = { pickCover() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (coverUri == null) "Add cover photo (optional)" else "Cover selected", maxLines = 1, softWrap = false) }
+        Spacer(Modifier.height(8.dp))
+        Text("Speed", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("0.5", "1", "1.5", "2").forEach { s ->
+                val sel = speed == s
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { speed = s }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text("${s}x", color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(value = textOverlay, onValueChange = { if (it.length <= 100) textOverlay = it }, label = { Text("Text overlay (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(value = trimStart, onValueChange = { trimStart = it.filter { ch -> ch.isDigit() } }, label = { Text("Trim from (s)") }, modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = trimEnd, onValueChange = { trimEnd = it.filter { ch -> ch.isDigit() } }, label = { Text("Trim to (s)") }, modifier = Modifier.weight(1f), singleLine = true)
+        }
         Spacer(Modifier.height(12.dp))
         Button(enabled = !busy && videoUri != null, onClick = {
             busy = true
@@ -601,8 +656,32 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                     val tmp = File(context.cacheDir, "reel_upload.mp4")
                     input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
                     val videoPart = MultipartBody.Part.createFormData("video", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
-                    val res = api2.uploadReel(videoPart, caption.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()), category.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()), durationSec.toString().toRequestBody("text/plain".toMediaTypeOrNull()))
+                    var coverPart: MultipartBody.Part? = null
+                    var coverTmp: File? = null
+                    if (coverUri != null) {
+                        val cInput = context.contentResolver.openInputStream(coverUri!!) ?: throw Exception("Could not read the cover photo")
+                        val cMime = try { context.contentResolver.getType(coverUri!!) } catch (_: Exception) { null } ?: "image/jpeg"
+                        val cExt = when (cMime.substringAfter("/")) { "png" -> "png"; "webp" -> "webp"; else -> "jpg" }
+                        val cTmp = File(context.cacheDir, "reel_cover.$cExt")
+                        coverTmp = cTmp
+                        cInput.use { inp -> cTmp.outputStream().use { out -> inp.copyTo(out) } }
+                        coverPart = MultipartBody.Part.createFormData("cover", cTmp.name, cTmp.asRequestBody(cMime.toMediaTypeOrNull()))
+                    }
+                    val trimStartSec = trimStart.toIntOrNull()?.takeIf { it > 0 }
+                    val trimEndSec = trimEnd.toIntOrNull()?.takeIf { it > 0 && it <= durationSec && (trimStartSec == null || it > trimStartSec) }
+                    val res = api2.uploadReel(
+                        videoPart,
+                        caption.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        category.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        durationSec.toString().toRequestBody("text/plain".toMediaTypeOrNull()),
+                        cover = coverPart,
+                        speed = if (speed == "1") null else speed.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        textOverlay = textOverlay.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        trimStartSec = trimStartSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        trimEndSec = trimEndSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    )
                     try { tmp.delete() } catch (_: Exception) {}
+                    try { coverTmp?.delete() } catch (_: Exception) {}
                     if (!res.success) throw Exception(res.error?.message ?: "Upload failed")
                     onDone()
                 } catch (e: Exception) { message = e.message ?: "Upload failed" }
@@ -615,8 +694,9 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
 }
 
 // ---------- CREATE POST: text + optional photo ----------
+// ---------- CREATE POST: text + optional photo ----------
 @Composable
-fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onPosted: () -> Unit, onClose: () -> Unit = {}) {
+fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onPosted: () -> Unit, onClose: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null) {
     val context = LocalContext.current
     var showDiscard by remember { mutableStateOf(false) }
     var text by rememberSaveable { mutableStateOf("") }
@@ -635,7 +715,56 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var bgStyle by rememberSaveable { mutableStateOf<String?>(null) }
+    // v3.4 composer options (all sent on the one POST /api/posts call).
+    var visibility by rememberSaveable { mutableStateOf("public") }
+    var commentAudience by rememberSaveable { mutableStateOf("everyone") }
+    var audienceMenu by remember { mutableStateOf(false) }
+    var commentsMenu by remember { mutableStateOf(false) }
+    var tagged by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var showTagPicker by remember { mutableStateOf(false) }
+    var location by rememberSaveable { mutableStateOf<String?>(null) }
+    var locationInput by remember { mutableStateOf(false) }
+    var locationText by rememberSaveable { mutableStateOf("") }
+    var locationBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    // v3.4 location: permission -> device GPS -> GET /api/geo/reverse.
+    // If the permission is denied, or no fix / no lookup result, show a
+    // plain text field instead — the location is never faked.
+    val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.all { it }) {
+            locationBusy = true
+            scope.launch {
+                try {
+                    val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
+                    val loc = try { lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER) } catch (_: Exception) { null }
+                        ?: try { lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { null }
+                    if (loc == null) { locationInput = true; message = "Couldn't get your location — type it instead." }
+                    else {
+                        val r = api2.reverseGeo(loc.latitude, loc.longitude)
+                        val name = r.data?.location
+                        if (r.success && !name.isNullOrBlank()) { location = name; locationInput = false }
+                        else { locationInput = true; message = "Couldn't look up that place — type it instead." }
+                    }
+                } catch (e: Exception) { locationInput = true; message = e.message ?: "Couldn't get your location — type it instead." }
+                locationBusy = false
+            }
+        } else {
+            locationInput = true
+        }
+    }
+    // v3.4 record video: there is NO video-post endpoint, so a recorded
+    // clip goes to the reel uploader (onPostAsReel), never to a post.
+    var recordUri by remember { mutableStateOf<Uri?>(null) }
+    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val u = recordUri
+            if (u != null) onPostAsReel?.invoke(u) else message = "Could not start the reel uploader"
+        }
+    }
+    val recordVideo = rememberPermissionGate(cameraMicPermissions()) {
+        val u = createVideoUri(context)
+        if (u != null) { recordUri = u; takeVideo.launch(Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply { putExtra(MediaStore.EXTRA_OUTPUT, u); addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }) } else message = "Could not start camera"
+    }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
             imageUri = uri
@@ -648,11 +777,31 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // v2.9: Cancel / Discard — confirms first when the post is dirty.
-            TextButton(onClick = { if (text.isNotBlank() || imageUri != null || bgStyle != null) showDiscard = true else onClose() }) { Text("Cancel", maxLines = 1, softWrap = false) }
+            TextButton(onClick = { if (text.isNotBlank() || imageUri != null || bgStyle != null || location != null || locationText.isNotBlank() || tagged.isNotEmpty() || visibility != "public" || commentAudience != "everyone") showDiscard = true else onClose() }) { Text("Cancel", maxLines = 1, softWrap = false) }
             Text("New post", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(12.dp))
-        OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("What's on your mind?") }, modifier = Modifier.fillMaxWidth().height(140.dp), shape = RoundedCornerShape(12.dp))
+        // v3.4: audience + comments pills.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box {
+                OutlinedButton(onClick = { audienceMenu = true }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (visibility == "public") "Public" else "Only me", fontSize = 13.sp, maxLines = 1, softWrap = false) }
+                DropdownMenu(expanded = audienceMenu, onDismissRequest = { audienceMenu = false }) {
+                    DropdownMenuItem(text = { Text("Public") }, onClick = { visibility = "public"; audienceMenu = false })
+                    DropdownMenuItem(text = { Text("Only me") }, onClick = { visibility = "private"; audienceMenu = false })
+                }
+            }
+            Box {
+                OutlinedButton(onClick = { commentsMenu = true }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Comments: " + when (commentAudience) { "followers" -> "Followers"; "only_me" -> "Only me"; else -> "Everyone" }, fontSize = 13.sp, maxLines = 1, softWrap = false) }
+                DropdownMenu(expanded = commentsMenu, onDismissRequest = { commentsMenu = false }) {
+                    listOf("everyone" to "Everyone", "followers" to "Followers", "only_me" to "Only me").forEach { (v, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = { commentAudience = v; commentsMenu = false })
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(value = text, onValueChange = { if (it.length <= 2000) text = it }, label = { Text("What's on your mind?") }, modifier = Modifier.fillMaxWidth().height(140.dp), shape = RoundedCornerShape(12.dp))
+        Text("${text.length}/2000", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
         if (imageUri == null) {
             Spacer(Modifier.height(8.dp))
             Text("Text background", style = MaterialTheme.typography.bodyMedium)
@@ -673,7 +822,48 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
         }
         if (mediaIsVideo) {
             Spacer(Modifier.height(8.dp))
-            Text("Video selected from Gallery. Feed posts here accept only a photo — a video-post endpoint does not exist yet — so Post stays off for a video. Pick a photo instead, or post the video as a reel later.", style = MaterialTheme.typography.bodySmall)
+            Text("Video selected from Gallery. Feed posts here accept only a photo — a video-post endpoint does not exist yet — so Post stays off for a video. Pick a photo instead, or post the video as a reel.", style = MaterialTheme.typography.bodySmall)
+            if (onPostAsReel != null && imageUri != null) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { onPostAsReel(imageUri!!) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Post as reel instead", maxLines = 1, softWrap = false) }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        // v3.4: tag people (GET /api/users/search) + location.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { showTagPicker = true }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (tagged.isEmpty()) "Tag people" else "Tagged (${tagged.size})", maxLines = 1, softWrap = false) }
+            if (location != null) {
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(FrianzoBlueTint).padding(horizontal = 10.dp, vertical = 6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(location!!, fontSize = 13.sp, color = FrianzoBlueDark, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.width(4.dp))
+                        Icon(Icons.Filled.Close, contentDescription = "Remove location", tint = FrianzoBlueDark, modifier = Modifier.size(14.dp).clickable { location = null })
+                    }
+                }
+            } else {
+                OutlinedButton(onClick = { locationLauncher.launch(locationPermissions()) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (locationBusy) "Finding place..." else "Add location", maxLines = 1, softWrap = false) }
+            }
+            if (onPostAsReel != null) {
+                OutlinedButton(onClick = { recordVideo() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Record video", maxLines = 1, softWrap = false) }
+            }
+        }
+        if (tagged.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(tagged, key = { it.id ?: it.username ?: "" }) { u ->
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(FrianzoBlueTint).padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("@${u.username ?: ""}", fontSize = 13.sp, color = FrianzoBlueDark, maxLines = 1, softWrap = false)
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.Filled.Close, contentDescription = "Remove tag", tint = FrianzoBlueDark, modifier = Modifier.size(14.dp).clickable { tagged = tagged.filter { it.id != u.id } })
+                        }
+                    }
+                }
+            }
+        }
+        if (locationInput && location == null) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(value = locationText, onValueChange = { if (it.length <= 200) locationText = it }, label = { Text("Location") }, placeholder = { Text("Type a place name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         }
         Spacer(Modifier.height(12.dp))
         Button(enabled = !busy && !mediaIsVideo && (text.isNotBlank() || imageUri != null), onClick = {
@@ -693,8 +883,16 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
                         input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
                         part = MultipartBody.Part.createFormData("image", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
                     }
-                    val res = if (bgStyle != null && part == null) api2.createPostWithBg(text.toRequestBody("text/plain".toMediaTypeOrNull()), bgStyle!!.toRequestBody("text/plain".toMediaTypeOrNull()))
-                    else api2.createPost(text.toRequestBody("text/plain".toMediaTypeOrNull()), part)
+                    val locValue = location ?: locationText.trim().takeIf { it.isNotBlank() }
+                    val res = api2.createPost(
+                        text.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        part,
+                        backgroundStyle = bgStyle?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        visibility = visibility.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        commentAudience = commentAudience.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        taggedUserIds = if (tagged.isEmpty()) null else com.google.gson.Gson().toJson(tagged.mapNotNull { it.id }).toRequestBody("text/plain".toMediaTypeOrNull()),
+                        location = locValue?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    )
                     // Temp upload file is cache-only; delete it after use
                     // instead of leaving post_upload.jpg behind forever.
                     try { tmpFile?.delete() } catch (_: Exception) {}
@@ -708,6 +906,9 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
         message?.let { Spacer(Modifier.height(12.dp)); Text(it) }
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
     }
+    if (showTagPicker) {
+        TagPeopleDialog(api2, tagged, onDone = { tagged = it; showTagPicker = false }, onClose = { showTagPicker = false })
+    }
     if (showDiscard) {
         AlertDialog(
             onDismissRequest = { showDiscard = false },
@@ -719,12 +920,62 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     }
 }
 
+// v3.4: tag-people picker — searches real users (GET /api/users/search),
+// returns the chosen users; the composer sends their ids as taggedUserIds.
+@Composable
+private fun TagPeopleDialog(api2: FrianzoApi2, initial: List<PublicProfile>, onDone: (List<PublicProfile>) -> Unit, onClose: () -> Unit) {
+    var q by rememberSaveable { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var selected by remember { mutableStateOf(initial) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(q) {
+        if (q.isBlank()) { results = emptyList(); return@LaunchedEffect }
+        delay(300)
+        scope.launch {
+            try { val r = api2.searchUsers(q); if (r.success && r.data != null) results = r.data.users } catch (_: Exception) {}
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Tag people") },
+        text = {
+            Column {
+                OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search people") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
+                    items(results, key = { it.id ?: it.username ?: "" }) { u ->
+                        val sel = selected.any { it.id == u.id }
+                        Row(Modifier.fillMaxWidth().clickable { selected = if (sel) selected.filter { it.id != u.id } else selected + u }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = sel, onCheckedChange = { checked -> selected = if (checked) selected + u else selected.filter { it.id != u.id } })
+                            FrianzoAvatar(u.profilePictureUrl, 40.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(u.displayName ?: u.username ?: "", fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("@${u.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                    if (results.isEmpty() && q.isNotBlank()) item { Text("No people found", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp)) }
+                }
+                if (selected.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Text("${selected.size} tagged", fontSize = 13.sp, color = FrianzoBlue) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onDone(selected) }) { Text("Done") } },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+    )
+}
+
 // ---------- CHAT: list + thread (REST polling; live socket = later stage) ----------
 @Composable
-fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
+fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, String) -> Unit) {
     var list by remember { mutableStateOf<List<Conversation>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    // v3.4: this box filters the loaded conversations (client-side — the
+    // backend has no conversation-search endpoint).
     var q by rememberSaveable { mutableStateOf("") }
+    // v3.4: starting a NEW chat is a separate row/button below the filter.
+    var showNewChat by remember { mutableStateOf(false) }
+    var newQ by rememberSaveable { mutableStateOf("") }
     var found by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     val scope = rememberCoroutineScope()
     fun loadList() {
@@ -736,19 +987,29 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
         }
     }
     LaunchedEffect(Unit) { loadList() }
-    LaunchedEffect(q) {
-        if (q.isBlank()) { found = emptyList(); return@LaunchedEffect }
+    LaunchedEffect(newQ) {
+        if (newQ.isBlank()) { found = emptyList(); return@LaunchedEffect }
         delay(300)
         scope.launch {
-            try { val r = api2.searchUsers(q); if (r.success && r.data != null) found = r.data.users } catch (_: Exception) {}
+            try { val r = api2.searchUsers(newQ); if (r.success && r.data != null) found = r.data.users } catch (_: Exception) {}
         }
+    }
+    val shown = if (q.isBlank()) list else list.filter { c ->
+        val name = "${c.otherUser?.displayName ?: ""} ${c.otherUser?.username ?: ""}"
+        name.contains(q, ignoreCase = true) || (c.lastMessage?.content ?: "").contains(q, ignoreCase = true)
     }
     LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentPadding = PaddingValues(vertical = 8.dp)) {
         item { Text("Chats", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
         item {
-            OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search people to message") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
+            OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search conversations...") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
         }
-        if (q.isNotBlank()) {
+        item {
+            TextButton(onClick = { showNewChat = !showNewChat }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { Text(if (showNewChat) "Close new chat" else "Message someone new", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false) }
+        }
+        if (showNewChat) {
+            item {
+                OutlinedTextField(value = newQ, onValueChange = { newQ = it }, label = { Text("Search people to message") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
+            }
             items(found, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
                     headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -756,55 +1017,114 @@ fun ChatListScreen(api2: FrianzoApi2, onOpen: (String, String) -> Unit) {
                     leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
                     modifier = Modifier.clickable {
                         if (u.id != null) scope.launch {
-                            try { val r = api2.createConversation(CreateConversationRequest(u.id)); if (r.success && r.data != null) { q = ""; onOpen(r.data.id, u.displayName ?: u.username ?: "") } } catch (_: Exception) {}
+                            try { val r = api2.createConversation(CreateConversationRequest(u.id)); if (r.success && r.data != null) { newQ = ""; showNewChat = false; onOpen(r.data.id, u.displayName ?: u.username ?: "") } } catch (_: Exception) {}
                         }
                     },
                 )
                 HorizontalDivider()
             }
-        } else {
-            items(list, key = { it.id }) { c ->
-                val other = c.otherUser
-                val last = c.lastMessage?.content ?: c.messages?.firstOrNull()?.content ?: ""
-                ListItem(
-                    headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    supportingContent = { Text(last, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    leadingContent = { FrianzoAvatar(other?.profilePictureUrl, 48.dp) },
-                    trailingContent = {
+        }
+        items(shown, key = { it.id }) { c ->
+            val other = c.otherUser
+            val last = c.lastMessage
+            // v3.4: preview from the real payload — "You:" for my own
+            // message, "Photo"/"Voice message" when mediaType is set.
+            val preview = when {
+                last == null -> ""
+                last.isDeleted -> "Message deleted"
+                last.mediaType == "image" -> "Photo"
+                last.mediaType == "voice" -> "Voice message"
+                else -> last.content ?: ""
+            }
+            val youPrefix = last != null && last.senderId == myId && !last.isDeleted && preview.isNotBlank()
+            ListItem(
+                headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                supportingContent = { Text((if (youPrefix) "You: " else "") + preview, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingContent = { FrianzoAvatar(other?.profilePictureUrl, 48.dp) },
+                trailingContent = {
+                    Column(horizontalAlignment = Alignment.End) {
+                        val whenText = notifTimeAgo(last?.createdAt ?: c.updatedAt)
+                        if (whenText.isNotBlank()) Text(whenText, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // v3.4: read ticks from lastMessageStatus (only
+                            // for my own last message): sent ✓, delivered ✓✓,
+                            // read ✓✓ in blue.
+                            if (last != null && last.senderId == myId && c.lastMessageStatus != null) {
+                                Text(
+                                    when (c.lastMessageStatus) { "read", "delivered" -> "✓✓"; else -> "✓" },
+                                    fontSize = 12.sp,
+                                    color = if (c.lastMessageStatus == "read") FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1, softWrap = false,
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
                             if (c.unreadCount > 0) Badge(containerColor = FrianzoBadgeRed) { Text("${c.unreadCount}", maxLines = 1, softWrap = false) }
                             IconButton(onClick = { scope.launch { try { if (api2.deleteConversation(c.id).success) list = list.filter { it.id != c.id } } catch (_: Exception) {} } }) { Icon(Icons.Filled.Delete, contentDescription = "Delete chat", modifier = Modifier.size(20.dp)) }
                         }
-                    },
-                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.clickable { onOpen(c.id, other?.displayName ?: other?.username ?: "") },
-                )
-                HorizontalDivider()
-            }
-            if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-            if (list.isEmpty() && error == null) item { Text("No chats yet", Modifier.padding(16.dp)) }
+                    }
+                },
+                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.clickable { onOpen(c.id, other?.displayName ?: other?.username ?: "") },
+            )
+            HorizontalDivider()
         }
+        if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
+        if (shown.isEmpty() && error == null) item { Text(if (list.isEmpty()) "No chats yet" else "No conversations match", Modifier.padding(16.dp)) }
     }
 }
 
 @Composable
-fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, myId: String?, onBack: () -> Unit = {}) {
+fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, myId: String?, onBack: () -> Unit = {}, onOpenProfile: ((String) -> Unit)? = null) {
     var messages by remember { mutableStateOf<List<ConversationMessage>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var loadError by remember { mutableStateOf<String?>(null) }
     var sendError by remember { mutableStateOf<String?>(null) }
     var otherUserId by remember { mutableStateOf<String?>(null) }
+    var otherUsername by remember { mutableStateOf<String?>(null) }
+    var otherAvatar by remember { mutableStateOf<String?>(null) }
+    var otherLastActiveAt by remember { mutableStateOf<String?>(null) }
+    var otherIsOnline by remember { mutableStateOf(false) }
+    // v3.4: disappearing timer + presence come from the conversations list
+    // data on open (GET /api/messages/conversations) — never defaulted.
+    var disappearingDuration by remember { mutableStateOf<Int?>(null) }
     var isBlocked by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var showTimer by remember { mutableStateOf(false) }
     var timerLabel by remember { mutableStateOf("Off") }
+    var showReport by remember { mutableStateOf(false) }
+    var reportReason by remember { mutableStateOf("other") }
+    var reportDetails by rememberSaveable { mutableStateOf("") }
+    var reportDone by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    fun disappearingLabel(duration: Int?): String = when (duration) {
+        3600 -> "1 hour"
+        86400 -> "1 day"
+        604800 -> "1 week"
+        7776000 -> "90 days"
+        null -> "Off"
+        else -> "${duration / 3600} hours"
+    }
+    fun lastSeenText(iso: String?): String {
+        val ago = notifTimeAgo(iso)
+        return when {
+            ago.isBlank() -> ""
+            ago == "now" -> "just now"
+            else -> "$ago ago"
+        }
+    }
     LaunchedEffect(conversationId) {
         scope.launch {
             try {
                 val res = api2.conversations()
-                val other = res.data?.firstOrNull { it.id == conversationId }?.otherUser
+                val conv = res.data?.firstOrNull { it.id == conversationId }
+                val other = conv?.otherUser
                 otherUserId = other?.id
+                otherUsername = other?.username
+                otherAvatar = other?.profilePictureUrl
+                otherLastActiveAt = other?.lastActiveAt
+                otherIsOnline = other?.isOnline == true
+                disappearingDuration = conv?.disappearingDuration
+                timerLabel = disappearingLabel(conv?.disappearingDuration)
                 if (other?.id != null) { try { val bs = api2.blockStatus(other.id); isBlocked = bs.data?.blockedByMe == true } catch (_: Exception) {} }
             } catch (_: Exception) {}
         }
@@ -832,15 +1152,27 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             } catch (e: Exception) { loadError = e.message }
         }
     }
+    val presenceText = when {
+        otherIsOnline -> "Active now"
+        otherLastActiveAt != null -> "Last seen ${lastSeenText(otherLastActiveAt)}"
+        else -> ""
+    }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("Back", maxLines = 1, softWrap = false) }
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(vertical = 16.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Back", maxLines = 1, softWrap = false) }
+            FrianzoAvatar(otherAvatar, 40.dp)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (presenceText.isNotBlank()) Text(presenceText, fontSize = 12.sp, color = if (otherIsOnline) FrianzoSuccess else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+            }
             if (timerLabel != "Off") Text(timerLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
             Box {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Chat options") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    if (otherUsername != null) DropdownMenuItem(text = { Text("View profile") }, onClick = { menuOpen = false; onOpenProfile?.invoke(otherUsername!!) })
                     DropdownMenuItem(text = { Text("Disappearing messages: $timerLabel") }, onClick = { menuOpen = false; showTimer = true })
+                    if (otherUserId != null) DropdownMenuItem(text = { Text("Report user") }, onClick = { menuOpen = false; reportDone = false; showReport = true })
                     if (otherUserId != null) DropdownMenuItem(text = { Text(if (isBlocked) "Unblock" else "Block") }, onClick = {
                         menuOpen = false
                         scope.launch {
@@ -857,19 +1189,76 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 }
             }
         }
+        // v3.4: big avatar + name + "View profile" pill header.
+        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            FrianzoAvatar(otherAvatar, 72.dp)
+            Spacer(Modifier.height(8.dp))
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (otherUsername != null) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { onOpenProfile?.invoke(otherUsername!!) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)) { Text("View profile", maxLines = 1, softWrap = false) }
+            }
+        }
+        // v3.4: amber banner only when the conversation really has a timer.
+        if (disappearingDuration != null) {
+            Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFFEF3C7)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text("Messages disappear after ${disappearingLabel(disappearingDuration)}", fontSize = 13.sp, color = Color(0xFF92400E))
+            }
+            Spacer(Modifier.height(8.dp))
+        }
         if (showTimer) {
             AlertDialog(onDismissRequest = { showTimer = false }, title = { Text("Disappearing messages") },
                 text = { Column { listOf(null to "Off", 3600 to "1 hour", 86400 to "1 day", 604800 to "1 week").forEach { (secs, label) ->
-                    TextButton(onClick = { showTimer = false; timerLabel = label; scope.launch { try { api2.setDisappearing(conversationId, mapOf<String, Any?>("duration" to secs)) } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false) }
+                    TextButton(onClick = { showTimer = false; timerLabel = label; disappearingDuration = secs; scope.launch { try { api2.setDisappearing(conversationId, mapOf<String, Any?>("duration" to secs)) } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false) }
                 } } },
                 confirmButton = {}, dismissButton = { TextButton(onClick = { showTimer = false }) { Text("Cancel") } })
+        }
+        if (showReport) {
+            AlertDialog(onDismissRequest = { showReport = false }, title = { Text("Report user") },
+                text = {
+                    Column {
+                        Text("Why are you reporting this user?", fontSize = 14.sp)
+                        Spacer(Modifier.height(8.dp))
+                        listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "Misinformation", "other" to "Other").forEach { (v, label) ->
+                            Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(selected = reportReason == v, onClick = { reportReason = v })
+                                Text(label, fontSize = 14.sp)
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth())
+                        if (reportDone) { Spacer(Modifier.height(8.dp)); Text("Report sent. Thanks for letting us know.", fontSize = 13.sp, color = FrianzoSuccess) }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val uid = otherUserId
+                        if (uid != null) scope.launch {
+                            try {
+                                val body = mutableMapOf("reason" to reportReason)
+                                if (reportDetails.isNotBlank()) body["details"] = reportDetails
+                                if (api2.reportUser(uid, body).success) reportDone = true else sendError = "Could not send report"
+                            } catch (e: Exception) { sendError = e.message }
+                        }
+                    }) { Text("Send report") }
+                },
+                dismissButton = { TextButton(onClick = { showReport = false }) { Text("Cancel") } })
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
             items(messages, key = { it.id ?: "" }) { m ->
                 val mine = m.senderId == myId
                 Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
                     Surface(color = if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp)) {
-                        Text(m.content ?: "", Modifier.padding(12.dp), color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                        // v3.4: a received photo/voice has no text content —
+                        // show "Photo"/"Voice message" instead of an empty bubble.
+                        val mediaLabel = when {
+                            m.isDeleted -> "Message deleted"
+                            m.mediaType == "image" -> "Photo"
+                            m.mediaType == "voice" -> "Voice message" + if ((m.voiceDuration ?: 0) > 0) " (${m.voiceDuration}s)" else ""
+                            else -> null
+                        }
+                        val shown = if ((m.content ?: "").isBlank()) mediaLabel ?: "" else m.content ?: ""
+                        Text(shown, Modifier.padding(12.dp), color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -877,19 +1266,20 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         loadError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
         sendError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
         Row(Modifier.background(MaterialTheme.colorScheme.surface).padding(8.dp)) {
-            OutlinedTextField(value = draft, onValueChange = { draft = it }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(28.dp))
-            Spacer(Modifier.width(8.dp))
-            Button(shape = RoundedCornerShape(28.dp), onClick = {
-                // M3 fix: an empty draft used to be sent, rejected 400
-                // by the backend, and silently restored — now it is
-                // blocked with a visible message and nothing is sent.
-                if (draft.isBlank()) { sendError = "Type a message first"; return@Button }
-                sendError = null
-                val text = draft; draft = ""
-                scope.launch {
-                    try { api2.sendMessage(conversationId, SendMessageRequest(text)); load() } catch (e: Exception) { draft = text; sendError = e.message }
-                }
-            }) { Text("Send", maxLines = 1, softWrap = false) }
+            // v3.4: no photo/mic send buttons — photo/voice sending is
+            // socket-only (no REST endpoint), so they are not faked here.
+            OutlinedTextField(value = draft, onValueChange = { draft = it }, placeholder = { Text("Message...") }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(28.dp))
+            // v3.4: Send appears only once text is typed.
+            if (draft.isNotBlank()) {
+                Spacer(Modifier.width(8.dp))
+                Button(shape = RoundedCornerShape(28.dp), onClick = {
+                    sendError = null
+                    val text = draft; draft = ""
+                    scope.launch {
+                        try { api2.sendMessage(conversationId, SendMessageRequest(text)); load() } catch (e: Exception) { draft = text; sendError = e.message }
+                    }
+                }) { Text("Send", maxLines = 1, softWrap = false) }
+            }
         }
     }
 }
@@ -1028,7 +1418,7 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                 HorizontalDivider()
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-            if (filtered.isEmpty() && error == null) item { Text(if (items.isEmpty()) "No notifications yet" else "Nothing in $filter", Modifier.padding(16.dp)) }
+            if (filtered.isEmpty() && error == null) item { Text(if (items.isEmpty()) "You're all caught up. New activity will show up here." else "Nothing in $filter", Modifier.padding(16.dp)) }
         }
     }
 }
@@ -1442,7 +1832,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             Column {
                                 OutlinedTextField(value = edName, onValueChange = { edName = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(value = edBio, onValueChange = { edBio = it }, label = { Text("Bio") }, modifier = Modifier.fillMaxWidth())
+                                OutlinedTextField(value = edBio, onValueChange = { if (it.length <= 300) edBio = it }, label = { Text("Bio") }, modifier = Modifier.fillMaxWidth())
+                                Text("${edBio.length}/300", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(value = edCity, onValueChange = { edCity = it }, label = { Text("City") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 Spacer(Modifier.height(8.dp))
@@ -1469,7 +1860,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                         else editError = r.error?.message ?: "Could not save profile"
                                     } catch (e: Exception) { editError = e.message }
                                 }
-                            }) { Text("Save") }
+                            }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text("Save Changes", maxLines = 1, softWrap = false) }
                         },
                         dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
                     )
@@ -1715,7 +2106,9 @@ private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusIte
             Column {
                 OutlinedTextField(value = title, onValueChange = { if (it.length <= 30) title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Spacer(Modifier.height(8.dp))
-                if (statusItems.isEmpty()) Text("No current stories to add. Post a story first.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Select stories", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Spacer(Modifier.height(4.dp))
+                if (statusItems.isEmpty()) Text("No active stories. Post a story first.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
                     items(statusItems, key = { it.id }) { st ->
                         Row(Modifier.fillMaxWidth().clickable { selected = if (st.id in selected) selected - st.id else selected + st.id }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1739,7 +2132,7 @@ private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusIte
                     } catch (e: Exception) { error = e.message }
                     busy = false
                 }
-            }) { Text(if (busy) "Creating..." else "Create", maxLines = 1, softWrap = false) }
+            }) { Text(if (busy) "Creating..." else "Create (${selected.size} selected)", maxLines = 1, softWrap = false) }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
     )
@@ -1750,22 +2143,40 @@ private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusIte
 private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: String, onUser: (String) -> Unit, onClose: () -> Unit) {
     var users by remember { mutableStateOf<List<FollowListUser>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    // v3.4: server pagination (?page=&limit=20) + client-side search.
+    var page by remember { mutableStateOf(1) }
+    var pages by remember { mutableStateOf(1) }
+    var total by remember { mutableStateOf(0) }
+    var loading by remember { mutableStateOf(false) }
+    var q by rememberSaveable { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(userId, direction) {
+    fun load(p: Int) {
+        loading = true
         scope.launch {
             try {
-                val res = api2.followUsers(userId, direction)
-                if (res.success && res.data != null) users = res.data.users ?: emptyList() else error = res.error?.message
+                val res = api2.followUsers(userId, direction, p, 20)
+                if (res.success && res.data != null) {
+                    users = res.data.users ?: emptyList()
+                    page = res.data.pagination?.page ?: p
+                    pages = (res.data.pagination?.pages ?: 1).coerceAtLeast(1)
+                    total = res.data.pagination?.total ?: users.size
+                } else error = res.error?.message
             } catch (e: Exception) { error = e.message }
+            loading = false
         }
+    }
+    LaunchedEffect(userId, direction) { load(1) }
+    val shown = if (q.isBlank()) users else users.filter {
+        (it.displayName ?: "").contains(q, ignoreCase = true) || (it.username ?: "").contains(q, ignoreCase = true)
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Back", maxLines = 1, softWrap = false) }
             Text(if (direction == "followers") "Followers" else "Following", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
         LazyColumn(Modifier.weight(1f)) {
-            items(users, key = { it.id ?: it.username ?: "" }) { u ->
+            items(shown, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
                     headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -1775,7 +2186,13 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
                 HorizontalDivider()
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-            if (users.isEmpty() && error == null) item { Text("Nobody here yet", Modifier.padding(16.dp)) }
+            if (loading) item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
+            if (shown.isEmpty() && error == null && !loading) item { Text(if (users.isEmpty()) "Nobody here yet" else "No matches on this page", Modifier.padding(16.dp)) }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(enabled = page > 1 && !loading, onClick = { load(page - 1) }) { Text("Prev", maxLines = 1, softWrap = false) }
+            Text("Page $page of $pages" + if (total > 0) " ($total)" else "", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+            TextButton(enabled = page < pages && !loading, onClick = { load(page + 1) }) { Text("Next", maxLines = 1, softWrap = false) }
         }
     }
 }

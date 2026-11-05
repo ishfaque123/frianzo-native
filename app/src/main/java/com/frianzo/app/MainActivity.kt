@@ -48,6 +48,10 @@ class MainActivity : ComponentActivity() {
         val cookieJar = PersistentCookieJar(applicationContext)
         val api = createApi(applicationContext, cookieJar)
         val api2 = createApi2(applicationContext, cookieJar)
+        // v3.4: Theme + Data Saver are local prefs — load before the first
+        // frame so Settings' choice applies from startup.
+        FrianzoThemeState.mode = readThemeMode(applicationContext)
+        FrianzoThemeState.dataSaver = readDataSaver(applicationContext)
         setContent {
             FrianzoTheme {
                 val session: SessionViewModel = viewModel(factory = sessionViewModelFactory(api))
@@ -110,8 +114,9 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     // v3.1: POST_NOTIFICATIONS is asked ONCE, right after login — never at
     // launch, never again. (Push delivery itself still needs the Firebase
     // key, an owner step; this only asks the system permission so the app
-    // is ready the day push is switched on. No other runtime permission
-    // exists: gallery/camera/mic/location have no feature in the app.)
+    // is ready the day push is switched on. Gallery/Camera/Microphone are
+    // asked at feature use; Location only when the composer adds a
+    // location (v3.4).)
     var notifAsked by remember { mutableStateOf(false) }
     val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) {
@@ -219,13 +224,13 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         Box(Modifier.padding(padding)) {
             when {
                 drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS })
-                openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId) { openChat = null }
+                openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
                 tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
                 tab == Tab.REELS -> ReelsScreen(api2, myId, onAuthor = { username -> openProfile = username }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null })
-                tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED })
-                tab == Tab.CHAT -> ChatListScreen(api2) { id, name -> openChat = id to name }
+                tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED }, onPostAsReel = { uri -> pendingMedia = null; pendingReelUri = uri; tab = Tab.REELS })
+                tab == Tab.CHAT -> ChatListScreen(api2, myId) { id, name -> openChat = id to name }
                 tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name })
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
                 tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it }, onDashboard = { drawerScreen = "Professional Dashboard" }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
