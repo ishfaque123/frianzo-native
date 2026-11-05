@@ -12,9 +12,9 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.pager.PageSize
-import androidx.compose.foundation.pager.VerticalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -74,7 +74,10 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
     var showUpload by remember { mutableStateOf(false) }
     var muted by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val pagerState = rememberPagerState(pageCount = { reels.size })
+    val listState = rememberLazyListState()
+    val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
+    // Current page = first fully-snapped visible item.
+    val currentPage: Int get() = listState.firstVisibleItemIndex
     fun load() {
         if (loading || !hasMore) return
         loading = true
@@ -104,21 +107,21 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
     LaunchedEffect(reels, focusReelId) {
         val target = focusReelId ?: return@LaunchedEffect
         val idx = reels.indexOfFirst { it.id == target }
-        if (idx >= 0) { pagerState.scrollToPage(idx); onFocusConsumed() }
+        if (idx >= 0) { scope.launch { listState.scrollToItem(idx) }; onFocusConsumed() }
     }
     // Load more when the user nears the end of the loaded reels.
-    LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.currentPage }.collect { page ->
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex }.collect { page ->
             if (reels.isNotEmpty() && page >= reels.size - 3) load()
         }
     }
     // View counting: 3s of the current reel actually on screen, once.
-    LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.currentPage }.collect { page ->
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex }.collect { page ->
             val reel = reels.getOrNull(page) ?: return@collect
             if (reel.id !in viewedIds) {
                 delay(3000)
-                if (pagerState.currentPage == page && reel.id !in viewedIds) {
+                if (listState.firstVisibleItemIndex == page && reel.id !in viewedIds) {
                     viewedIds = viewedIds + reel.id
                     try { api2.recordReelView(reel.id, mapOf("watchSec" to 3)) } catch (_: Exception) {}
                 }
@@ -141,19 +144,19 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
         if (error != null && reels.isEmpty()) { Text(error!!, color = Color.White, modifier = Modifier.padding(16.dp)) }
         if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() } }
         if (reels.isNotEmpty()) {
-            VerticalPager(state = pagerState, pageSize = PageSize.Fill, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
-                val reel = reels[page]
+            LazyColumn(state = listState, flingBehavior = flingBehavior, modifier = Modifier.weight(1f).fillMaxWidth()) {
+                itemsIndexed(reels, key = { _, r -> r.id }) { page, reel ->
                 ReelPage(
                     api2 = api2, reel = reel, myId = myId,
-                    isActive = page == pagerState.currentPage,
+                    isActive = page == listState.firstVisibleItemIndex,
                     muted = muted,
                     commentCount = reelCommentCounts[reel.id] ?: reel.commentCount,
                     onAuthor = onAuthor,
                     onComment = { reelComment = reel },
                     onDeleted = { reels = reels.filter { it.id != reel.id } },
                 )
-            }
-        } else if (!loading && error == null) {
+                }
+            } else if (!loading && error == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No reels yet", color = Color.White) }
         }
     }
