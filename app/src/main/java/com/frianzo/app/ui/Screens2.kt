@@ -1179,6 +1179,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var blockedByOther by remember { mutableStateOf(false) }
     var moreOpen by remember { mutableStateOf(false) }
     var showUnfollowConfirm by remember { mutableStateOf(false) }
+    // v3.3: strikes banner on own profile (GET /api/users/me/strikes,
+    // same endpoint the Dashboard screen already uses).
+    var strikes by remember { mutableStateOf<StrikesData?>(null) }
     val clipboard = LocalClipboardManager.current
     fun profileUrl(u: String?) = "https://frianzo.online/u/${u ?: ""}"
     fun copyProfileLink(u: String?) {
@@ -1248,6 +1251,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         reelsLoading = false
                     }
                     if (username == null) {
+                        try { val sr = api2.myStrikes(); if (sr.success && sr.data != null) strikes = sr.data } catch (_: Exception) {}
                         try {
                             val sf = api2.statusFeed()
                             val own = sf.data?.feed?.firstOrNull { it.userId == myId || it.user?.id == myId }
@@ -1328,8 +1332,19 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 }
                             }
                             IconButton(onClick = {
-                                val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, profileUrl(p.username)) }
-                                context.startActivity(Intent.createChooser(send, "Share profile"))
+                                // v3.3: share the short /s/ link like web
+                                // (POST /api/share { type: "profile", id }),
+                                // direct /u/ URL only if that call fails.
+                                scope.launch {
+                                    var url = profileUrl(p.username)
+                                    try {
+                                        val r = api2.createShareLink(mapOf("type" to "profile", "id" to (p.id ?: p.username ?: "")))
+                                        val code = r.data?.code
+                                        if (r.success && !code.isNullOrBlank()) url = "https://frianzo.online/s/$code"
+                                    } catch (_: Exception) {}
+                                    val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, url) }
+                                    context.startActivity(Intent.createChooser(send, "Share profile"))
+                                }
                             }) { Icon(Icons.Filled.Share, contentDescription = "Share profile", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                             IconButton(onClick = { copyProfileLink(p.username) }) { Icon(Icons.Filled.Link, contentDescription = "Copy profile link", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
@@ -1338,11 +1353,33 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (p.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
                         }
-                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        // v3.3: @username is tappable — copies it, like web.
+                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable {
+                            clipboard.setText(AnnotatedString("@${p.username ?: ""}"))
+                            linkMsg = "Username copied"
+                            scope.launch { delay(2000); linkMsg = null }
+                        })
+                        // v3.3: "Active now" for online other users, like web.
+                        if (username != null && p.isOnline) Text("Active now", style = MaterialTheme.typography.bodySmall, color = FrianzoSuccess, maxLines = 1, softWrap = false)
+                        // v3.3: "Followed by X, Y and N others" — backend already
+                        // returns mutualFollowers/mutualCount; names are tappable.
+                        if (username != null && (p.mutualCount ?: 0) > 0) {
+                            val shown = (p.mutualFollowers ?: emptyList()).take(2)
+                            val rest = (p.mutualCount ?: 0) - shown.size
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Followed by ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                shown.forEachIndexed { idx, mf ->
+                                    if (idx > 0) Text(", ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(mf.displayName ?: mf.username ?: "", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable { if (mf.username != null) onUser?.invoke(mf.username!!) })
+                                }
+                                if (rest > 0) Text(" and $rest others", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            }
+                        }
                         p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis) }
                         // v2.9: website is a real link (was plain blue Text).
                         p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.clickable { openWebUrl(context, it) }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, countryDisplayName(p.country)).joinToString(", ")
+                        // v3.3: web shows city + province; country is only the fallback.
+                        val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, p.province?.takeIf { it.isNotBlank() } ?: countryDisplayName(p.country)).joinToString(", ")
                         if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(8.dp))
                         // v3.1: counts as a full-width row — three equal
@@ -1371,6 +1408,14 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             if (fg != null) countCol("$fg", "Following") { if (p.id != null) followList = "following" }
                         }
                     }
+                    // v3.3: amber strikes warning banner on own profile, like web.
+                    val strikeList = strikes?.strikes ?: emptyList()
+                    if (username == null && strikeList.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFFFEF3C7)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Text("You have ${strikeList.size} strike${if (strikeList.size == 1) "" else "s"} — ${strikeList.firstOrNull()?.reason ?: "check your Dashboard."}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF92400E), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                 // v3.2 web parity: own profile = Edit Profile + Dashboard
                 // (web: dark Edit Profile, outlined Dashboard). Log out is
                 // back in the drawer only — it no longer sits on the profile.
@@ -1387,6 +1432,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     var edName by remember { mutableStateOf(cur.displayName ?: "") }
                     var edBio by remember { mutableStateOf(cur.bio ?: "") }
                     var edCity by remember { mutableStateOf(cur.city ?: "") }
+                    var edProvince by remember { mutableStateOf(cur.province ?: "") }
                     var edCountry by remember { mutableStateOf(cur.country ?: "") }
                     var edWeb by remember { mutableStateOf(cur.website ?: "") }
                     AlertDialog(
@@ -1399,6 +1445,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 OutlinedTextField(value = edBio, onValueChange = { edBio = it }, label = { Text("Bio") }, modifier = Modifier.fillMaxWidth())
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(value = edCity, onValueChange = { edCity = it }, label = { Text("City") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(value = edProvince, onValueChange = { edProvince = it }, label = { Text("Province") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(value = edCountry, onValueChange = { edCountry = it }, label = { Text("Country") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 Spacer(Modifier.height(8.dp))
@@ -1415,9 +1463,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             Button(onClick = {
                                 scope.launch {
                                     try {
-                                        val body = mapOf<String, Any>("displayName" to edName, "bio" to edBio, "city" to edCity, "country" to edCountry, "website" to edWeb)
+                                        val body = mapOf<String, Any>("displayName" to edName, "bio" to edBio, "city" to edCity, "province" to edProvince, "country" to edCountry, "website" to edWeb)
                                         val r = api2.updateMe(body)
-                                        if (r.success) { profile = cur.copy(displayName = edName, bio = edBio, city = edCity, country = edCountry, website = edWeb); showEdit = false; editError = null }
+                                        if (r.success) { profile = cur.copy(displayName = edName, bio = edBio, city = edCity, province = edProvince, country = edCountry, website = edWeb); showEdit = false; editError = null }
                                         else editError = r.error?.message ?: "Could not save profile"
                                     } catch (e: Exception) { editError = e.message }
                                 }
@@ -1550,7 +1598,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 }
             }
         }
-        items(if (activeTab != "all") emptyList() else if (profile?.isPrivate == true && username != null && !following) emptyList() else posts, key = { it.id }) { post ->
+        // v3.3: All tab is pinned-first, then newest — like web, client-side only.
+        val allPosts = posts.sortedWith(compareByDescending<Post> { it.isPinned }.thenByDescending { it.createdAt ?: "" })
+        items(if (activeTab != "all") emptyList() else if (profile?.isPrivate == true && username != null && !following) emptyList() else allPosts, key = { it.id }) { post ->
             Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable { if (feedVm != null) detailPostId = post.id }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }

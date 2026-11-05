@@ -115,7 +115,11 @@ data class PublicProfile(
     val coverPhotoUrl: String?,
     val website: String?,
     val city: String?,
+    val province: String? = null,
     val country: String?,
+    // v3.3: backend toPublicProfile already returns these (no backend change).
+    val mutualFollowers: List<MutualFollower>? = null,
+    val mutualCount: Int? = null,
     val friendStatus: String?,
     val isPrivate: Boolean = false,
     val isVerified: Boolean = false,
@@ -127,6 +131,8 @@ data class PublicProfile(
     val followingCount: Int? = null,
     val followingsCount: Int? = null,
 )
+// v3.3: backend getMutualFollowers returns { username, displayName }.
+data class MutualFollower(val username: String?, val displayName: String? = null)
 data class SearchUsersData(val users: List<PublicProfile>)
 data class FollowData(val following: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String?)
 /** Backend GET /api/follows/{id}/status returns { status: "none"|"following"|"follow_back"|"friends"|"self" }. */
