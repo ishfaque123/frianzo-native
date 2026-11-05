@@ -139,7 +139,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, onAuthor: (String) -> U
             }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
-            OutlinedButton(onClick = { showUpload = true }, shape = RoundedCornerShape(28.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)) { Text("Upload reel") }
+            OutlinedButton(onClick = { showUpload = true }, shape = RoundedCornerShape(28.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Upload reel", maxLines = 1, softWrap = false, fontSize = 13.sp) }
         }
         if (error != null && reels.isEmpty()) { Text(error!!, color = Color.White, modifier = Modifier.padding(16.dp)) }
         if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() } }
@@ -928,11 +928,16 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
         else -> items
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Notifications", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            TextButton(onClick = { selecting = !selecting; if (!selecting) selected = emptySet() }) { Text(if (selecting) "Cancel" else "Select") }
-            TextButton(onClick = { showMarkAllConfirm = true }) { Text("Mark all read") }
-            TextButton(onClick = { showDeleteAllConfirm = true }) { Text("Delete all", color = Color.Red) }
+        // v3.0: title on its own row — the three action buttons used to share
+        // one Row with it, leaving the title ~60dp wide so it wrapped letter
+        // by letter. Actions now sit on a second row, single-line, no wrap.
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text("Notifications", style = MaterialTheme.typography.titleLarge, maxLines = 1, softWrap = false)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { selecting = !selecting; if (!selecting) selected = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (selecting) "Cancel" else "Select", maxLines = 1, softWrap = false) }
+                TextButton(onClick = { showMarkAllConfirm = true }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Mark all read", maxLines = 1, softWrap = false) }
+                TextButton(onClick = { showDeleteAllConfirm = true }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Delete all", color = Color.Red, maxLines = 1, softWrap = false) }
+            }
         }
         if (selecting && selected.isNotEmpty()) {
             Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
