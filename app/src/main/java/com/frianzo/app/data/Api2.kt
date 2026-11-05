@@ -220,6 +220,10 @@ data class IsaiReply(val reply: String?, val remaining: Int? = null)
 
 interface FrianzoApi2 {
     // Reels (auth required)
+    // v3.2: web profile uses GET /api/reels/user/{username} (reelApi.ts
+    // fetchUserReels) for the profile Reels tab + Reels count.
+    @GET("api/reels/user/{username}")
+    suspend fun userReels(@Path("username") username: String): Envelope<ReelFeedData>
     @GET("api/reels")
     suspend fun reelFeed(@Query("offset") offset: Int = 0, @Query("feed") feed: String = "foryou", @Query("exclude") exclude: String? = null): Envelope<ReelFeedData>
     @GET("api/reels/config")
