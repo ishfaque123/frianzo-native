@@ -165,6 +165,9 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
     }
     var reelComment by remember { mutableStateOf<Reel?>(null) }
     var reelCommentCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    // v3.7 (C10): follow status per author, hoisted here so following on
+    // one reel fans out to every reel by the same author in the feed.
+    var authorFollowStates by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         try {
@@ -172,7 +175,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             if (me.success && me.data?.user != null) myAvatar = me.data.user.profilePictureUrl
         } catch (_: Exception) {}
     }
-    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, myAvatar = myAvatar, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }, onCommentDeleted = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) - 1).coerceAtLeast(0)) }) }
+    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, myAvatar = myAvatar, initialTotal = reelCommentCounts[reel.id] ?: reel.commentCount, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }, onCommentDeleted = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) - 1).coerceAtLeast(0)) }) }
     if (showUpload) { ReelUploadScreen(api2, initialVideoUri = uploadUri, onDone = { newReelId -> showUpload = false; onUploadUriConsumed(); if (newReelId != null) { scope.launch { try { val r = api2.reelById(newReelId); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } else { reels = emptyList(); offset = 0; hasMore = true; load() } } catch (_: Exception) { reels = emptyList(); offset = 0; hasMore = true; load() } } } else { reels = emptyList(); offset = 0; hasMore = true; load() } }, onClose = { showUpload = false; onUploadUriConsumed() }) }
     if (showSaved) { SavedReelsScreen(api2, onClose = { showSaved = false }, onOpenReel = { id -> showSaved = false; scope.launch { try { val r = api2.reelById(id); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } } catch (_: Exception) {} } }) }
     LaunchedEffect(uploadUri) { if (uploadUri != null) showUpload = true }
@@ -214,18 +217,41 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             if (reels.isNotEmpty() && page >= reels.size - 3) load()
         }
     }
-    // View counting: 3s of the current reel actually on screen, once.
+    // v3.7 (C1+C2+C13): web rule — a view is recorded the moment a reel
+    // becomes active (watchSec 0), and the real watch seconds are sent
+    // when the user leaves it (>= 1s). No 3s gate, no delay() inside the
+    // collector, so fast swipes are counted and checks never queue behind
+    // each other. The view call returns the fresh viewCount (R23).
+    var watchReelId by remember { mutableStateOf<String?>(null) }
+    var watchStartMs by remember { mutableStateOf(0L) }
     LaunchedEffect(listState) {
-        snapshotFlow { listState.firstVisibleItemIndex }.collect { page ->
-            val reel = reels.getOrNull(page) ?: return@collect
+        // The flow also watches reels.size: when the first page loads the
+        // index stays 0, so without this the first reel would never get
+        // its view recorded until the user swipes.
+        snapshotFlow { listState.firstVisibleItemIndex to reels.size }.collect { (page, _) ->
+            val now = System.currentTimeMillis()
+            // Finalise the reel just left, if it was watched >= 1s.
+            val prevId = watchReelId
+            if (prevId != null) {
+                val sec = ((now - watchStartMs) / 1000).toInt()
+                if (sec >= 1) {
+                    scope.launch {
+                        try {
+                            val vr = api2.recordReelView(prevId, mapOf("watchSec" to sec))
+                            val vc = vr.data?.viewCount
+                            if (vr.success && vc != null) reels = reels.map { if (it.id == prevId) it.copy(viewCount = vc) else it }
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            val reel = reels.getOrNull(page) ?: run { watchReelId = null; return@collect }
+            watchReelId = reel.id
+            watchStartMs = now
             if (reel.id !in viewedIds) {
-                delay(3000)
-                if (listState.firstVisibleItemIndex == page && reel.id !in viewedIds) {
-                    viewedIds = viewedIds + reel.id
+                viewedIds = viewedIds + reel.id
+                scope.launch {
                     try {
-                        val vr = api2.recordReelView(reel.id, mapOf("watchSec" to 3))
-                        // R23: the view call returns the fresh view count —
-                        // use it so the rail count moves after watching.
+                        val vr = api2.recordReelView(reel.id, mapOf("watchSec" to 0))
                         val vc = vr.data?.viewCount
                         if (vr.success && vc != null) reels = reels.map { if (it.id == reel.id) it.copy(viewCount = vc) else it }
                     } catch (_: Exception) {}
@@ -269,6 +295,8 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     isActive = page == listState.firstVisibleItemIndex,
                     muted = muted,
                     commentCount = reelCommentCounts[reel.id] ?: reel.commentCount,
+                    followOverride = reel.author?.id?.let { authorFollowStates[it] },
+                    onFollowChange = { aid, st -> authorFollowStates = authorFollowStates + (aid to st) },
                     onAuthor = onAuthor,
                     onComment = { reelComment = reel },
                     onDeleted = { reels = reels.filter { it.id != reel.id } },
@@ -328,15 +356,13 @@ private fun reelTimeAgo(createdAt: String?): String {
     }
 }
 
-// v2.9: compact counts for the reel rail (formatCount is private to Screens.kt).
+// v3.7 (C12): web shows RAW integers on the reel rail (12400, not 12.4k).
 private fun reelCount(n: Int): String {
-    if (n < 1000) return "$n"
-    if (n < 1000000) { val k = n / 1000.0; return if (k % 1.0 == 0.0) "${k.toInt()}k" else "%.1fk".format(k) }
-    val m = n / 1000000.0; return if (m % 1.0 == 0.0) "${m.toInt()}M" else "%.1fM".format(m)
+    return "$n"
 }
 
 @Composable
-private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
+private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var liked by remember(reel.id) { mutableStateOf(reel.liked) }
@@ -383,8 +409,14 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         }
     }
     val burstScale by animateFloatAsState(if (burst) 1.4f else 1f, label = "heartBurst")
-    // R7: Like updates at once and reverts only if the server call fails.
+    // v3.7 (C3+C4): the heart toggles from the CURRENT state (web rule) and
+    // like calls are serialised per reel with an in-flight guard, so rapid
+    // taps can never race and leave the wrong state. Optimistic, reverts
+    // only if the server call fails (R7).
+    var likeBusy by remember(reel.id) { mutableStateOf(false) }
     fun doLike() {
+        if (liked || likeBusy) return
+        likeBusy = true
         val prevLiked = liked; val prevLikes = likes
         liked = true; likes = prevLikes + 1
         scope.launch {
@@ -393,9 +425,12 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount }
                 else { liked = prevLiked; likes = prevLikes; showMsg("Couldn't like — try again") }
             } catch (_: Exception) { liked = prevLiked; likes = prevLikes; showMsg("Couldn't like — try again") }
+            finally { likeBusy = false }
         }
     }
     fun doUnlike() {
+        if (!liked || likeBusy) return
+        likeBusy = true
         val prevLiked = liked; val prevLikes = likes
         liked = false; likes = (prevLikes - 1).coerceAtLeast(0)
         scope.launch {
@@ -404,8 +439,11 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount }
                 else { liked = prevLiked; likes = prevLikes; showMsg("Couldn't unlike — try again") }
             } catch (_: Exception) { liked = prevLiked; likes = prevLikes; showMsg("Couldn't unlike — try again") }
+            finally { likeBusy = false }
         }
     }
+    // Rail heart: toggle from current state (C3) — never a blind doLike().
+    fun toggleLike() { if (liked) doUnlike() else doLike() }
     LaunchedEffect(burst) { if (burst) { delay(700); burst = false } }
     // Progress ticker: reads the real VideoView position while active.
     LaunchedEffect(isActive, prepared) {
@@ -431,9 +469,10 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         // R1: a broken video reports the error instead of
                         // spinning forever.
                         setOnErrorListener { _, _, _ -> videoError = "Couldn't play this video"; true }
-                        // R18: a finished reel moves to the next one; the
-                        // last reel loops, like a normal reels feed.
-                        setOnCompletionListener { v -> onPosition(0); if (isLast) { v.seekTo(0); v.start() } else onFinished() }
+                        // R18: a finished reel moves to the next one.
+                        // v3.7 (C11): on the LAST reel playback STOPS, like
+                        // web — it never loops back to the start.
+                        setOnCompletionListener { v -> onPosition(0); if (!isLast) onFinished() }
                     } },
                     modifier = Modifier.fillMaxSize(),
                     update = { view ->
@@ -482,7 +521,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // Right rail: Like / Comment / Share / Views / Save / More.
         Column(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp, bottom = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { doLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(30.dp)) }
+                IconButton(onClick = { toggleLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(30.dp)) }
                 Text(reelCount(likes), color = Color.White, fontSize = 12.sp)
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -494,7 +533,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 // moves only when a channel is actually tapped, never when
                 // the sheet is opened or the chooser is cancelled.
                 IconButton(onClick = { shareOpen = true }) { Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(30.dp)) }
-                Text(reelCount(shares), color = Color.White, fontSize = 12.sp)
+                Text(if (shares > 0) reelCount(shares) else "Share", color = Color.White, fontSize = 12.sp)
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Filled.Visibility, contentDescription = "Views", tint = Color.White, modifier = Modifier.size(28.dp))
@@ -561,18 +600,27 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Text("@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (reel.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
                 val authorId = reel.author?.id
-                if (authorId != null && authorId != myId && authorFollow != null && authorFollow != "self") {
+                // v3.7 (C10): web rule — the pill shows ONLY while not
+                // following (Follow / Follow Back); it never offers
+                // unfollow. The status fans out to every reel by this
+                // author via onFollowChange (hoisted in ReelsScreen).
+                val effectiveFollow = followOverride ?: authorFollow
+                if (authorId != null && authorId != myId && effectiveFollow != null && effectiveFollow != "self" && effectiveFollow != "following" && effectiveFollow != "friends") {
                     Spacer(Modifier.width(8.dp))
-                    val label = when (authorFollow) { "following", "friends" -> "Following"; "follow_back" -> "Follow Back"; else -> "Follow" }
+                    val label = if (effectiveFollow == "follow_back") "Follow Back" else "Follow"
                     Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable {
-                        val prev = authorFollow
-                        authorFollow = if (prev == "following" || prev == "friends") "none" else "following"
+                        val prev = effectiveFollow
+                        authorFollow = "following"
+                        onFollowChange(authorId, "following")
                         scope.launch {
                             try {
                                 val r = api2.toggleFollow(authorId)
-                                if (r.success && r.data != null) authorFollow = r.data.friendStatus ?: if (r.data.following || r.data.isFollowing) "following" else "none"
-                                else authorFollow = prev
-                            } catch (_: Exception) { authorFollow = prev }
+                                if (r.success && r.data != null) {
+                                    val st = r.data.friendStatus ?: if (r.data.following || r.data.isFollowing) "following" else "none"
+                                    authorFollow = st
+                                    onFollowChange(authorId, st)
+                                } else { authorFollow = prev; onFollowChange(authorId, prev) }
+                            } catch (_: Exception) { authorFollow = prev; onFollowChange(authorId, prev) }
                         }
                     }.padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(label, color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
@@ -646,7 +694,17 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
     var dmBusy by remember { mutableStateOf(false) }
-    fun record(channel: String) { scope.launch { try { api2.recordShareEvent(mapOf("type" to "reel", "id" to reel.id, "channel" to channel)) } catch (_: Exception) {} }; onShared() }
+    // v3.7 (C8): the rail count moves ONLY after POST /api/share/event
+    // succeeds. A failed event used to bump the rail anyway (fire-and-
+    // forget with the error swallowed) and show a share the server never
+    // recorded.
+    fun record(channel: String) {
+        scope.launch {
+            try {
+                if (api2.recordShareEvent(mapOf("type" to "reel", "id" to reel.id, "channel" to channel)).success) onShared()
+            } catch (_: Exception) { /* no bump: the server never recorded it */ }
+        }
+    }
     fun openUrl(url: String, channel: String) { record(channel); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {}; onClose() }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -666,12 +724,17 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
                 ReelShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
                     val authorId = reel.author?.id
                     if (authorId != null && !dmBusy) {
-                        dmBusy = true; record("dm")
+                        dmBusy = true
                         scope.launch {
                             try {
                                 val res = api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId))
                                 val convId = res.data?.id
-                                if (convId != null) { onClose(); onOpenChat(convId, reel.author?.displayName ?: reel.author?.username ?: "User") }
+                                if (convId != null) {
+                                    // v3.7 (C8): record the DM share ONLY
+                                    // after the conversation really exists.
+                                    record("dm")
+                                    onClose(); onOpenChat(convId, reel.author?.displayName ?: reel.author?.username ?: "User")
+                                }
                             } catch (_: Exception) {}
                             dmBusy = false
                         }
@@ -771,12 +834,16 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
 // replies: [...] }], pagination: { hasMore, nextCursor } }.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = null, myAvatar: String? = null, onClose: () -> Unit, onCommentAdded: () -> Unit = {}, onCommentDeleted: () -> Unit = {}) {
+private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = null, myAvatar: String? = null, initialTotal: Int = -1, onClose: () -> Unit, onCommentAdded: () -> Unit = {}, onCommentDeleted: () -> Unit = {}) {
     var comments by remember { mutableStateOf<List<ReelComment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var replyTo by remember { mutableStateOf<ReelComment?>(null) }
-    var total by remember { mutableStateOf(reel.commentCount) }
+    // v3.7 (C5+C6): the header is the feed TRUE total (roots + replies)
+    // passed in by the parent, and moves only by +/-1 deltas on
+    // send/delete. It is NEVER recomputed from the loaded list — the
+    // endpoint returns roots only, so that used to drop every reply.
+    var total by remember { mutableStateOf(if (initialTotal >= 0) initialTotal else reel.commentCount) }
     var nextCursor by remember { mutableStateOf<String?>(null) }
     var hasMore by remember { mutableStateOf(false) }
     var loadingMore by remember { mutableStateOf(false) }
@@ -797,10 +864,8 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                     comments = if (cursor == null) res.data.comments else comments + res.data.comments
                     nextCursor = res.data.pagination?.nextCursor
                     hasMore = res.data.pagination?.hasMore == true
-                    // R8: the comments endpoint returns no total, so sync
-                    // the header count from what was actually loaded once
-                    // the whole list is in (no more pages).
-                    if (cursor == null && !hasMore) total = res.data.comments.size
+                    // v3.7 (C5): R8 recompute DELETED — loading more pages
+                    // never recomputes the total (web rule W3).
                 } else error = friendlyReelsError(res.error?.message, "Couldn't load comments — try again")
             } catch (e: Exception) { error = friendlyReelsError(e, "Couldn't load comments — try again") }
             loadingMore = false
@@ -921,6 +986,28 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
     var showDelete by remember { mutableStateOf(false) }
     var reported by remember { mutableStateOf(false) }
     var deleteError by remember { mutableStateOf<String?>(null) }
+    // v3.7 (C7): 6-reaction picker on reel comments, same as web
+    // (like / love / haha / wow / sad / angry). Tap Like opens the
+    // picker; long-press (550ms, web rule) toggles "like" directly.
+    // The server returns { reaction } only; the count is adjusted locally
+    // and a busy guard blocks double taps. Sending the current reaction
+    // again removes it (server toggles), sending a new one switches it.
+    var pickerOpen by remember { mutableStateOf(false) }
+    var reactionBusy by remember { mutableStateOf(false) }
+    fun applyReaction(type: String) {
+        if (reactionBusy) return
+        val prevReaction = localReaction; val prevCount = localCount
+        val target: String? = if (type == prevReaction) null else type
+        localReaction = target
+        localCount = (prevCount + if (target == null) -1 else if (prevReaction == null) 1 else 0).coerceAtLeast(0)
+        val sendType = target ?: prevReaction ?: "like"
+        reactionBusy = true
+        scope.launch {
+            try { if (!api2.reelCommentReaction(c.id, mapOf("type" to sendType)).success) { localReaction = prevReaction; localCount = prevCount } }
+            catch (_: Exception) { localReaction = prevReaction; localCount = prevCount }
+            finally { reactionBusy = false }
+        }
+    }
     val isOwner = myId != null && c.author?.id == myId
     val canDelete = isOwner || (myId != null && reel.author?.id == myId)
     Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) {
@@ -975,19 +1062,22 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                     }
                 }
                 Spacer(Modifier.height(4.dp))
+                if (pickerOpen) {
+                    Row(Modifier.fillMaxWidth().padding(start = 8.dp, bottom = 4.dp)) {
+                        ReactionPickerPill(32.dp, listOf("like", "love", "haha", "wow", "sad", "angry")) { type -> pickerOpen = false; applyReaction(type) }
+                    }
+                }
                 Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = {
-                        // Backend returns { reaction } only; toggle "like"
-                        // locally and revert on failure.
-                        val prevReaction = localReaction; val prevCount = localCount
-                        val removing = prevReaction == "like"
-                        val switching = prevReaction != null && !removing
-                        localReaction = if (removing) null else "like"
-                        localCount = (prevCount + if (removing) -1 else if (switching) 0 else 1).coerceAtLeast(0)
-                        scope.launch { try { if (!api2.reelCommentReaction(c.id, mapOf("type" to "like")).success) { localReaction = prevReaction; localCount = prevCount } } catch (_: Exception) { localReaction = prevReaction; localCount = prevCount } }
-                    }, contentPadding = PaddingValues(0.dp)) {
-                        if (localReaction != null) { ReactionIcon(localReaction, 16.dp); Spacer(Modifier.width(4.dp)) }
-                        Text("Like", fontSize = 13.sp, fontWeight = if (localReaction != null) FontWeight.SemiBold else FontWeight.Normal, color = if (localReaction != null) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    Box(Modifier.pointerInput(c.id) {
+                        detectTapGestures(
+                            onLongPress = { applyReaction("like") },
+                            onTap = { pickerOpen = !pickerOpen },
+                        )
+                    }) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+                            if (localReaction != null) { ReactionIcon(localReaction, 16.dp); Spacer(Modifier.width(4.dp)) }
+                            Text("Like", fontSize = 13.sp, fontWeight = if (localReaction != null) FontWeight.SemiBold else FontWeight.Normal, color = if (localReaction != null) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        }
                     }
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
@@ -1035,24 +1125,13 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
     }
 }
 
-// v3.5 (R25): counts bytes written so the upload can show a real %.
-private class CountingRequestBody(private val delegate: okhttp3.RequestBody, private val onProgress: (Float) -> Unit) : okhttp3.RequestBody() {
-    override fun contentType() = delegate.contentType()
-    override fun contentLength() = delegate.contentLength()
-    override fun writeTo(sink: okio.BufferedSink) {
-        val total = contentLength()
-        var written = 0L
-        val counting = object : okio.ForwardingSink(sink) {
-            override fun write(source: okio.Buffer, byteCount: Long) { super.write(source, byteCount); written += byteCount; if (total > 0) onProgress(written.toFloat() / total) }
-        }
-        // v3.6 fix 3: Okio 3.x — buffer() is an extension on Sink:
-        // counting.buffer() wraps the ForwardingSink as a BufferedSink,
-        // which is what RequestBody.writeTo() expects.
-        val buffered = counting.buffer()
-        delegate.writeTo(buffered)
-        buffered.flush()
-    }
-}
+// v3.7: CountingRequestBody DELETED — every buffer() approach failed
+// CI (run #101 okio.Okio.buffer deprecated, #102 raw ForwardingSink type
+// mismatch, #103 counting.buffer() unresolved). The upload now sends the
+// plain delegate RequestBody and shows an indeterminate spinner instead
+// of a real % (R25 real-% progress is dropped so the build compiles).
+// No code in this file may reference okio.buffer, Okio.buffer, .buffer(),
+// ForwardingSink or BufferedSink.
 
 // ---------- REEL UPLOAD: video + caption + category (POST /api/reels) ----------
 @Composable
@@ -1077,7 +1156,6 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     // v3.5 (R25/R26/R27): picked-video facts, checked at pick time.
     var videoDurationSec by remember { mutableStateOf<Int?>(null) }
     var videoSizeMb by remember { mutableStateOf<Double?>(null) }
-    var uploadProgress by remember { mutableStateOf<Float?>(null) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -1214,7 +1292,6 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
             scope.launch {
                 try {
                     val uri = videoUri!!
-                    uploadProgress = null
                     val durMs = try { val mmr = MediaMetadataRetriever(); mmr.setDataSource(context, uri); (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 15000L).also { mmr.release() } } catch (_: Exception) { 15000L }
                     // R26: never coerce an over-long video into the limit —
                     // refuse it with a clear message instead.
@@ -1225,7 +1302,7 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                     val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null } ?: "video/mp4"
                     val tmp = File(context.cacheDir, "reel_upload.mp4")
                     input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
-                    val videoPart = MultipartBody.Part.createFormData("video", tmp.name, CountingRequestBody(tmp.asRequestBody(mime.toMediaTypeOrNull())) { p -> uploadProgress = p })
+                    val videoPart = MultipartBody.Part.createFormData("video", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
                     var coverPart: MultipartBody.Part? = null
                     var coverTmp: File? = null
                     if (coverUri != null) {
@@ -1263,12 +1340,12 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (busy) "Uploading..." else "Upload reel", maxLines = 1, softWrap = false) }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
         if (busy) {
+            // v3.7: no real % any more (CountingRequestBody deleted) —
+            // indeterminate spinner while the upload runs.
             Spacer(Modifier.height(12.dp))
-            if (uploadProgress != null) {
-                LinearProgressIndicator(progress = uploadProgress!!, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(4.dp))
-                Text("Uploading… ${(uploadProgress!! * 100).toInt()}%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else DotsLoading()
+            DotsLoading()
+            Spacer(Modifier.height(4.dp))
+            Text("Uploading…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
