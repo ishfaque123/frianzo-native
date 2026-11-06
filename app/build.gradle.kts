@@ -28,8 +28,8 @@ android {
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 26
-        versionName = "4.3"
+        versionCode = 27
+        versionName = "4.4"
     }
 
     buildFeatures { compose = true }

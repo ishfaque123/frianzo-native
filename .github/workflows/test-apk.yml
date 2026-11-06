@@ -1,0 +1,80 @@
+# Test APK on emulator
+#
+# What it does: builds a DEBUG APK, boots a Pixel 6 emulator (API 34 =
+# Android 14, same as the owner's TECNO SPARK 20 Pro+), installs the APK,
+# logs in BY ITSELF with a throwaway temp-mail inbox, opens Reels, scrolls
+# 2-3 reels, and records the screen + screenshots + logcat as artifacts.
+# The parent watches the recording and only then merges to main.
+#
+# Triggers: manual (workflow_dispatch) or any push to a branch named
+# test/**. It NEVER runs on main, and it never touches production data
+# except creating ONE junk test user (see REPORT.md).
+#
+# NOTE: workflow files cannot be pushed with the push tool (403). Commit
+# this file via the GitHub website, same as android.yml was committed.
+
+name: Test APK on emulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "test/**"
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android platform 35 only if missing
+        run: |
+          if [ ! -d "$ANDROID_HOME/platforms/android-35" ] || [ ! -d "$ANDROID_HOME/build-tools/35.0.0" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          fi
+
+      # DEBUG build on purpose: no signing secrets needed, installs fine on
+      # the emulator. The player code is identical in debug/release. The
+      # signed release APK is already built by android.yml on main.
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --build-cache --stacktrace
+
+      - name: Run APK test on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 4096M
+          heap-size: 512M
+          disk-size: 4GB
+          emulator-boot-timeout: 600
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash scripts/test-reels.sh
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence-${{ github.run_number }}
+          path: test-output/
+          if-no-files-found: error
+          retention-days: 14
