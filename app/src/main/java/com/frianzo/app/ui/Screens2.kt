@@ -63,10 +63,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
@@ -350,35 +352,37 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         }
     }
     Column(Modifier.fillMaxSize().background(Color.Black)) {
-        // Live-web header (AUDIT.md): separate black bar, PLAIN-TEXT tabs
-        // 14sp — For You bold, Following medium, NO pill; the active tab
-        // has a 2dp white underline ~22dp wide. Mute / + are 40dp dark
-        // circles with a ~20dp glyph. NO star icon (web has none — Save
-        // lives in the More sheet only).
-        // v3.9: the white 4-icon top bar now comes from the Scaffold, so
-        // this black tabs bar no longer pads for the status bar itself.
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-            listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
-                val sel = feed == v
-                Column(Modifier.clickable { switchFeed(v) }.padding(horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(label, fontSize = 14.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false)
-                    Spacer(Modifier.height(2.dp))
-                    Box(Modifier.width(22.dp).height(2.dp).background(if (sel) Color.White else Color.Transparent))
+        // Live-web header (audit #3): PLAIN-TEXT tabs, 16sp — For You
+        // bold, Following medium, NO pill; NO black bar (the tabs sit on
+        // the page background). NO star icon (web has none — Save lives
+        // in the More sheet only).
+        // v3.9: the white 4-icon top bar now comes from the Scaffold.
+        // v4.0 (audit #3 + owner): NO black bar — the tabs sit directly
+        // on the page background (pure black, the Column's own bg).
+        // Tabs are CENTRED ("beech me" = the Following/For You tabs,
+        // NOT the Follow pill): Following grey 16sp, For You white bold
+        // 16sp, 15dp gap, 37x3dp white underline under the active tab,
+        // 17dp below the white bar, video 7dp below the underline.
+        // The + button is fixed to the viewport top-right (17dp from
+        // the edge, y68-107), NOT in the tabs row. The mute glyph is a
+        // bare overlay on the video area below, not a circle here.
+        // v3.9: mute is PER-REEL (audit #2) — this toggles only the
+        // reel on screen. First reel starts muted, later reels start
+        // unmuted; each reel remembers its own toggle.
+        val currentReelId = reels.getOrNull(session.scrollIndex)?.id
+        val currentMuted = currentReelId?.let { session.isMuted(it, session.scrollIndex == 0) } ?: true
+        Box(Modifier.fillMaxWidth().height(42.dp)) {
+            Row(Modifier.align(Alignment.TopCenter).padding(top = 17.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+                listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
+                    val sel = feed == v
+                    Column(Modifier.clickable { switchFeed(v) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false)
+                        Box(Modifier.width(37.dp).height(3.dp).offset(y = (-4).dp).background(if (sel) Color.White else Color.Transparent))
+                    }
                 }
-                Spacer(Modifier.width(23.dp))
             }
-            Spacer(Modifier.weight(1f))
-            // v3.9: mute is PER-REEL (audit #2) — this button toggles
-            // only the reel on screen. First reel starts muted, later
-            // reels start unmuted; each reel remembers its own toggle.
-            val currentReelId = reels.getOrNull(session.scrollIndex)?.id
-            val currentMuted = currentReelId?.let { session.isMuted(it, session.scrollIndex == 0) } ?: true
-            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { currentReelId?.let { session.updateMuted(it, !currentMuted) } }, contentAlignment = Alignment.Center) {
-                Icon(if (currentMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (currentMuted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(20.dp))
-            }
-            Spacer(Modifier.width(8.dp))
-            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { showUpload = true }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(20.dp))
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { showUpload = true }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(12.dp))
             }
         }
         if (focusError != null) { Text(focusError!!, color = Color(0xFFFCA5A5), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
@@ -393,7 +397,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 Button(onClick = { error = null; load() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
             }
         }
-        if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() } }
+        if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("Loading Frianzo reels", color = Color.White, fontSize = 15.sp); Spacer(Modifier.height(12.dp)); DotsLoading() } } }
         // v3.8 (F9): pull down past the top to refresh the feed.
         PullToRefreshBox(isRefreshing = refreshing, onRefresh = { refreshFeed() }, modifier = Modifier.weight(1f).fillMaxWidth()) {
         if (reels.isNotEmpty()) {
@@ -404,6 +408,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     api2 = api2, reel = reel, myId = myId,
                     isActive = page == listState.firstVisibleItemIndex,
                     muted = session.isMuted(reel.id, page == 0),
+                    onToggleMute = { currentReelId?.let { session.updateMuted(it, !currentMuted) } },
                     dataSaver = dataSaver,
                     onTag = { tag -> notice = "#$tag — tag pages are not in the app yet"; scope.launch { delay(3000); notice = null } },
                     commentCount = reelCommentCounts[reel.id] ?: reel.commentCount,
@@ -438,7 +443,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             }
         } else if (!loading && error == null) {
             // R34: Following with nobody followed gets guidance, not a bare "No reels yet".
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (feed == "following") "Follow people to see their reels here" else "No reels yet", color = Color.White) }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { if (feed == "following") { Text("No reels from people you follow yet", color = Color.White, fontSize = 15.sp); Spacer(Modifier.height(4.dp)); Text("Follow creators to see their reels here.", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp) } else Text("No reels yet", color = Color.White, fontSize = 15.sp) } }
         }
         }
     }
@@ -578,8 +583,9 @@ private fun ReelCaptionText(caption: String, onAuthor: (String) -> Unit = {}, on
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, dataSaver: Boolean = false, onTag: (String) -> Unit = {}, onOpenSaved: () -> Unit = {}) {
+private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, onToggleMute: () -> Unit = {}, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, dataSaver: Boolean = false, onTag: (String) -> Unit = {}, onOpenSaved: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var liked by remember(reel.id) { mutableStateOf(reel.liked) }
@@ -617,6 +623,21 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     // allowed). The progress ticker reads player.currentPosition.
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var moreOpen by remember { mutableStateOf(false) }
+    // v4.0 (audit #3): the reel's real video rectangle, so the rail,
+    // author column and progress bar anchor to the VIDEO edges (the
+    // video is centred in the taller item box; the item is taller
+    // than a 9:16 video on a phone). Before the video is prepared
+    // the aspect defaults to 9:16.
+    var pageSize by remember { mutableStateOf(IntSize.Zero) }
+    val videoPw = player?.videoWidth ?: 0
+    val videoPh = player?.videoHeight ?: 0
+    val videoAspect = if (videoPw > 0 && videoPh > 0) videoPw.toFloat() / videoPh else 9f / 16f
+    val videoWidthPx = if (pageSize.width > 0) pageSize.width.toFloat().coerceAtMost(pageSize.height * videoAspect) else 0f
+    val videoHeightPx = if (pageSize.width > 0) pageSize.height.toFloat().coerceAtMost(pageSize.width / videoAspect) else 0f
+    val videoTopOffset = with(LocalDensity.current) { ((pageSize.height - videoHeightPx) / 2f).toDp() }
+    // The video is centred, so the bottom offset equals the top one.
+    val videoBottomOffset = videoTopOffset
+    val videoWidthDp = with(LocalDensity.current) { videoWidthPx.toDp() }
     // v3.8 (F12): Data Saver tap-to-play — the reel waits for a tap.
     var tapToPlay by remember(reel.id) { mutableStateOf(false) }
     // v3.8 (F14): single tap reveals the play/pause controls (web rule);
@@ -704,7 +725,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     }
     // v3.8 (F14): single tap reveals the play/pause controls (web rule) —
     // the centre button does the pausing. Double-tap still toggles like.
-    Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(reel.id) {
+    Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { pageSize = it }.pointerInput(reel.id) {
         detectTapGestures(
             onTap = { controlsVisible = true },
             // R35: double-tap toggles the like (like, or unlike if liked).
@@ -715,6 +736,10 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             key(reel.id, videoRetryKey) {
                 AndroidView(
                     factory = { ctx -> VideoView(ctx).apply {
+                        // v4.0: pure black behind the video, portrait
+                        // AND landscape — a landscape video must never
+                        // show a light area above/below it.
+                        setBackgroundColor(android.graphics.Color.BLACK)
                         setVideoURI(Uri.parse(reel.videoUrl))
                         setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; val em = muted || autoMuted; mp.setVolume(if (em) 0f else 1f, if (em) 0f else 1f); if (resumeMs > 0) mp.seekTo(resumeMs); if (isActive && !paused && (!dataSaver || tapToPlay)) start() }
                         // R1: a broken video reports the error instead of
@@ -725,7 +750,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         // web — it never loops back to the start.
                         setOnCompletionListener { v -> onPosition(0); if (!isLast) onFinished() }
                     } },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().background(Color.Black),
                     update = { view ->
                         val em = muted || autoMuted
                         player?.setVolume(if (em) 0f else 1f, if (em) 0f else 1f)
@@ -778,10 +803,11 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             }
         }
         // v3.8 (F8): seekable progress bar — tap anywhere on it to seek.
-        // Screenshot bug (owner, v3.7): web progress is 4dp, 13dp above
-        // the bottom, white fill on a #404040 track — NOT a bar at the top.
+        // v4.0 (audit #3): 4dp thick, 10dp inset from each VIDEO edge,
+        // white fill on a #404040 track, sitting ON the video's bottom
+        // edge. No scrubber dot, no time label (web has neither).
         if (prepared && durationMs > 0) {
-            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 13.dp).fillMaxWidth().height(16.dp).onSizeChanged { seekWidthPx = it.width }.pointerInput(durationMs) {
+            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = videoBottomOffset).width((videoWidthDp - 20.dp).coerceAtLeast(100.dp)).height(16.dp).onSizeChanged { seekWidthPx = it.width }.pointerInput(durationMs) {
                 detectTapGestures { offset ->
                     if (seekWidthPx > 0) {
                         val ratio = (offset.x / seekWidthPx).coerceIn(0f, 1f)
@@ -789,9 +815,20 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         player?.seekTo(ms); positionMs = ms
                     }
                 }
-            }, contentAlignment = Alignment.CenterStart) {
+            }, contentAlignment = Alignment.BottomStart) {
                 Box(Modifier.fillMaxWidth().height(4.dp).background(Color(0xFF404040)))
                 Box(Modifier.fillMaxWidth((positionMs.toFloat() / durationMs).coerceIn(0f, 1f)).height(4.dp).background(Color.White))
+            }
+        }
+        // v4.0 (audit #3): the mute is a BARE white speaker glyph —
+        // NO circle — fixed 90dp below the white bar (48dp below the
+        // tabs band), 15dp from the right edge. It floats in the black
+        // area above shorter videos; it is NOT anchored to the video.
+        // The 40dp transparent Box is only the tap target; the glyph
+        // sits at its TOP (TopCenter) so it lands exactly at y148.
+        if (isActive) {
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 15.dp).size(40.dp).clickable { onToggleMute() }, contentAlignment = Alignment.TopCenter) {
+                Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(20.dp))
             }
         }
         if (actionMsg != null) {
@@ -805,34 +842,84 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Text("Downloading ${downloadProgress}%", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
             }
         }
-        // Right rail: Like / Comment / Share / Views / Save / More.
-        Column(Modifier.align(Alignment.CenterEnd).padding(end = 14.dp, bottom = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { toggleLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(width = 28.dp, height = 24.dp)) }
-                Text(reelCount(likes), color = Color.White, fontSize = 13.sp)
+        // v4.0 (audit #3): right rail, lower third of the VIDEO — its
+        // bottom is 28dp above the video bottom, its centre 25dp from
+        // the right screen edge (48dp-wide column, 1dp from the edge).
+        // No chip/circle/pill behind any icon; thin white outlines;
+        // counts/labels 13sp; gaps 10dp icon->count, 21dp count->next
+        // icon, 29dp Views->More dots, 18dp dots->"More" label.
+        Column(Modifier.align(Alignment.CenterEnd).padding(end = 1.dp, bottom = 28.dp + videoBottomOffset).width(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.clickable { toggleLike() }, horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(width = 28.dp, height = 24.dp))
+                Spacer(Modifier.height(10.dp))
+                Text(reelCount(likes), color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = onComment) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(width = 26.dp, height = 22.dp)) }
-                Text(reelCount(commentCount), color = Color.White, fontSize = 13.sp)
+            Spacer(Modifier.height(21.dp))
+            Column(Modifier.clickable { onComment() }, horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(23.dp))
+                Spacer(Modifier.height(10.dp))
+                Text(reelCount(commentCount), color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Spacer(Modifier.height(21.dp))
+            Column(Modifier.clickable { shareOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
                 // R11/R6: the share sheet (DM + channels + copy). The count
                 // moves only when a channel is actually tapped, never when
                 // the sheet is opened or the chooser is cancelled.
-                IconButton(onClick = { shareOpen = true }) { Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(width = 26.dp, height = 22.dp)) }
-                Text(if (shares > 0) reelCount(shares) else "Share", color = Color.White, fontSize = if (shares > 0) 13.sp else 12.sp)
+                Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(width = 20.dp, height = 22.dp))
+                Spacer(Modifier.height(10.dp))
+                Text(if (shares > 0) reelCount(shares) else "Share", color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
             }
+            Spacer(Modifier.height(21.dp))
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 // Live web has NO eye icon on Views — number + "Views" only.
-                Text(reelCount(reel.viewCount), color = Color.White, fontSize = 13.sp)
-                Text("Views", color = Color.White, fontSize = 12.sp)
+                Text(reelCount(reel.viewCount), color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
+                Spacer(Modifier.height(10.dp))
+                Text("Views", color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
             }
-            Box {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) { IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White, modifier = Modifier.size(24.dp)) }; Text("More", color = Color.White, fontSize = 12.sp) }
-                DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
-                    DropdownMenuItem(text = { Text("Copy link") }, onClick = { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", reelLink)); showMsg("Link copied") })
-                    // R13: download the watermarked mp4 into Downloads.
-                    DropdownMenuItem(text = { Text("Download") }, onClick = {
+            Spacer(Modifier.height(29.dp))
+            Column(Modifier.clickable { moreOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
+                // v4.0 (audit #3): web More is three horizontal 4dp
+                // dots (20x4 total), NOT a vertical MoreVert icon.
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    repeat(3) { Box(Modifier.size(4.dp).clip(CircleShape).background(Color.White)) }
+                }
+                Spacer(Modifier.height(18.dp))
+                Text("More", color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
+            }
+        }
+        // v4.0 (audit #2/#3): the More sheet is a white bottom sheet,
+        // "More options", with the web rows — NOT a small dropdown menu.
+        // "Saved reels" stays (the only entry to the saved list, owner
+        // rule: no star icon) and "Delete reel" stays for own reels.
+        if (moreOpen) {
+            ModalBottomSheet(onDismissRequest = { moreOpen = false }) {
+                Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Text("More options", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                    HorizontalDivider(color = FrianzoBorder)
+                    if (!reel.category.isNullOrBlank()) MoreSheetRow(Icons.Filled.ThumbUp, "Interested") {
+                        moreOpen = false
+                        scope.launch {
+                            try {
+                                val r = api2.notInterested(mapOf("type" to "interested_category", "value" to (reel.category ?: "")))
+                                if (r.success) showMsg("We'll show you more like this") else showMsg("Couldn't save — try again")
+                            } catch (_: Exception) { showMsg("Couldn't save — try again") }
+                        }
+                    }
+                    MoreSheetRow(Icons.Filled.ThumbDown, "Not interested") {
+                        moreOpen = false
+                        val aid = reel.author?.id
+                        scope.launch {
+                            try {
+                                val r = if (aid != null) api2.notInterested(mapOf("type" to "creator", "value" to aid)) else null
+                                if (r?.success == true) { onHidden(); onNotice("You won't see this again") } else showMsg("Couldn't hide — try again")
+                            } catch (_: Exception) { showMsg("Couldn't hide — try again") }
+                        }
+                    }
+                    MoreSheetRow(Icons.Filled.Bookmark, if (fav) "Remove from saved" else "Save reel") { moreOpen = false; toggleFav() }
+                    MoreSheetRow(Icons.Filled.Bookmark, "Saved reels") { moreOpen = false; onOpenSaved() }
+                    MoreSheetRow(Icons.Filled.Download, "Save video") {
                         moreOpen = false
                         scope.launch {
                             try {
@@ -864,19 +951,9 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 } finally { try { stream.close() } catch (_: Exception) {}; try { body.close() } catch (_: Exception) {}; downloadProgress = -1 }
                             } catch (e: Exception) { downloadProgress = -1; showMsg(friendlyReelsError(e, "Download failed — try again")) }
                         }
-                    })
-                    // R12: "Not interested" hides this reel / creator from the feed.
-                    DropdownMenuItem(text = { Text("Not interested") }, onClick = {
-                        moreOpen = false
-                        val aid = reel.author?.id
-                        scope.launch {
-                            try {
-                                val r = if (aid != null) api2.notInterested(mapOf("type" to "creator", "value" to aid)) else null
-                                if (r?.success == true) { onHidden(); onNotice("You won't see this again") } else showMsg("Couldn't hide — try again")
-                            } catch (_: Exception) { showMsg("Couldn't hide — try again") }
-                        }
-                    })
-                    if (!reel.category.isNullOrBlank()) DropdownMenuItem(text = { Text("Don't recommend this category") }, onClick = {
+                    }
+                    MoreSheetRow(Icons.Filled.Link, "Copy link") { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", reelLink)); showMsg("Link copied") }
+                    if (!reel.category.isNullOrBlank()) MoreSheetRow(Icons.Filled.Block, "Don't recommend this category") {
                         moreOpen = false
                         scope.launch {
                             try {
@@ -884,30 +961,17 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 if (r.success) { onHidden(); onNotice("You won't see this again") } else showMsg("Couldn't hide — try again")
                             } catch (_: Exception) { showMsg("Couldn't hide — try again") }
                         }
-                    })
-                    // v3.8 (F7): "Interested" row alongside Not interested.
-                    if (!reel.category.isNullOrBlank()) DropdownMenuItem(text = { Text("Interested") }, onClick = {
-                        moreOpen = false
-                        scope.launch {
-                            try {
-                                val r = api2.notInterested(mapOf("type" to "interested_category", "value" to (reel.category ?: "")))
-                                if (r.success) showMsg("We'll show you more like this") else showMsg("Couldn't save — try again")
-                            } catch (_: Exception) { showMsg("Couldn't save — try again") }
-                        }
-                    })
-                    // v3.8 (F21): "Save reel" row in the More sheet (web rule).
-                    DropdownMenuItem(text = { Text(if (fav) "Remove from saved" else "Save reel") }, onClick = { moreOpen = false; toggleFav() })
-                    // Owner rule: no star icon in header/rail — the saved
-                    // list opens from this row instead.
-                    DropdownMenuItem(text = { Text("Saved reels") }, onClick = { moreOpen = false; onOpenSaved() })
-                    // R30: report with a real reason + confirmation.
-                    DropdownMenuItem(text = { Text("Report") }, onClick = { moreOpen = false; reportOpen = true })
-                    if (reel.author?.id == myId) DropdownMenuItem(text = { Text("Delete reel", color = Color.Red) }, onClick = { moreOpen = false; showDeleteReel = true })
+                    }
+                    MoreSheetRow(Icons.Filled.Flag, "Report", red = true) { moreOpen = false; reportOpen = true }
+                    if (reel.author?.id == myId) MoreSheetRow(Icons.Filled.Delete, "Delete reel", red = true) { moreOpen = false; showDeleteReel = true }
                 }
             }
         }
         // Bottom-left: author + caption pill.
-        Column(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, end = 72.dp, bottom = 28.dp)) {
+        // v4.0 (web code: overlay is left-0 right-16 p-4): content
+        // starts 16dp from the left and ends 80dp from the right;
+        // the comment pill sits 10dp above the VIDEO bottom.
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 80.dp, bottom = 10.dp + videoBottomOffset)) {
             Row(Modifier.fillMaxWidth().clickable { reel.author?.username?.let { onAuthor(it) } }, verticalAlignment = Alignment.CenterVertically) {
                 FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
                 Spacer(Modifier.width(8.dp))
@@ -915,8 +979,8 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 // The name takes weight(1f) and truncates, so the Follow pill
                 // never clips on a 360dp phone (owner rule).
                 Text(reel.author?.displayName ?: "@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                if (!reel.createdAt.isNullOrBlank()) { Spacer(Modifier.width(4.dp)); Text("· ${reelTimeAgo(reel.createdAt)}", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, softWrap = false) }
                 if (reel.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+                if (!reel.createdAt.isNullOrBlank()) { Spacer(Modifier.width(4.dp)); Text("· ${reelTimeAgo(reel.createdAt)}", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, softWrap = false) }
                 val authorId = reel.author?.id
                 // v3.7 (C10): web rule — the pill shows ONLY while not
                 // following (Follow / Follow Back); it never offers
@@ -926,7 +990,12 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 if (authorId != null && authorId != myId && effectiveFollow != null && effectiveFollow != "self" && effectiveFollow != "following" && effectiveFollow != "friends") {
                     Spacer(Modifier.width(8.dp))
                     val label = if (effectiveFollow == "follow_back") "Follow Back" else "Follow"
-                    Box(Modifier.height(34.dp).clip(RoundedCornerShape(28.dp)).background(Color.White).clickable {
+                    // v4.0 (audit #3 + web code): black fill, 1dp white
+                    // border, white text — BESIDE the name on the SAME
+                    // row (owner rule, final word: never below the
+                    // name, never on a second line; the name truncates
+                    // so the pill never wraps).
+                    Box(Modifier.height(34.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black).border(1.dp, Color.White, RoundedCornerShape(28.dp)).clickable {
                         val prev = effectiveFollow
                         authorFollow = "following"
                         onFollowChange(authorId, "following")
@@ -940,8 +1009,8 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 } else { authorFollow = prev; onFollowChange(authorId, prev) }
                             } catch (_: Exception) { authorFollow = prev; onFollowChange(authorId, prev) }
                         }
-                    }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-                        Text(label, color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
+                        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
                 }
             }
@@ -962,12 +1031,12 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Box(Modifier.height(38.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.45f)).clickable { onComment() }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.35f)).border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(28.dp)).clickable { onComment() }.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
                 // v3.8 (F18): the pill has a 20px speech-bubble icon (web rule).
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Write a comment...", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Write a comment...", color = Color.White, fontSize = 14.sp, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -1020,6 +1089,17 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 dismissButton = { TextButton(onClick = { showDeleteReel = false }) { Text("Cancel") } },
             )
         }
+    }
+}
+
+// v4.0: one row of the More bottom sheet — 18dp icon, 15sp label,
+// ~48dp pitch, like the web sheet (audit #1).
+@Composable
+private fun MoreSheetRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, red: Boolean = false, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, tint = if (red) Color.Red else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, fontSize = 15.sp, color = if (red) Color.Red else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1230,13 +1310,15 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
     ModalBottomSheet(onDismissRequest = onClose) {
         // Same 0.85f sheet height as the post comments sheet: one shared UI.
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Spacer(Modifier.weight(1f))
-                // v3.8 (F19): web header is "N comments", or
-                // "Join the conversation" when there are none yet.
-                Text(if (total > 0) "$total comments" else "Join the conversation", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            // v4.0 (audit #2): web header is "Comments" with the
+            // count ("N comments" / "Join the conversation") below
+            // it as a subtitle — not the count alone.
+            Box(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    Text(if (total > 0) "$total comments" else "Join the conversation", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd)) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
@@ -1438,6 +1520,7 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; editDraft = c.content ?: ""; editing = true })
                             if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; showDelete = true })
+                            DropdownMenuItem(text = { Text("Reply") }, onClick = { menuOpen = false; onReply(c) })
                             DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")) })
                             DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = {
                                 menuOpen = false

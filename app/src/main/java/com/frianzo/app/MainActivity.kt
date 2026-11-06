@@ -230,9 +230,11 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 HorizontalDivider()
             }
             } else {
-                // v3.9: reels-only white 4-icon bar (see the note above topBar).
-                Surface(color = MaterialTheme.colorScheme.surface) {
-                    Row(Modifier.fillMaxWidth().statusBarsPadding().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceAround) {
+                // v4.0 (audit #3): white bar, 58dp tall + 1dp #E5E7EB
+                // bottom border; icons at web sizes (NOT 24dp).
+                Surface(color = Color.White) {
+                    Column {
+                    Row(Modifier.fillMaxWidth().statusBarsPadding().height(58.dp), horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.CenterVertically) {
                         val reelsNav = listOf(
                             Triple(Tab.FEED, Icons.Outlined.Home, "Home"),
                             Triple(Tab.REELS, Icons.Filled.OndemandVideo, "Reels"),
@@ -243,7 +245,14 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                             val selected = tab == t
                             val color = if (selected) Color(0xFF0F172A) else Color(0xFF94A3B8)
                             Box(contentAlignment = Alignment.TopEnd, modifier = Modifier.clickable { tab = t; openChat = null; openProfile = null }.padding(8.dp)) {
-                                Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(24.dp))
+                                // v4.0 (audit #3): web icon sizes.
+                                val (iw, ih) = when (t) {
+                                    Tab.FEED -> 20.dp to 21.dp
+                                    Tab.REELS -> 20.dp to 20.dp
+                                    Tab.NOTIFS -> 18.dp to 21.dp
+                                    else -> 16.dp to 18.dp
+                                }
+                                Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(width = iw, height = ih))
                                 if (t == Tab.NOTIFS && unread > 0) {
                                     Badge(containerColor = FrianzoBadgeRed, modifier = Modifier.offset(x = 8.dp, y = (-4).dp)) {
                                         Text(if (unread > 99) "99+" else "$unread", fontSize = 10.sp, maxLines = 1, softWrap = false)
@@ -251,6 +260,8 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                                 }
                             }
                         }
+                    }
+                    HorizontalDivider(color = Color(0xFFE5E7EB), thickness = 1.dp)
                     }
                 }
             }
