@@ -51,7 +51,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.ui.onSizeChanged
+import androidx.compose.ui.layout.onSizeChanged
 import android.graphics.Bitmap
 import android.util.Base64
 import java.io.ByteArrayOutputStream
@@ -143,7 +143,7 @@ class ReelsSession(context: android.content.Context) {
         tabScroll = tabScroll + (feedKey to scrollIndex)
     }
 }
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}) {
     val context = LocalContext.current
