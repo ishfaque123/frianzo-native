@@ -108,10 +108,12 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var openPostId by remember { mutableStateOf<String?>(null) }
     var focusReelId by remember { mutableStateOf<String?>(null) }
     var pendingReelUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // v3.6: context must be declared BEFORE reelsSession uses it
+    // (v3.5 build failed: MainActivity.kt:112 used it first).
+    val context = LocalContext.current
     // v3.5 (R2): the reels session survives tab/profile/chat switches.
     val reelsSession = remember { ReelsSession(context) }
     var myProfile by remember { mutableStateOf<PublicProfile?>(null) }
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // v3.1: POST_NOTIFICATIONS is asked ONCE, right after login — never at
     // launch, never again. (Push delivery itself still needs the Firebase

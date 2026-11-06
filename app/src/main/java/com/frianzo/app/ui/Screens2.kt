@@ -17,6 +17,8 @@ import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
@@ -68,6 +70,26 @@ import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
+
+// v3.6 (U2): never show raw exception / DNS text to users in reels.
+// Map any failure to a short friendly sentence; the raw message stays
+// in logs only. Short server messages are already friendly, so they
+// pass through unchanged. Every error state keeps its Retry button.
+private fun friendlyReelsError(raw: String?, fallback: String): String {
+    val msg = raw.orEmpty()
+    val lower = msg.lowercase()
+    return when {
+        "unable to resolve host" in lower || "unknownhost" in lower ||
+        "no address associated" in lower || "failed to connect" in lower ||
+        "unable to connect" in lower || "network" in lower ||
+        "timeout" in lower || "connection reset" in lower ->
+            "No internet connection — check your connection and retry"
+        msg.isNotBlank() && msg.length <= 100 && "exception" !in lower -> msg
+        else -> fallback
+    }
+}
+private fun friendlyReelsError(e: Throwable?, fallback: String): String =
+    friendlyReelsError(e?.message, fallback)
 
 // ---------- REELS (v2.9): full-screen BLACK vertical snap paging, like the web ----------
 // One reel per screen, auto-play the current reel, progress bar, mute
@@ -130,12 +152,12 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     offset += res.data.reels.size
                     hasMore = res.data.hasMore
                 } else {
-                    val msg = res.error?.message ?: "Reels failed"
+                    val msg = friendlyReelsError(res.error?.message, "Couldn't load reels — try again")
                     if (reels.isEmpty()) error = msg else loadMoreError = msg
                 }
                 if (res.success && res.data != null) loadMoreError = null
             } catch (e: Exception) {
-                val msg = e.message ?: "Reels failed"
+                val msg = friendlyReelsError(e, "Couldn't load reels — try again")
                 if (reels.isEmpty()) error = msg else loadMoreError = msg
             }
             finally { loading = false }
@@ -174,7 +196,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                         listState.scrollToItem(0)
                         onFocusConsumed()
                     } else { focusError = "Reel not found"; onFocusConsumed(); scope.launch { delay(3000); focusError = null } }
-                } catch (e: Exception) { focusError = e.message ?: "Reel not found"; onFocusConsumed(); scope.launch { delay(3000); focusError = null } }
+                } catch (e: Exception) { focusError = friendlyReelsError(e, "Reel not found"); onFocusConsumed(); scope.launch { delay(3000); focusError = null } }
             }
         }
     }
@@ -216,16 +238,16 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
                 val sel = feed == v
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.15f)).clickable { if (feed != v) feed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.Black else Color.White, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, color = if (sel) Color.Black else Color.White, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.width(8.dp))
             }
             Spacer(Modifier.weight(1f))
             // R20: mute is saved on the phone, so it stays as the user left it.
-            IconButton(onClick = { session.setMuted(!muted) }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
+            IconButton(onClick = { session.setMuted(!muted) }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(24.dp)) }
             // R14: saved reels — the star saves a reel, this opens the list.
             IconButton(onClick = { showSaved = true }) { Icon(Icons.Filled.Star, contentDescription = "Saved reels", tint = Color.White, modifier = Modifier.size(24.dp)) }
-            IconButton(onClick = { showUpload = true }) { Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(28.dp)) }
+            IconButton(onClick = { showUpload = true }) { Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(24.dp)) }
         }
         if (focusError != null) { Text(focusError!!, color = Color(0xFFFCA5A5), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         if (notice != null) { Text(notice!!, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
@@ -234,7 +256,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(error!!, color = Color.White)
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = { error = null; load() }, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
+                Button(onClick = { error = null; load() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
             }
         }
         if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() } }
@@ -269,7 +291,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(loadMoreError!!, color = Color.White, fontSize = 13.sp)
                         Spacer(Modifier.height(8.dp))
-                        OutlinedButton(onClick = { loadMoreError = null; load() }, shape = RoundedCornerShape(28.dp)) { Text("Retry", color = Color.White, maxLines = 1, softWrap = false) }
+                        OutlinedButton(onClick = { loadMoreError = null; load() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(28.dp)) { Text("Retry", color = Color.White, maxLines = 1, softWrap = false) }
                     }
                 }
             }
@@ -427,7 +449,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(videoError!!, color = Color.White, fontSize = 15.sp)
                         Spacer(Modifier.height(12.dp))
-                        Button(onClick = { videoError = null; prepared = false; player = null; videoRetryKey += 1 }, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
+                        Button(onClick = { videoError = null; prepared = false; player = null; videoRetryKey += 1 }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
                     }
                 }
             } else if (!prepared) {
@@ -460,7 +482,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // Right rail: Like / Comment / Share / Views / Save / More.
         Column(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp, bottom = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { doLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(32.dp)) }
+                IconButton(onClick = { doLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(30.dp)) }
                 Text(reelCount(likes), color = Color.White, fontSize = 12.sp)
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -481,9 +503,9 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             IconButton(onClick = {
                 val prevFav = fav; fav = !prevFav; showMsg(if (!prevFav) "Saved" else "Removed from saved")
                 scope.launch { try { val r = api2.toggleReelFavorite(reel.id); if (r.success && r.data != null) fav = r.data.favorited else { fav = prevFav; showMsg("Couldn't save — try again") } } catch (_: Exception) { fav = prevFav; showMsg("Couldn't save — try again") } }
-            }) { Icon(if (fav) Icons.Filled.Star else Icons.Outlined.StarBorder, contentDescription = "Save reel", tint = if (fav) Color(0xFFF59E0B) else Color.White, modifier = Modifier.size(28.dp)) }
+            }) { Icon(if (fav) Icons.Filled.Star else Icons.Outlined.StarBorder, contentDescription = "Save reel", tint = if (fav) Color(0xFFF59E0B) else Color.White, modifier = Modifier.size(30.dp)) }
             Box {
-                IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White) }
+                IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White, modifier = Modifier.size(30.dp)) }
                 DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
                     DropdownMenuItem(text = { Text("Copy link") }, onClick = { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", reelLink)); showMsg("Link copied") })
                     // R13: download the watermarked mp4 into Downloads.
@@ -502,7 +524,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 if (uri == null) { showMsg("Download failed"); return@launch }
                                 val stream = body.byteStream()
                                 try { context.contentResolver.openOutputStream(uri)?.use { out -> stream.copyTo(out) }; showMsg("Downloaded") } finally { try { stream.close() } catch (_: Exception) {}; try { body.close() } catch (_: Exception) {} }
-                            } catch (e: Exception) { showMsg(e.message ?: "Download failed") }
+                            } catch (e: Exception) { showMsg(friendlyReelsError(e, "Download failed — try again")) }
                         }
                     })
                     // R12: "Not interested" hides this reel / creator from the feed.
@@ -552,7 +574,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 else authorFollow = prev
                             } catch (_: Exception) { authorFollow = prev }
                         }
-                    }.padding(horizontal = 10.dp, vertical = 4.dp)) {
+                    }.padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(label, color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
                 }
@@ -636,7 +658,7 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
                 Button(
                     onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); scope.launch { delay(2000); copied = false } },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight),
                 ) { Text(if (copied) "Copied!" else "Copy link") }
             }
             Spacer(Modifier.height(12.dp))
@@ -695,8 +717,8 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
         scope.launch {
             try {
                 val r = api2.myFavoriteReels()
-                if (r.success && r.data != null) reels = r.data.reels ?: emptyList() else error = r.error?.message ?: "Couldn't load saved reels"
-            } catch (e: Exception) { error = e.message ?: "Couldn't load saved reels" }
+                if (r.success && r.data != null) reels = r.data.reels ?: emptyList() else error = friendlyReelsError(r.error?.message, "Couldn't load saved reels")
+            } catch (e: Exception) { error = friendlyReelsError(e, "Couldn't load saved reels") }
             finally { loading = false }
         }
     }
@@ -715,7 +737,7 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(error!!, fontSize = 14.sp, color = Color.Red)
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = { error = null; load() }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
+                    Button(onClick = { error = null; load() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
                 }
             }
             else if (reels.isEmpty()) { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No saved reels yet. Tap the star on a reel to save it here.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
@@ -779,8 +801,8 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                     // the header count from what was actually loaded once
                     // the whole list is in (no more pages).
                     if (cursor == null && !hasMore) total = res.data.comments.size
-                } else error = res.error?.message
-            } catch (e: Exception) { error = e.message }
+                } else error = friendlyReelsError(res.error?.message, "Couldn't load comments — try again")
+            } catch (e: Exception) { error = friendlyReelsError(e, "Couldn't load comments — try again") }
             loadingMore = false
             loadingFirst = false
         }
@@ -819,19 +841,19 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         val isExpanded = c.id in expandedIds
                         Column(Modifier.fillMaxWidth().padding(start = 40.dp, top = 2.dp)) {
                             if (!isExpanded) {
-                                TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${replies.size} ${if (replies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
+                                TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)) { Text("View ${replies.size} ${if (replies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                             } else {
                                 replies.forEach { r ->
                                     ReelCommentRow(api2, r, reel, myId, isReply = true, parentAuthor = c.author, followStatus = followStates[r.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0); onCommentDeleted() })
                                 }
-                                TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
+                                TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                             }
                         }
                     }
                 }
                 if (hasMore) item {
                     Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        if (loadingMore) DotsLoading() else OutlinedButton(onClick = { load(nextCursor) }, shape = RoundedCornerShape(28.dp)) { Text("Load more comments", maxLines = 1, softWrap = false) }
+                        if (loadingMore) DotsLoading() else OutlinedButton(onClick = { load(nextCursor) }, modifier = Modifier.height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(28.dp)) { Text("Load more comments", maxLines = 1, softWrap = false) }
                     }
                 }
                 if (error != null) item { Text(error!!, fontSize = 13.sp, color = Color.Red, modifier = Modifier.padding(vertical = 8.dp)) }
@@ -845,7 +867,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         },
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f)
                     )
-                    IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    IconButton(onClick = { replyTo = null }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 Spacer(Modifier.height(8.dp))
             }
@@ -874,8 +896,8 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         scope.launch {
                             try {
                                 val res = api2.addReelComment(reel.id, CommentCreateRequest(text, parent))
-                                if (res.success) { total += 1; onCommentAdded(); load() } else error = res.error?.message ?: "Could not send comment"
-                            } catch (e: Exception) { error = e.message; draft = text }
+                                if (res.success) { total += 1; onCommentAdded(); load() } else error = friendlyReelsError(res.error?.message, "Could not send comment")
+                            } catch (e: Exception) { error = friendlyReelsError(e, "Could not send comment"); draft = text }
                         }
                     },
                 ) { Text("Send", maxLines = 1, softWrap = false) }
@@ -928,7 +950,7 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                                                 } catch (_: Exception) {}
                                             }
                                         }
-                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
                                     Text(if (isFollowBack) "Follow Back" else "Following", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (isFollowBack) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                                 }
@@ -974,7 +996,7 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                     Text(reelTimeAgo(c.createdAt), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(8.dp))
                     Box {
-                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; editDraft = c.content ?: ""; editing = true })
                             if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; showDelete = true })
@@ -1003,8 +1025,8 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                         try {
                             val r = api2.deleteReelComment(c.id)
                             if (r.success) { onChanged(); onDeleted() }
-                            else deleteError = r.error?.message ?: "Could not delete comment"
-                        } catch (e: Exception) { deleteError = e.message ?: "Could not delete comment" }
+                            else deleteError = friendlyReelsError(r.error?.message, "Could not delete comment")
+                        } catch (e: Exception) { deleteError = friendlyReelsError(e, "Could not delete comment") }
                     }
                 }) { Text("Delete", color = Color.Red) }
             },
@@ -1023,7 +1045,9 @@ private class CountingRequestBody(private val delegate: okhttp3.RequestBody, pri
         val counting = object : okio.ForwardingSink(sink) {
             override fun write(source: okio.Buffer, byteCount: Long) { super.write(source, byteCount); written += byteCount; if (total > 0) onProgress(written.toFloat() / total) }
         }
-        val buffered = okio.buffer(counting)
+        // v3.6: okio.buffer(...) does not resolve in Okio 3.x
+        // (okhttp 4.12.0) — buffer() lives on the Okio object.
+        val buffered = okio.Okio.buffer(counting)
         delegate.writeTo(buffered)
         buffered.flush()
     }
@@ -1077,7 +1101,7 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
             videoSizeMb = if (size > 0) size / 1024.0 / 1024.0 else null
             trimStartF = 0f; trimEndF = durSec.toFloat()
             if (durSec > maxSec) { message = "This video is ${durSec}s — reels can be ${maxSec}s at most. Please pick a shorter video."; videoUri = null; lastCheckedUri = null; videoDurationSec = null }
-        } catch (e: Exception) { message = e.message ?: "Couldn't read this video" }
+        } catch (e: Exception) { message = friendlyReelsError(e, "Couldn't read this video") }
     }
     LaunchedEffect(videoUri) { val u = videoUri; if (u != null) checkVideo(u) }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) videoUri = uri }
@@ -1102,7 +1126,10 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         val u = createVideoUri(context)
         if (u != null) { recordUri = u; takeVideo.launch(Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply { putExtra(MediaStore.EXTRA_OUTPUT, u); addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }) } else message = "Could not start camera"
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+    // v3.6 (U1): the upload form is ~850-900dp tall with a video
+    // picked — scroll it so Trim and the Upload button stay reachable
+    // on small phones.
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Cancel", maxLines = 1, softWrap = false) }
             Text("Upload reel", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1115,9 +1142,14 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         // R25: a muted looping preview of the picked video + its length/size.
         if (videoUri != null) {
             Spacer(Modifier.height(12.dp))
-            Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
-                key(videoUri) {
-                    AndroidView(factory = { ctx -> VideoView(ctx).apply { setVideoURI(videoUri); setOnPreparedListener { mp -> mp.setVolume(0f, 0f); mp.isLooping = true; start() } } }, modifier = Modifier.fillMaxSize())
+            // v3.6 (U3): a real 9:16 preview (180x320dp, centred)
+            // instead of the 200dp letterbox where a 9:16 video
+            // rendered only ~112dp wide with black bars.
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Box(Modifier.height(320.dp).aspectRatio(9f / 16f).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
+                    key(videoUri) {
+                        AndroidView(factory = { ctx -> VideoView(ctx).apply { setVideoURI(videoUri); setOnPreparedListener { mp -> mp.setVolume(0f, 0f); mp.isLooping = true; start() } } }, modifier = Modifier.fillMaxSize())
+                    }
                 }
             }
             videoDurationSec?.let { d -> Spacer(Modifier.height(4.dp)); Text("${d}s" + (videoSizeMb?.let { s -> " · %.1f MB".format(s) } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -1224,7 +1256,7 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                     if (!res.success) throw Exception(res.error?.message ?: "Upload failed")
                     // R29: hand the new reel's id back so the feed opens it.
                     onDone(res.data?.reel?.id)
-                } catch (e: Exception) { message = e.message ?: "Upload failed" }
+                } catch (e: Exception) { message = friendlyReelsError(e, "Upload failed — try again") }
                 finally { busy = false }
             }
         }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (busy) "Uploading..." else "Upload reel", maxLines = 1, softWrap = false) }
