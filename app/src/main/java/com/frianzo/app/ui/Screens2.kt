@@ -318,10 +318,22 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         // The flow also watches reels.size: when the first page loads the
         // index stays 0, so without this the first reel would never get
         // its view recorded until the user swipes.
+        // v4.3: prevPage remembers the last seen page, so the collector
+        // can tell a real scroll (page changed) from a list refresh
+        // (load-more appends, same page) — only a real scroll means the
+        // previous reel was left and is safe to cache offline.
+        var prevPage = -1
         snapshotFlow { listState.firstVisibleItemIndex to reels.size }.collect { (page, _) ->
             val now = System.currentTimeMillis()
             // Finalise the reel just left, if it was watched >= 1s.
             val prevId = watchReelId
+            // v4.3 (black screen): the user scrolled to a different reel,
+            // so the one just left is no longer playing and may be cached
+            // for offline playback. Never while it is the active one: a
+            // full-file download on a slow link starves the player's
+            // progressive stream (it prepares on metadata, then no frame
+            // ever arrives and the surface stays black, with no error).
+            val scrolledAway = prevId != null && prevPage >= 0 && page != prevPage
             if (prevId != null) {
                 val sec = ((now - watchStartMs) / 1000).toInt()
                 if (sec >= 1) {
@@ -333,7 +345,14 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                         } catch (_: Exception) {}
                     }
                 }
+                if (scrolledAway) {
+                    val prevReel = reels.firstOrNull { it.id == prevId }
+                    if (prevReel != null) {
+                        scope.launch(Dispatchers.IO) { saveOfflineReelIfUnmetered(context, prevReel) }
+                    }
+                }
             }
+            prevPage = page
             val reel = reels.getOrNull(page) ?: run { watchReelId = null; return@collect }
             watchReelId = reel.id
             watchStartMs = now
@@ -346,8 +365,6 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                         if (vr.success && vc != null) reels = reels.map { if (it.id == reel.id) it.copy(viewCount = vc) else it }
                     } catch (_: Exception) {}
                 }
-                // v3.8 (F11): cache the watched reel for offline playback.
-                scope.launch(Dispatchers.IO) { saveOfflineReel(context, reel) }
             }
         }
     }
@@ -519,6 +536,24 @@ private fun offlineReelsDir(context: android.content.Context): File {
     return d
 }
 
+// v4.3 (black screen): the offline cache may only download on an
+// unmetered network (WiFi). A full-file download on a slow metered link
+// starves the player's progressive stream, so the player prepares on
+// metadata and then shows only black, with no error. The caller only
+// ever passes a reel the user has already scrolled away from.
+private fun isUnmeteredNetwork(context: android.content.Context): Boolean {
+    return try {
+        val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    } catch (_: Exception) { false }
+}
+
+private fun saveOfflineReelIfUnmetered(context: android.content.Context, reel: Reel) {
+    if (!isUnmeteredNetwork(context)) return
+    saveOfflineReel(context, reel)
+}
+
 private fun saveOfflineReel(context: android.content.Context, reel: Reel) {
     try {
         val url = reel.videoUrl ?: return
@@ -526,7 +561,14 @@ private fun saveOfflineReel(context: android.content.Context, reel: Reel) {
         if (!file.exists() || file.length() == 0L) {
             val conn = java.net.URL(url).openConnection()
             conn.connectTimeout = 8000; conn.readTimeout = 15000
-            conn.getInputStream().use { inp -> file.outputStream().use { out -> inp.copyTo(out) } }
+            try {
+                conn.getInputStream().use { inp -> file.outputStream().use { out -> inp.copyTo(out) } }
+            } catch (_: Exception) {
+                // v4.3: a partial download is NOT a cached reel — delete it
+                // so it is never registered (or played back) as complete.
+                try { file.delete() } catch (_: Exception) {}
+                return
+            }
         }
         val prefs = context.getSharedPreferences("frianzo_reels", android.content.Context.MODE_PRIVATE)
         val gson = com.google.gson.Gson()
@@ -602,6 +644,11 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     var paused by remember { mutableStateOf(false) }
     var burst by remember { mutableStateOf(false) }
     var prepared by remember { mutableStateOf(false) }
+    // v4.3 (black screen): true while the prepared player is stalled
+    // waiting for data (MEDIA_INFO_BUFFERING_START). A prepared player
+    // shows only black while it starves — with no error — so the stall
+    // must be visible instead of a silent black surface.
+    var buffering by remember(reel.id) { mutableStateOf(false) }
     // v3.5 (R1): a video that fails to load shows an error + Retry, never
     // an endless spinner. actionMsg is the small feedback pill (R7/R32/R33).
     var videoError by remember(reel.id) { mutableStateOf<String?>(null) }
@@ -737,10 +784,28 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     // Progress ticker: reads the real VideoView position while active.
     // v4.2: getCurrentPosition() throws IllegalStateException on a
     // dead / not-yet-ready player — never let the ticker kill the app.
+    // v4.3 (black screen): stall watchdog — a prepared, playing player
+    // whose position has not moved for ~5s is starved of data (a stall
+    // fires no onError, so the screen would stay black forever). Show
+    // the existing error + Retry UI so the user can retry instead of
+    // staring at black. Fires once per player (stallReported resets on
+    // Retry via videoRetryKey, and on a new reel via reel.id). The
+    // existing 1.5s auto-retry then recreates the player once, with no
+    // competing download running during the retry.
+    var stallReported by remember(reel.id, videoRetryKey) { mutableStateOf(false) }
     LaunchedEffect(isActive, prepared) {
+        var lastPos = -1
+        var lastMoveMs = System.currentTimeMillis()
         while (isActive && prepared) {
             delay(200)
-            positionMs = try { player?.currentPosition ?: positionMs } catch (_: Exception) { positionMs }
+            val pos = try { player?.currentPosition ?: positionMs } catch (_: Exception) { positionMs }
+            positionMs = pos
+            val playing = try { player?.isPlaying == true } catch (_: Exception) { false }
+            if (pos != lastPos) { lastPos = pos; lastMoveMs = System.currentTimeMillis() }
+            else if (playing && !stallReported && !paused && videoError == null && System.currentTimeMillis() - lastMoveMs >= 5000) {
+                stallReported = true
+                videoError = "Couldn't play this video"
+            }
         }
     }
     // v3.8 (F14): single tap reveals the play/pause controls (web rule) —
@@ -761,10 +826,21 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         // show a light area above/below it.
                         setBackgroundColor(android.graphics.Color.BLACK)
                         setVideoURI(Uri.parse(reel.videoUrl))
-                        setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; val em = muted || autoMuted; mp.setVolume(if (em) 0f else 1f, if (em) 0f else 1f); if (resumeMs > 0) mp.seekTo(resumeMs); if (isActive && !paused && (!dataSaver || tapToPlay)) start() }
+                        setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; buffering = false; val em = muted || autoMuted; mp.setVolume(if (em) 0f else 1f, if (em) 0f else 1f); if (resumeMs > 0) mp.seekTo(resumeMs); if (isActive && !paused && (!dataSaver || tapToPlay)) start() }
                         // R1: a broken video reports the error instead of
                         // spinning forever.
-                        setOnErrorListener { _, _, _ -> player = null; prepared = false; videoError = "Couldn't play this video"; true }
+                        setOnErrorListener { _, _, _ -> player = null; prepared = false; buffering = false; videoError = "Couldn't play this video"; true }
+                        // v4.3 (black screen): a prepared player can stall
+                        // waiting for data without ever firing onError — it
+                        // then shows only black. Surface the stall so the
+                        // user sees "Buffering…" instead of a black screen.
+                        setOnInfoListener { _, what, _ ->
+                            when (what) {
+                                MediaPlayer.MEDIA_INFO_BUFFERING_START -> { buffering = true; true }
+                                MediaPlayer.MEDIA_INFO_BUFFERING_END -> { buffering = false; true }
+                                else -> false
+                            }
+                        }
                         // R18: a finished reel moves to the next one.
                         // v3.7 (C11): on the LAST reel playback STOPS, like
                         // web — it never loops back to the start.
@@ -798,6 +874,17 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             } else if (!prepared) {
                 reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() }
+            } else if (buffering) {
+                // v4.3 (black screen): the prepared player is waiting for
+                // data — show a spinner + "Buffering…" over the black
+                // surface instead of silent black.
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        DotsLoading()
+                        Spacer(Modifier.height(12.dp))
+                        Text("Buffering…", color = Color.White, fontSize = 15.sp)
+                    }
+                }
             }
         } else {
             reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
