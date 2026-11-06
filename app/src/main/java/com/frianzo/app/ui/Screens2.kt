@@ -369,39 +369,25 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         }
     }
     Column(Modifier.fillMaxSize().background(Color.Black)) {
-        // Live-web header (audit #3): PLAIN-TEXT tabs, 16sp — For You
-        // bold, Following medium, NO pill; NO black bar (the tabs sit on
-        // the page background). NO star icon (web has none — Save lives
-        // in the More sheet only).
+        // v4.6 (owner): Following / For You header — NO black background
+        // and NO underline under the active tab. The old 42dp header
+        // strip sat in this black Column, so it read as a black band
+        // under the white top bar. Now the header OVERLAYS the video
+        // (transparent, like the web's absolute header) — see the overlay
+        // Box at the bottom of this function. The web has a small 24x2px
+        // underline under the active tab, but the owner ordered it
+        // removed, so it is gone here. NO star icon (web has none).
         // v3.9: the white 4-icon top bar now comes from the Scaffold.
-        // v4.0 (audit #3 + owner): NO black bar — the tabs sit directly
-        // on the page background (pure black, the Column's own bg).
-        // Tabs are CENTRED ("beech me" = the Following/For You tabs,
-        // NOT the Follow pill): Following grey 16sp, For You white bold
-        // 16sp, 15dp gap, 37x3dp white underline under the active tab,
-        // 17dp below the white bar, video 7dp below the underline.
+        // Tabs are CENTRED: Following grey 16sp, For You white bold
+        // 16sp, 15dp gap, 17dp below the white bar, sitting on the video.
         // The + button is fixed to the viewport top-right (17dp from
-        // the edge, y68-107), NOT in the tabs row. The mute glyph is a
-        // bare overlay on the video area below, not a circle here.
+        // the edge), NOT in the tabs row. The mute glyph is a bare
+        // overlay on the video area below, not a circle here.
         // v3.9: mute is PER-REEL (audit #2) — this toggles only the
         // reel on screen. First reel starts muted, later reels start
         // unmuted; each reel remembers its own toggle.
         val currentReelId = reels.getOrNull(session.scrollIndex)?.id
         val currentMuted = currentReelId?.let { session.isMuted(it, session.scrollIndex == 0) } ?: true
-        Box(Modifier.fillMaxWidth().height(42.dp)) {
-            Row(Modifier.align(Alignment.TopCenter).padding(top = 17.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) {
-                listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
-                    val sel = feed == v
-                    Column(Modifier.clickable { switchFeed(v) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false)
-                        Box(Modifier.width(37.dp).height(3.dp).offset(y = (-4).dp).background(if (sel) Color.White else Color.Transparent))
-                    }
-                }
-            }
-            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { showUpload = true }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(12.dp))
-            }
-        }
         if (focusError != null) { Text(focusError!!, color = Color(0xFFFCA5A5), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         // v3.8 (F11): "Offline" badge when the feed is served from cache.
         if (offline) { Text("Offline — showing saved reels", color = Color(0xFFFCA5A5), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
@@ -416,7 +402,9 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         }
         if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("Loading Frianzo reels", color = Color.White, fontSize = 15.sp); Spacer(Modifier.height(12.dp)); DotsLoading() } } }
         // v3.8 (F9): pull down past the top to refresh the feed.
-        PullToRefreshBox(isRefreshing = refreshing, onRefresh = { refreshFeed() }, modifier = Modifier.weight(1f).fillMaxWidth()) {
+        // v4.6: the video area is a Box so the header can overlay it.
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+        PullToRefreshBox(isRefreshing = refreshing, onRefresh = { refreshFeed() }, modifier = Modifier.fillMaxSize()) {
         if (reels.isNotEmpty()) {
             LazyColumn(state = listState, flingBehavior = flingBehavior, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(reels, key = { _, r -> r.id }) { page, reel ->
@@ -433,6 +421,9 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     onFollowChange = { aid, st -> authorFollowStates = authorFollowStates + (aid to st) },
                     onAuthor = onAuthor,
                     onComment = { reelComment = reel },
+                    // v4.6: like state is hoisted into the reels list
+                    // (web's updateLike) so it survives item recreation.
+                    onLikeChange = { id, l, c -> reels = reels.map { if (it.id == id) it.copy(liked = l, likeCount = c) else it } },
                     onOpenSaved = { showSaved = true },
                     onDeleted = { reels = reels.filter { it.id != reel.id } },
                     // R19: resume from where this reel was left.
@@ -461,6 +452,20 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         } else if (!loading && error == null) {
             // R34: Following with nobody followed gets guidance, not a bare "No reels yet".
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { if (feed == "following") { Text("No reels from people you follow yet", color = Color.White, fontSize = 15.sp); Spacer(Modifier.height(4.dp)); Text("Follow creators to see their reels here.", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp) } else Text("No reels yet", color = Color.White, fontSize = 15.sp) } }
+        }
+        }
+        // v4.6: header overlay — transparent, on the video (no black bar,
+        // no underline; see the note at the top of this function).
+        Box(Modifier.fillMaxWidth().height(42.dp).align(Alignment.TopCenter)) {
+            Row(Modifier.align(Alignment.TopCenter).padding(top = 17.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+                listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
+                    val sel = feed == v
+                    Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false, modifier = Modifier.clickable { switchFeed(v) })
+                }
+            }
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { showUpload = true }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(12.dp))
+            }
         }
         }
     }
@@ -627,7 +632,7 @@ private fun ReelCaptionText(caption: String, onAuthor: (String) -> Unit = {}, on
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, onToggleMute: () -> Unit = {}, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, dataSaver: Boolean = false, onTag: (String) -> Unit = {}, onOpenSaved: () -> Unit = {}) {
+private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, onToggleMute: () -> Unit = {}, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onLikeChange: (String, Boolean, Int) -> Unit = { _, _, _ -> }, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, dataSaver: Boolean = false, onTag: (String) -> Unit = {}, onOpenSaved: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var liked by remember(reel.id) { mutableStateOf(reel.liked) }
@@ -750,17 +755,24 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     // taps can never race and leave the wrong state. Optimistic, reverts
     // only if the server call fails (R7).
     var likeBusy by remember(reel.id) { mutableStateOf(false) }
+    // v4.6: the like is hoisted to the parent list (web's updateLike) —
+    // onLikeChange writes the new state into ReelsScreen's reels, so a
+    // like survives the LazyColumn item being disposed and recreated
+    // (scroll away and back, tab switch). Before this, liked/likes lived
+    // only in this ReelPage's remember and reset to the stale list value
+    // on recreation — the like "went back" to unlike.
     fun doLike() {
         if (liked || likeBusy) return
         likeBusy = true
         val prevLiked = liked; val prevLikes = likes
         liked = true; likes = prevLikes + 1
+        onLikeChange(reel.id, true, likes)
         scope.launch {
             try {
                 val r = api2.toggleReelLike(reel.id)
-                if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount }
-                else { liked = prevLiked; likes = prevLikes; showMsg("Couldn't like — try again") }
-            } catch (_: Exception) { liked = prevLiked; likes = prevLikes; showMsg("Couldn't like — try again") }
+                if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount; onLikeChange(reel.id, liked, likes) }
+                else { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't like — try again") }
+            } catch (_: Exception) { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't like — try again") }
             finally { likeBusy = false }
         }
     }
@@ -769,12 +781,13 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         likeBusy = true
         val prevLiked = liked; val prevLikes = likes
         liked = false; likes = (prevLikes - 1).coerceAtLeast(0)
+        onLikeChange(reel.id, false, likes)
         scope.launch {
             try {
                 val r = api2.toggleReelLike(reel.id)
-                if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount }
-                else { liked = prevLiked; likes = prevLikes; showMsg("Couldn't unlike — try again") }
-            } catch (_: Exception) { liked = prevLiked; likes = prevLikes; showMsg("Couldn't unlike — try again") }
+                if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount; onLikeChange(reel.id, liked, likes) }
+                else { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't unlike — try again") }
+            } catch (_: Exception) { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't unlike — try again") }
             finally { likeBusy = false }
         }
     }
@@ -836,12 +849,16 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         }
     }
     // v3.8 (F14): single tap reveals the play/pause controls (web rule) —
-    // the centre button does the pausing. Double-tap still toggles like.
+    // the centre button does the pausing. Double-tap likes (v4.6 — never
+    // unlikes, web rule).
     Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { pageSize = it }.pointerInput(reel.id) {
         detectTapGestures(
             onTap = { controlsVisible = true },
-            // R35: double-tap toggles the like (like, or unlike if liked).
-            onDoubleTap = { if (liked) doUnlike() else { doLike(); burst = true } },
+            // R35 (v4.6): double-tap ONLY likes, never unlikes (web rule —
+            // the web double-tap is `if (!reel.liked) handleLike()`).
+            // The old toggle unliked an already-liked reel, so a like
+            // "went back" to unlike. The burst shows either way.
+            onDoubleTap = { if (!liked) doLike(); burst = true },
         )
     }) {
         if (reel.videoUrl != null) {
@@ -983,49 +1000,50 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Text(if (downloadUnknownLength) "Downloading…" else "Downloading ${downloadProgress}%", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
             }
         }
-        // v4.0 (audit #3): right rail, lower third of the VIDEO — its
-        // bottom is 28dp above the video bottom, its centre 25dp from
-        // the right screen edge (48dp-wide column, 1dp from the edge).
-        // No chip/circle/pill behind any icon; thin white outlines;
-        // counts/labels 13sp; gaps 10dp icon->count, 21dp count->next
-        // icon, 29dp Views->More dots, 18dp dots->"More" label.
-        Column(Modifier.align(Alignment.CenterEnd).padding(end = 1.dp, bottom = 28.dp + videoBottomOffset).width(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        // v4.6 (owner): right rail matches the web exactly — bottom-anchored
+        // (24dp above the video bottom, 12dp from the right edge), NOT
+        // vertically centred; web icon sizes (heart 30, comment 28,
+        // share 26, more 26 wide), 12sp labels (Views label 10sp),
+        // 4dp icon->label, 16dp between buttons. The old rail was centred
+        // (too high), 48dp wide with 21dp gaps and 13sp labels — it read
+        // as a big, dirty block.
+        Column(Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 24.dp + videoBottomOffset), horizontalAlignment = Alignment.CenterHorizontally) {
             Column(Modifier.clickable { toggleLike() }, horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(width = 28.dp, height = 24.dp))
-                Spacer(Modifier.height(10.dp))
-                Text(reelCount(likes), color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
+                Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(30.dp))
+                Spacer(Modifier.height(4.dp))
+                Text(reelCount(likes), color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
-            Spacer(Modifier.height(21.dp))
+            Spacer(Modifier.height(16.dp))
             Column(Modifier.clickable { onComment() }, horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(23.dp))
-                Spacer(Modifier.height(10.dp))
-                Text(reelCount(commentCount), color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
+                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.height(4.dp))
+                Text(reelCount(commentCount), color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
-            Spacer(Modifier.height(21.dp))
+            Spacer(Modifier.height(16.dp))
             Column(Modifier.clickable { shareOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
                 // R11/R6: the share sheet (DM + channels + copy). The count
                 // moves only when a channel is actually tapped, never when
                 // the sheet is opened or the chooser is cancelled.
-                Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(width = 20.dp, height = 22.dp))
-                Spacer(Modifier.height(10.dp))
-                Text(if (shares > 0) reelCount(shares) else "Share", color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
+                Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(26.dp))
+                Spacer(Modifier.height(4.dp))
+                Text(if (shares > 0) reelCount(shares) else "Share", color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
-            Spacer(Modifier.height(21.dp))
+            Spacer(Modifier.height(16.dp))
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 // Live web has NO eye icon on Views — number + "Views" only.
-                Text(reelCount(reel.viewCount), color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
-                Spacer(Modifier.height(10.dp))
-                Text("Views", color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
+                Text(reelCount(reel.viewCount), color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
+                Spacer(Modifier.height(4.dp))
+                Text("Views", color = Color.White, fontSize = 10.sp, lineHeight = 10.sp, maxLines = 1, softWrap = false)
             }
-            Spacer(Modifier.height(29.dp))
+            Spacer(Modifier.height(16.dp))
             Column(Modifier.clickable { moreOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
                 // v4.0 (audit #3): web More is three horizontal 4dp
                 // dots (20x4 total), NOT a vertical MoreVert icon.
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     repeat(3) { Box(Modifier.size(4.dp).clip(CircleShape).background(Color.White)) }
                 }
-                Spacer(Modifier.height(18.dp))
-                Text("More", color = Color.White, fontSize = 13.sp, lineHeight = 13.sp, maxLines = 1, softWrap = false)
+                Spacer(Modifier.height(4.dp))
+                Text("More", color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
         }
         // v4.0 (audit #2/#3): the More sheet is a white bottom sheet,
