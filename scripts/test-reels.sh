@@ -53,6 +53,13 @@ adb shell getprop sys.boot_completed | tr -d '\r' | grep -q 1 || fail_flow "emul
 [ -f "$APK" ] || fail_flow "APK not found at $APK"
 log "Installing APK..."
 adb install -r "$APK" || fail_flow "adb install failed"
+# The emulator's DNS can lag boot: wait until the backend host resolves
+# (otherwise the app shows a blocking "Unable to resolve host" screen).
+log "Waiting for emulator network (api.frianzo.online must resolve)..."
+for _ in $(seq 1 12); do
+  if adb shell ping -c 1 -W 2 api.frianzo.online >/dev/null 2>&1; then log "Emulator network is up."; break; fi
+  sleep 5
+done
 adb shell am start -n "$PKG/$ACTIVITY"
 sleep 5
 
@@ -80,7 +87,15 @@ log "Inbox ready: $TEST_EMAIL"
 
 # ---------------------------------------------------------------- login (email OTP)
 log "Waiting for login screen..."
-python3 scripts/uitap.py wait-text "Enter your email" 90 || fail_flow "login screen did not appear"
+if ! python3 scripts/uitap.py wait-text "Enter your email" 90; then
+  if python3 scripts/uitap.py has-text "Continue to login" 2>/dev/null; then
+    log "Session-check error screen - tapping Continue to login..."
+    python3 scripts/uitap.py tap-text "Continue to login" || fail_flow "could not tap Continue to login"
+    python3 scripts/uitap.py wait-text "Enter your email" 60 || fail_flow "login screen did not appear after Continue to login"
+  else
+    fail_flow "login screen did not appear"
+  fi
+fi
 python3 scripts/uitap.py tap-text "Enter your email" || fail_flow "could not tap email field"
 adb_text "$TEST_EMAIL"
 sleep 1

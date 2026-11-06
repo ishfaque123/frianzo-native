@@ -821,10 +821,6 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             key(reel.id, videoRetryKey) {
                 AndroidView(
                     factory = { ctx -> VideoView(ctx).apply {
-                        // v4.0: pure black behind the video, portrait
-                        // AND landscape — a landscape video must never
-                        // show a light area above/below it.
-                        setBackgroundColor(android.graphics.Color.BLACK)
                         setVideoURI(Uri.parse(reel.videoUrl))
                         setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; buffering = false; val em = muted || autoMuted; mp.setVolume(if (em) 0f else 1f, if (em) 0f else 1f); if (resumeMs > 0) mp.seekTo(resumeMs); if (isActive && !paused && (!dataSaver || tapToPlay)) start() }
                         // R1: a broken video reports the error instead of
@@ -846,7 +842,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         // web — it never loops back to the start.
                         setOnCompletionListener { v -> onPosition(0); if (!isLast) onFinished() }
                     } },
-                    modifier = Modifier.fillMaxSize().background(Color.Black),
+                    modifier = Modifier.fillMaxSize(),
                     update = { view ->
                         val em = muted || autoMuted
                         // v4.2: setVolume() throws on a dead/errored
