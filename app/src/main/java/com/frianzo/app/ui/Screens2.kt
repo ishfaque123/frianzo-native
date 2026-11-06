@@ -112,7 +112,6 @@ private fun friendlyReelsError(e: Throwable?, fallback: String): String =
 // loaded reels, scroll position, viewed ids or mute — coming back resumes
 // where the user left off instead of restarting from reel #1.
 class ReelsSession(context: android.content.Context) {
-    private val prefs = context.getSharedPreferences("frianzo_reels", android.content.Context.MODE_PRIVATE)
     var reels by mutableStateOf<List<Reel>>(emptyList())
     var offset by mutableStateOf(0)
     var hasMore by mutableStateOf(true)
@@ -121,9 +120,15 @@ class ReelsSession(context: android.content.Context) {
     var scrollIndex by mutableStateOf(0)
     // R19: last watched position per reel, so scrolling back resumes.
     var positions by mutableStateOf<Map<String, Int>>(emptyMap())
-    var muted by mutableStateOf(prefs.getBoolean("reels_muted", false))
-    // v3.7 fix: 'setMuted' clashes with the generated setter of 'muted' (run #104).
-    fun updateMuted(m: Boolean) { muted = m; prefs.edit().putBoolean("reels_muted", m).apply() }
+    // v3.9 (live-web audit #2): mute is PER-REEL, not global. The first
+    // reel starts muted, later reels start unmuted, and each reel keeps
+    // its own toggle for the session. Nothing is persisted — the old
+    // SharedPreferences "reels_muted" is no longer read or written.
+    // (v3.7 fix: a 'fun setMuted' would clash with the generated setter
+    // of a 'muted' property — the helper keeps the name updateMuted.)
+    var mutedReels by mutableStateOf<Map<String, Boolean>>(emptyMap())
+    fun isMuted(reelId: String, isFirst: Boolean): Boolean = mutedReels[reelId] ?: isFirst
+    fun updateMuted(reelId: String, m: Boolean) { mutedReels = mutedReels + (reelId to m) }
     // v3.8 (F10): per-tab feed cache — Following / For You each keep their
     // own reels + offset + hasMore + scroll position, so switching tabs
     // restores instantly instead of reloading from the top (web feedCacheRef).
@@ -148,7 +153,6 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
     var hasMore by session::hasMore
     var viewedIds by session::viewedIds
     var feed by session::feed
-    var muted by session::muted
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var loadMoreError by remember { mutableStateOf<String?>(null) }
@@ -351,7 +355,9 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         // has a 2dp white underline ~22dp wide. Mute / + are 40dp dark
         // circles with a ~20dp glyph. NO star icon (web has none — Save
         // lives in the More sheet only).
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        // v3.9: the white 4-icon top bar now comes from the Scaffold, so
+        // this black tabs bar no longer pads for the status bar itself.
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
             listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
                 val sel = feed == v
                 Column(Modifier.clickable { switchFeed(v) }.padding(horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -362,9 +368,13 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 Spacer(Modifier.width(23.dp))
             }
             Spacer(Modifier.weight(1f))
-            // R20: mute is saved on the phone, so it stays as the user left it.
-            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { session.updateMuted(!muted) }, contentAlignment = Alignment.Center) {
-                Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(20.dp))
+            // v3.9: mute is PER-REEL (audit #2) — this button toggles
+            // only the reel on screen. First reel starts muted, later
+            // reels start unmuted; each reel remembers its own toggle.
+            val currentReelId = reels.getOrNull(session.scrollIndex)?.id
+            val currentMuted = currentReelId?.let { session.isMuted(it, session.scrollIndex == 0) } ?: true
+            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { currentReelId?.let { session.updateMuted(it, !currentMuted) } }, contentAlignment = Alignment.Center) {
+                Icon(if (currentMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (currentMuted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(20.dp))
             }
             Spacer(Modifier.width(8.dp))
             Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { showUpload = true }, contentAlignment = Alignment.Center) {
@@ -393,7 +403,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 ReelPage(
                     api2 = api2, reel = reel, myId = myId,
                     isActive = page == listState.firstVisibleItemIndex,
-                    muted = muted,
+                    muted = session.isMuted(reel.id, page == 0),
                     dataSaver = dataSaver,
                     onTag = { tag -> notice = "#$tag — tag pages are not in the app yet"; scope.launch { delay(3000); notice = null } },
                     commentCount = reelCommentCounts[reel.id] ?: reel.commentCount,
@@ -533,49 +543,39 @@ private fun loadOfflineReels(context: android.content.Context): List<Reel> {
     } catch (_: Exception) { emptyList() }
 }
 
-// v3.8 (F5): caption with web rules — truncate at 80 chars with a
-// more/less button, #tag and @user as tappable blue spans.
+// v3.9 (live-web audit #2): live web shows NO more/less expander —
+// a long caption is cut with an ellipsis only (one line). #tag and
+// @user stay tappable blue spans inside the visible line.
 @Composable
 private fun ReelCaptionText(caption: String, onAuthor: (String) -> Unit = {}, onTag: (String) -> Unit = {}) {
-    var expanded by remember(caption) { mutableStateOf(false) }
-    val shown = if (expanded || caption.length <= 80) caption else caption.take(80)
-    Column {
-        val annotated = androidx.compose.ui.text.buildAnnotatedString {
-            val tagRegex = Regex("(#[A-Za-z0-9_]+|@[A-Za-z0-9_.]+)")
-            var last = 0
-            for (m in tagRegex.findAll(shown)) {
-                if (m.range.first > last) append(shown.substring(last, m.range.first))
-                val token = m.value
-                val ann = if (token.startsWith("#")) "tag:${token.drop(1)}" else "user:${token.drop(1)}"
-                pushStringAnnotation(ann, ann)
-                withStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFF93C5FD), fontWeight = FontWeight.SemiBold)) { append(token) }
-                pop()
-                last = m.range.last + 1
-            }
-            if (last < shown.length) append(shown.substring(last))
-            if (!expanded && caption.length > 80) append("…")
+    val annotated = androidx.compose.ui.text.buildAnnotatedString {
+        val tagRegex = Regex("(#[A-Za-z0-9_]+|@[A-Za-z0-9_.]+)")
+        var last = 0
+        for (m in tagRegex.findAll(caption)) {
+            if (m.range.first > last) append(caption.substring(last, m.range.first))
+            val token = m.value
+            val ann = if (token.startsWith("#")) "tag:${token.drop(1)}" else "user:${token.drop(1)}"
+            pushStringAnnotation(ann, ann)
+            withStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFF93C5FD), fontWeight = FontWeight.SemiBold)) { append(token) }
+            pop()
+            last = m.range.last + 1
         }
-        ClickableText(
-            text = annotated,
-            style = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
-            maxLines = if (expanded) 10 else 3,
-            onClick = { offset ->
-                annotated.getStringAnnotations(offset, offset).firstOrNull()?.let { ann ->
-                    when {
-                        ann.tag.startsWith("tag:") -> onTag(ann.tag.removePrefix("tag:"))
-                        ann.tag.startsWith("user:") -> onAuthor(ann.tag.removePrefix("user:"))
-                    }
+        if (last < caption.length) append(caption.substring(last))
+    }
+    ClickableText(
+        text = annotated,
+        style = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        onClick = { offset ->
+            annotated.getStringAnnotations(offset, offset).firstOrNull()?.let { ann ->
+                when {
+                    ann.tag.startsWith("tag:") -> onTag(ann.tag.removePrefix("tag:"))
+                    ann.tag.startsWith("user:") -> onAuthor(ann.tag.removePrefix("user:"))
                 }
             }
-        )
-        if (caption.length > 80) {
-            Text(
-                text = if (expanded) "less" else "more",
-                color = Color(0xFF93C5FD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.clickable { expanded = !expanded }.padding(top = 2.dp)
-            )
         }
-    }
+    )
 }
 
 @Composable
@@ -945,10 +945,13 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     }
                 }
             }
-            // v3.8 (F5): 80-char truncate + more/less, #tag / @user links.
+            // v3.9 (audit #2): one line + ellipsis, no expander; #tag / @user links.
             reel.caption?.let { Spacer(Modifier.height(8.dp)); ReelCaptionText(it, onAuthor = { u -> onAuthor(u) }, onTag = onTag) }
-            // v3.8 (F20): web chip is "#Category" with a # prefix.
-            reel.category?.let { Spacer(Modifier.height(6.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) { Text("#" + it.replaceFirstChar { c -> c.uppercase() }, color = Color.White, fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }
+            // v3.9 (live-web audit #2): NO category chip on the reel
+            // screen — no chip was seen on any live reel. The category
+            // is still stored and sent on upload; only its display
+            // chip is gone. (The "Interested in #category?" prompt
+            // below is a different row and stays.)
             // v3.8 (F7): "Interested in #category? Yes / No" (web rule).
             if (showInterest && !interestAnswered && !reel.category.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))
@@ -1272,7 +1275,8 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         },
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f)
                     )
-                    IconButton(onClick = { replyTo = null }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    // v3.9 (live-web audit #2): web uses a "Cancel" TEXT button, not an x.
+                    TextButton(onClick = { replyTo = null }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 Spacer(Modifier.height(8.dp))
             }

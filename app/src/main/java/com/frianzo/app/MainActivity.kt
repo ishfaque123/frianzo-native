@@ -176,12 +176,14 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         // no image logo in the header); right = Search + Messages (badge 9+).
         // Second row: Home / Reels / Notifications (badge 99+) / Profile,
         // 24dp outline icons, NO labels, active slate-900 / inactive slate-400.
-        // Screenshot bug (owner, v3.7 phone screenshot): the reels screen
-        // is FULL-SCREEN black like web — NO app header, NO second nav row
-        // above it. The chrome returns when an overlay opens (profile,
-        // chat, drawer screen, post detail), because those need it.
+        // v3.9 (live-web audit #2): the reels screen has a WHITE top bar
+        // with 4 icons only (Home / Reels / Notifications / Profile) —
+        // NO hamburger, NO "Frianzo" wordmark, NO Search, NO Messages.
+        // The full chrome returns when an overlay opens (profile, chat,
+        // drawer screen, post detail), because those need it.
         topBar = {
-            if (tab != Tab.REELS || drawerScreen != null || openChat != null || openProfile != null || openPostId != null) {
+            val overlayOpen = drawerScreen != null || openChat != null || openProfile != null || openPostId != null
+            if (overlayOpen || tab != Tab.REELS) {
             Column {
                 TopAppBar(
                     title = {
@@ -227,6 +229,30 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 }
                 HorizontalDivider()
             }
+            } else {
+                // v3.9: reels-only white 4-icon bar (see the note above topBar).
+                Surface(color = MaterialTheme.colorScheme.surface) {
+                    Row(Modifier.fillMaxWidth().statusBarsPadding().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceAround) {
+                        val reelsNav = listOf(
+                            Triple(Tab.FEED, Icons.Outlined.Home, "Home"),
+                            Triple(Tab.REELS, Icons.Filled.OndemandVideo, "Reels"),
+                            Triple(Tab.NOTIFS, Icons.Outlined.Notifications, "Notifications"),
+                            Triple(Tab.PROFILE, Icons.Outlined.Person, "Profile"),
+                        )
+                        reelsNav.forEach { (t, icon, label) ->
+                            val selected = tab == t
+                            val color = if (selected) Color(0xFF0F172A) else Color(0xFF94A3B8)
+                            Box(contentAlignment = Alignment.TopEnd, modifier = Modifier.clickable { tab = t; openChat = null; openProfile = null }.padding(8.dp)) {
+                                Icon(icon, contentDescription = label, tint = color, modifier = Modifier.size(24.dp))
+                                if (t == Tab.NOTIFS && unread > 0) {
+                                    Badge(containerColor = FrianzoBadgeRed, modifier = Modifier.offset(x = 8.dp, y = (-4).dp)) {
+                                        Text(if (unread > 99) "99+" else "$unread", fontSize = 10.sp, maxLines = 1, softWrap = false)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         containerColor = MaterialTheme.colorScheme.background,

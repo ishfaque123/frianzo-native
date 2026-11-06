@@ -1070,7 +1070,6 @@ private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> 
     var likes by remember(reel.id) { mutableStateOf(reel.likeCount) }
     var cardMuted by remember { mutableStateOf(true) }
     var paused by remember { mutableStateOf(false) }
-    var expanded by remember(reel.id) { mutableStateOf(false) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var shareNote by remember { mutableStateOf<String?>(null) }
     // Web rule: a view is recorded when the card appears.
@@ -1099,12 +1098,9 @@ private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> 
                 }
             }
         }
+        // v3.9 (live-web audit #2): no more/less expander — one line, ellipsis only.
         reel.caption?.let {
-            val shown = if (expanded || it.length <= 80) it else it.take(80) + "…"
-            Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp)) {
-                Text(shown, fontSize = 14.sp, maxLines = if (expanded) 10 else 3, overflow = TextOverflow.Ellipsis)
-                if (it.length > 80) Text(if (expanded) "less" else "more", color = FrianzoBlue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { expanded = !expanded }.padding(top = 2.dp))
-            }
+            Text(it, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp))
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.clickable {
@@ -1316,7 +1312,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
-                IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                // v3.9 (live-web audit #2): web uses a "Cancel" TEXT button, not an x.
+                TextButton(onClick = { replyTo = null }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             Spacer(Modifier.height(8.dp))
         }
