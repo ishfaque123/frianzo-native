@@ -111,7 +111,8 @@ class ReelsSession(context: android.content.Context) {
     // R19: last watched position per reel, so scrolling back resumes.
     var positions by mutableStateOf<Map<String, Int>>(emptyMap())
     var muted by mutableStateOf(prefs.getBoolean("reels_muted", false))
-    fun setMuted(m: Boolean) { muted = m; prefs.edit().putBoolean("reels_muted", m).apply() }
+    // v3.7 fix: 'setMuted' clashes with the generated setter of 'muted' (run #104).
+    fun updateMuted(m: Boolean) { muted = m; prefs.edit().putBoolean("reels_muted", m).apply() }
 }
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -270,7 +271,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             }
             Spacer(Modifier.weight(1f))
             // R20: mute is saved on the phone, so it stays as the user left it.
-            IconButton(onClick = { session.setMuted(!muted) }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(24.dp)) }
+            IconButton(onClick = { session.updateMuted(!muted) }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(24.dp)) }
             // R14: saved reels — the star saves a reel, this opens the list.
             IconButton(onClick = { showSaved = true }) { Icon(Icons.Filled.Star, contentDescription = "Saved reels", tint = Color.White, modifier = Modifier.size(24.dp)) }
             IconButton(onClick = { showUpload = true }) { Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(24.dp)) }
