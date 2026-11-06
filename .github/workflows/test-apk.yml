@@ -49,6 +49,8 @@ jobs:
       # DEBUG build on purpose: no signing secrets needed, installs fine on
       # the emulator. The player code is identical in debug/release. The
       # signed release APK is already built by android.yml on main.
+      - name: Restore google-services.json
+        run: printf '%s' "${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON }}" | base64 -d > app/google-services.json
       - name: Build debug APK
         run: |
           chmod +x gradlew
