@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -452,7 +453,7 @@ internal fun openWebUrl(context: Context, url: String): Boolean {
 
 // A-B26: simple email shape check (client-side only; the server still
 // validates). Kept permissive on purpose — no MX/DNS check.
-private val EMAIL_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+private val EMAIL_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 
 private fun feedTime(createdAt: String?): String {
     if (createdAt.isNullOrBlank()) return ""
@@ -658,7 +659,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     val galleryPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) onPickMedia(uri)
     }
-    val pickMedia = rememberPermissionGate(galleryPermissions()) { galleryPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }
+    val pickMedia = rememberPermissionGate(galleryPermissions(), onGranted = { galleryPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) })
     LaunchedEffect(Unit) {
         try {
             val sf = vm.api2.statusFeed()
@@ -1432,7 +1433,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
     var mentionResults by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) imageUri = uri }
-    val pickCommentPhoto = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
+    val pickCommentPhoto = rememberPermissionGate(galleryPermissions(), onGranted = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
     fun load() {
         scope.launch {
             try {
@@ -2277,7 +2278,7 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
             mediaIsVideo = mime?.startsWith("video") == true || ext in listOf("mp4", "mov", "webm", "mkv", "3gp", "avi")
         }
     }
-    val pickStoryMedia = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }
+    val pickStoryMedia = rememberPermissionGate(galleryPermissions(), onGranted = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) })
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Cancel") }

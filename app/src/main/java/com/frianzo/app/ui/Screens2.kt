@@ -1747,10 +1747,10 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
             if (size > 10 * 1024 * 1024) message = "Cover photo must be smaller than 10MB" else { coverUri = uri; selectedFrameIdx = -1 } // B-B14: a gallery cover beats a picked frame (upload prefers frames)
         }
     }
-    val pickCover = rememberPermissionGate(galleryPermissions()) { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
+    val pickCover = rememberPermissionGate(galleryPermissions(), onGranted = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
     // v3.1: Gallery asked at pick time; Camera + Microphone asked when the
     // user taps "Record a video" (owner-confirmed permissions).
-    val pickReelVideo = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }
+    val pickReelVideo = rememberPermissionGate(galleryPermissions(), onGranted = { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) })
     // v3.8 (F1): "Record a video" now opens the in-app CameraX recorder
     // (ReelCameraScreen) instead of the system camera intent.
     // v3.6 (U1): the upload form is ~850-900dp tall with a video
@@ -2020,6 +2020,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     var imageUri by remember { mutableStateOf<Uri?>(initialUri) }
     var mediaIsVideo by remember { mutableStateOf(false) }
     var mediaMime by remember { mutableStateOf<String?>(null) }
+    var bgStyle by rememberSaveable { mutableStateOf<String?>(null) }
     // Pre-attached media from the feed + button (system Gallery picker).
     LaunchedEffect(initialUri) {
         if (initialUri != null) {
@@ -2032,7 +2033,6 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
-    var bgStyle by rememberSaveable { mutableStateOf<String?>(null) }
     // v3.4 composer options (all sent on the one POST /api/posts call).
     var visibility by rememberSaveable { mutableStateOf("public") }
     var commentAudience by rememberSaveable { mutableStateOf("everyone") }
@@ -2079,10 +2079,10 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
             if (u != null) onPostAsReel?.invoke(u) else message = "Could not start the reel uploader"
         }
     }
-    val recordVideo = rememberPermissionGate(cameraMicPermissions()) {
+    val recordVideo = rememberPermissionGate(cameraMicPermissions(), onGranted = {
         val u = createVideoUri(context)
         if (u != null) { recordUri = u; takeVideo.launch(Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply { putExtra(MediaStore.EXTRA_OUTPUT, u); addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }) } else message = "Could not start camera"
-    }
+    })
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
             imageUri = uri
@@ -2095,7 +2095,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
             mediaIsVideo = mime?.startsWith("video") == true
         }
     }
-    val pickPostMedia = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }
+    val pickPostMedia = rememberPermissionGate(galleryPermissions(), onGranted = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) })
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // v2.9: Cancel / Discard — confirms first when the post is dirty.
@@ -3041,8 +3041,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
             } catch (e: Exception) { photoMsg = e.message }
         }
     }
-    val pickAvatar = rememberPermissionGate(galleryPermissions()) { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
-    val pickCover = rememberPermissionGate(galleryPermissions()) { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
+    val pickAvatar = rememberPermissionGate(galleryPermissions(), onGranted = { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
+    val pickCover = rememberPermissionGate(galleryPermissions(), onGranted = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
     followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }) }
     highlightViewer?.let { h ->
         HighlightViewerDialog(api2, h, username == null, onClose = { highlightViewer = null }, onDeleted = {
