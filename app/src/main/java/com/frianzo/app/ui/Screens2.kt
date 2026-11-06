@@ -735,10 +735,12 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     fun toggleLike() { if (liked) doUnlike() else doLike() }
     LaunchedEffect(burst) { if (burst) { delay(700); burst = false } }
     // Progress ticker: reads the real VideoView position while active.
+    // v4.2: getCurrentPosition() throws IllegalStateException on a
+    // dead / not-yet-ready player — never let the ticker kill the app.
     LaunchedEffect(isActive, prepared) {
         while (isActive && prepared) {
             delay(200)
-            positionMs = player?.currentPosition ?: 0
+            positionMs = try { player?.currentPosition ?: positionMs } catch (_: Exception) { positionMs }
         }
     }
     // v3.8 (F14): single tap reveals the play/pause controls (web rule) —
@@ -762,7 +764,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; val em = muted || autoMuted; mp.setVolume(if (em) 0f else 1f, if (em) 0f else 1f); if (resumeMs > 0) mp.seekTo(resumeMs); if (isActive && !paused && (!dataSaver || tapToPlay)) start() }
                         // R1: a broken video reports the error instead of
                         // spinning forever.
-                        setOnErrorListener { _, _, _ -> videoError = "Couldn't play this video"; true }
+                        setOnErrorListener { _, _, _ -> player = null; prepared = false; videoError = "Couldn't play this video"; true }
                         // R18: a finished reel moves to the next one.
                         // v3.7 (C11): on the LAST reel playback STOPS, like
                         // web — it never loops back to the start.
@@ -771,12 +773,18 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     modifier = Modifier.fillMaxSize().background(Color.Black),
                     update = { view ->
                         val em = muted || autoMuted
-                        player?.setVolume(if (em) 0f else 1f, if (em) 0f else 1f)
+                        // v4.2: setVolume() throws on a dead/errored
+                        // player — update runs on every recomposition.
+                        try { player?.setVolume(if (em) 0f else 1f, if (em) 0f else 1f) } catch (_: Exception) {}
                         // v3.8 (F12): Data Saver waits for an explicit tap.
                         if (isActive && !paused && (!dataSaver || tapToPlay)) { if (!view.isPlaying) view.start() } else view.pause()
                     },
                     // R19: remember where this reel was left.
-                    onRelease = { onPosition(player?.currentPosition ?: positionMs); player = null; it.stopPlayback() },
+                    // v4.2: a dead/preparing player throws on
+                    // getCurrentPosition() and on stop() — read the
+                    // position only when prepared, and never let the
+                    // release path throw (it fires on every scroll).
+                    onRelease = { val pos = try { if (prepared && videoError == null) player?.currentPosition ?: positionMs else positionMs } catch (_: Exception) { positionMs }; onPosition(pos); player = null; try { it.stopPlayback() } catch (_: Exception) {} },
                 )
             }
             if (videoError != null) {
@@ -832,7 +840,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     if (seekWidthPx > 0) {
                         val ratio = (offset.x / seekWidthPx).coerceIn(0f, 1f)
                         val ms = (ratio * durationMs).toInt()
-                        player?.seekTo(ms); positionMs = ms
+                        try { player?.seekTo(ms) } catch (_: Exception) {}; positionMs = ms
                     }
                 }
             }, contentAlignment = Alignment.BottomStart) {
@@ -3540,7 +3548,7 @@ private fun HighlightViewerDialog(api2: FrianzoApi2, highlight: Highlight, isOwn
                                 setVideoURI(Uri.parse(item.mediaUrl))
                                 setOnPreparedListener { mp -> mp.isLooping = true; mp.start() }
                                 setOnErrorListener { _, _, _ -> videoError = "This video can't be played."; true }
-                            } }, modifier = Modifier.fillMaxSize(), onRelease = { it.stopPlayback() })
+                            } }, modifier = Modifier.fillMaxSize(), onRelease = { try { it.stopPlayback() } catch (_: Exception) {} })
                         }
                         if (videoError != null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(videoError!!, color = Color.White, fontSize = 15.sp) }
                     }

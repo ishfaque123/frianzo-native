@@ -1273,9 +1273,10 @@ private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> 
                     setVideoURI(Uri.parse(reel.videoUrl))
                     setOnPreparedListener { mp -> player = mp; mp.setVolume(0f, 0f); mp.isLooping = true; if (!paused) start() }
                 } }, modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f), update = { view ->
-                    player?.setVolume(if (cardMuted) 0f else 1f, if (cardMuted) 0f else 1f)
+                    // v4.2: setVolume() throws on a dead/errored player.
+                    try { player?.setVolume(if (cardMuted) 0f else 1f, if (cardMuted) 0f else 1f) } catch (_: Exception) {}
                     if (paused) view.pause() else if (!view.isPlaying) view.start()
-                }, onRelease = { player = null; it.stopPlayback() })
+                }, onRelease = { player = null; try { it.stopPlayback() } catch (_: Exception) {} })
                 if (paused) Box(Modifier.size(84.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(40.dp))
                 }
@@ -2166,7 +2167,7 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                             setVideoURI(Uri.parse(item.mediaUrl))
                             setOnPreparedListener { mp -> storyPlayer = mp; mp.isLooping = false; mp.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f); start() }
                             setOnCompletionListener { advance() }
-                        } }, modifier = Modifier.fillMaxSize(), update = { view -> storyPlayer?.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f); if (paused) view.pause() else view.start() }, onRelease = { storyPlayer = null; it.stopPlayback() })
+                        } }, modifier = Modifier.fillMaxSize(), update = { view -> try { storyPlayer?.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f) } catch (_: Exception) {}; if (paused) view.pause() else view.start() }, onRelease = { storyPlayer = null; try { it.stopPlayback() } catch (_: Exception) {} })
                     }
                 }
                 !item.mediaUrl.isNullOrBlank() -> AsyncImage(model = item.mediaUrl, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
