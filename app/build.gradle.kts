@@ -28,8 +28,8 @@ android {
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 20
-        versionName = "3.7"
+        versionCode = 21
+        versionName = "3.8"
     }
 
     buildFeatures { compose = true }
@@ -86,4 +86,10 @@ dependencies {
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+
+    // In-app camera recorder (v3.8, F1): CameraX — preview, video
+    // capture, photo capture, lifecycle binding.
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
 }

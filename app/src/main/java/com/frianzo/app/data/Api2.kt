@@ -18,6 +18,14 @@ data class Reel(
     val liked: Boolean = false,
     val favorited: Boolean = false,
     val author: Author?,
+    // v3.8 (F6): fields the backend already sends — display name + time
+    // ago need createdAt; friendStatus seeds the follow pill; shareCode,
+    // durationSec and isMine unblock feed polish without extra calls.
+    val durationSec: Int? = null,
+    val isMine: Boolean = false,
+    val friendStatus: String? = null,
+    val shareCode: String? = null,
+    val createdAt: String? = null,
 )
 data class ReelFeedData(val reels: List<Reel>, val hasMore: Boolean = false, val nextOffset: Int = 0)
 data class ReelsConfigData(val enabled: Boolean = true, val maxDurationSec: Int = 180, val dailyLimit: Int = 0)
@@ -26,6 +34,9 @@ data class ReelUploadData(val reel: Reel?)
 data class ReelByIdData(val reel: Reel?)
 data class ReelViewData(val viewed: Boolean = false, val viewCount: Int = 0)
 data class ReelStatusData(val postedToday: Int = 0, val remaining: Int = 0)
+// v3.8 (F2): POST /api/reels/detect-category { frames: [base64 x1-3], caption? }
+// returns { category, categories }.
+data class DetectCategoryData(val category: String? = null, val categories: List<String>? = null)
 data class ReelFavoritesData(val reels: List<Reel>? = null)
 data class ReelFavoriteData(val favorited: Boolean = false)
 data class ReelLikeData(val liked: Boolean = false, val likeCount: Int = 0)
@@ -282,6 +293,14 @@ interface FrianzoApi2 {
         @Part("trimEndSec") trimEndSec: RequestBody? = null,
         // v3.5 (R15): server filter enum normal/warm/cool/bw/vintage/vivid/beauty.
         @Part("filter") filter: RequestBody? = null,
+        // v3.8 (F4): backend createReelSchema already accepts all of these
+        // (letterbox/flip as "true", rotate "90"|"180"|"270",
+        // crop "square"|"portrait", textPosition "top"|"middle"|"bottom").
+        @Part("letterbox") letterbox: RequestBody? = null,
+        @Part("flip") flip: RequestBody? = null,
+        @Part("rotate") rotate: RequestBody? = null,
+        @Part("crop") crop: RequestBody? = null,
+        @Part("textPosition") textPosition: RequestBody? = null,
     ): Envelope<ReelUploadData>
     @POST("api/reels/{id}/like")
     suspend fun toggleReelLike(@Path("id") id: String): Envelope<ReelLikeData>
@@ -302,6 +321,9 @@ interface FrianzoApi2 {
     // v3.5 (R28): how many reels the user posted today / has left.
     @GET("api/reels/me/status")
     suspend fun myReelStatus(): Envelope<ReelStatusData>
+    // v3.8 (F2): AI category auto-detect from video frames.
+    @POST("api/reels/detect-category")
+    suspend fun detectCategory(@Body body: Map<String, Any>): Envelope<DetectCategoryData>
     // v3.5 (R13): server returns a watermarked mp4 (not an Envelope).
     @GET("api/reels/{id}/download")
     suspend fun downloadReel(@Path("id") id: String): okhttp3.ResponseBody

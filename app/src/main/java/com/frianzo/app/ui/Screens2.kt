@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -33,6 +34,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -46,7 +48,15 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.ui.onSizeChanged
+import android.graphics.Bitmap
+import android.util.Base64
+import java.io.ByteArrayOutputStream
+import android.media.AudioManager
+import android.media.ToneGenerator
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -64,6 +74,7 @@ import coil.compose.AsyncImage
 import com.frianzo.app.data.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.saveable.rememberSaveable
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -113,6 +124,19 @@ class ReelsSession(context: android.content.Context) {
     var muted by mutableStateOf(prefs.getBoolean("reels_muted", false))
     // v3.7 fix: 'setMuted' clashes with the generated setter of 'muted' (run #104).
     fun updateMuted(m: Boolean) { muted = m; prefs.edit().putBoolean("reels_muted", m).apply() }
+    // v3.8 (F10): per-tab feed cache — Following / For You each keep their
+    // own reels + offset + hasMore + scroll position, so switching tabs
+    // restores instantly instead of reloading from the top (web feedCacheRef).
+    var tabReels by mutableStateOf<Map<String, List<Reel>>>(emptyMap())
+    var tabOffset by mutableStateOf<Map<String, Int>>(emptyMap())
+    var tabHasMore by mutableStateOf<Map<String, Boolean>>(emptyMap())
+    var tabScroll by mutableStateOf<Map<String, Int>>(emptyMap())
+    fun saveTab(feedKey: String) {
+        tabReels = tabReels + (feedKey to reels)
+        tabOffset = tabOffset + (feedKey to offset)
+        tabHasMore = tabHasMore + (feedKey to hasMore)
+        tabScroll = tabScroll + (feedKey to scrollIndex)
+    }
 }
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -134,6 +158,17 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
     var focusError by remember { mutableStateOf<String?>(null) }
     var focusTried by remember { mutableStateOf<String?>(null) }
     var lastPage by remember { mutableStateOf(0) }
+    // v3.8 (F9/F11): pull-to-refresh state + offline fallback flag.
+    var refreshing by remember { mutableStateOf(false) }
+    var offline by remember { mutableStateOf(false) }
+    // v3.8 (F1): in-app camera recorder state.
+    var showCamera by remember { mutableStateOf(false) }
+    var camVideoUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingCoverUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingCamFilter by remember { mutableStateOf<String?>(null) }
+    var pendingCamSpeed by remember { mutableStateOf<String?>(null) }
+    // v3.8 (F12): Data Saver is the Settings toggle (FrianzoThemeState).
+    val dataSaver = FrianzoThemeState.dataSaver
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
@@ -152,16 +187,55 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     reels = reels + res.data.reels.filter { it.id !in seen }
                     offset += res.data.reels.size
                     hasMore = res.data.hasMore
+                    offline = false
                 } else {
                     val msg = friendlyReelsError(res.error?.message, "Couldn't load reels — try again")
-                    if (reels.isEmpty()) error = msg else loadMoreError = msg
+                    if (reels.isEmpty()) {
+                        // v3.8 (F11): no network + nothing loaded — fall back
+                        // to the offline cache instead of a bare error.
+                        val cached = loadOfflineReels(context)
+                        if (cached.isNotEmpty()) { reels = cached; offline = true; error = null }
+                        else error = msg
+                    } else loadMoreError = msg
                 }
                 if (res.success && res.data != null) loadMoreError = null
             } catch (e: Exception) {
                 val msg = friendlyReelsError(e, "Couldn't load reels — try again")
-                if (reels.isEmpty()) error = msg else loadMoreError = msg
+                if (reels.isEmpty()) {
+                    val cached = loadOfflineReels(context)
+                    if (cached.isNotEmpty()) { reels = cached; offline = true; error = null }
+                    else error = msg
+                } else loadMoreError = msg
             }
-            finally { loading = false }
+            finally { loading = false; refreshing = false }
+        }
+    }
+    // v3.8 (F9): pull-to-refresh — reload the current tab from the top.
+    fun refreshFeed() {
+        if (loading) return
+        session.tabReels = session.tabReels - feed
+        session.tabOffset = session.tabOffset - feed
+        session.tabHasMore = session.tabHasMore - feed
+        reels = emptyList(); offset = 0; hasMore = true; error = null; offline = false
+        refreshing = true
+        load()
+    }
+    // v3.8 (F10): switching tabs saves the old tab's place and restores
+    // the new tab's cached list instantly — no reload from the top.
+    fun switchFeed(v: String) {
+        if (v == feed) return
+        session.saveTab(feed)
+        feed = v
+        val cached = session.tabReels[v]
+        if (cached != null) {
+            reels = cached
+            offset = session.tabOffset[v] ?: 0
+            hasMore = session.tabHasMore[v] ?: true
+            val idx = session.tabScroll[v] ?: 0
+            lastPage = idx; session.scrollIndex = idx
+            scope.launch { if (idx > 0) listState.scrollToItem(idx) }
+        } else {
+            reels = emptyList(); offset = 0; hasMore = true; lastPage = 0; session.scrollIndex = 0; load()
         }
     }
     var reelComment by remember { mutableStateOf<Reel?>(null) }
@@ -177,10 +251,19 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         } catch (_: Exception) {}
     }
     reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, myAvatar = myAvatar, initialTotal = reelCommentCounts[reel.id] ?: reel.commentCount, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }, onCommentDeleted = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) - 1).coerceAtLeast(0)) }) }
-    if (showUpload) { ReelUploadScreen(api2, initialVideoUri = uploadUri, onDone = { newReelId -> showUpload = false; onUploadUriConsumed(); if (newReelId != null) { scope.launch { try { val r = api2.reelById(newReelId); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } else { reels = emptyList(); offset = 0; hasMore = true; load() } } catch (_: Exception) { reels = emptyList(); offset = 0; hasMore = true; load() } } } else { reels = emptyList(); offset = 0; hasMore = true; load() } }, onClose = { showUpload = false; onUploadUriConsumed() }) }
+    if (showCamera) {
+        ReelCameraScreen(
+            onVideoRecorded = { uri, filter, speed -> showCamera = false; camVideoUri = uri; pendingCamFilter = filter; pendingCamSpeed = speed; showUpload = true },
+            onPhotoCaptured = { uri -> showCamera = false; pendingCoverUri = uri; showUpload = true },
+            onClose = { showCamera = false },
+        )
+    }
+    if (showUpload) { ReelUploadScreen(api2, initialVideoUri = camVideoUri ?: uploadUri, initialCoverUri = pendingCoverUri, initialFilter = pendingCamFilter, initialSpeed = pendingCamSpeed, onOpenCamera = { showUpload = false; showCamera = true }, onDone = { newReelId -> showUpload = false; onUploadUriConsumed(); camVideoUri = null; pendingCoverUri = null; pendingCamFilter = null; pendingCamSpeed = null; if (newReelId != null) { scope.launch { try { val r = api2.reelById(newReelId); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } else { reels = emptyList(); offset = 0; hasMore = true; load() } } catch (_: Exception) { reels = emptyList(); offset = 0; hasMore = true; load() } } } else { reels = emptyList(); offset = 0; hasMore = true; load() } }, onClose = { showUpload = false; onUploadUriConsumed(); camVideoUri = null; pendingCoverUri = null; pendingCamFilter = null; pendingCamSpeed = null }) }
     if (showSaved) { SavedReelsScreen(api2, onClose = { showSaved = false }, onOpenReel = { id -> showSaved = false; scope.launch { try { val r = api2.reelById(id); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } } catch (_: Exception) {} } }) }
     LaunchedEffect(uploadUri) { if (uploadUri != null) showUpload = true }
-    LaunchedEffect(feed) { reels = emptyList(); offset = 0; hasMore = true; lastPage = 0; session.scrollIndex = 0; load() }
+    // v3.8 (F10): tab switches go through switchFeed() (cached restore);
+    // this only loads the first tab on first composition.
+    LaunchedEffect(Unit) { if (reels.isEmpty()) load() }
     // Deep-link: jump to a reel (from a notification / profile grid).
     // R3: if it is not in the loaded list, fetch it directly with
     // GET /api/reels/:id and prepend it instead of silently landing at
@@ -257,26 +340,40 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                         if (vr.success && vc != null) reels = reels.map { if (it.id == reel.id) it.copy(viewCount = vc) else it }
                     } catch (_: Exception) {}
                 }
+                // v3.8 (F11): cache the watched reel for offline playback.
+                scope.launch(Dispatchers.IO) { saveOfflineReel(context, reel) }
             }
         }
     }
     Column(Modifier.fillMaxSize().background(Color.Black)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Live-web header (AUDIT.md): separate black bar, PLAIN-TEXT tabs
+        // 14sp — For You bold, Following medium, NO pill; the active tab
+        // has a 2dp white underline ~22dp wide. Mute / + are 40dp dark
+        // circles with a ~20dp glyph. NO star icon (web has none — Save
+        // lives in the More sheet only).
+        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
             listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
                 val sel = feed == v
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.15f)).clickable { if (feed != v) feed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, color = if (sel) Color.Black else Color.White, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.clickable { switchFeed(v) }.padding(horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(label, fontSize = 14.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false)
+                    Spacer(Modifier.height(2.dp))
+                    Box(Modifier.width(22.dp).height(2.dp).background(if (sel) Color.White else Color.Transparent))
                 }
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(23.dp))
             }
             Spacer(Modifier.weight(1f))
             // R20: mute is saved on the phone, so it stays as the user left it.
-            IconButton(onClick = { session.updateMuted(!muted) }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(24.dp)) }
-            // R14: saved reels — the star saves a reel, this opens the list.
-            IconButton(onClick = { showSaved = true }) { Icon(Icons.Filled.Star, contentDescription = "Saved reels", tint = Color.White, modifier = Modifier.size(24.dp)) }
-            IconButton(onClick = { showUpload = true }) { Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(24.dp)) }
+            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { session.updateMuted(!muted) }, contentAlignment = Alignment.Center) {
+                Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { showUpload = true }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(20.dp))
+            }
         }
         if (focusError != null) { Text(focusError!!, color = Color(0xFFFCA5A5), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+        // v3.8 (F11): "Offline" badge when the feed is served from cache.
+        if (offline) { Text("Offline — showing saved reels", color = Color(0xFFFCA5A5), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         if (notice != null) { Text(notice!!, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         // R4: a failed first load shows the error with a Retry button.
         if (error != null && reels.isEmpty()) {
@@ -287,19 +384,24 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             }
         }
         if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() } }
+        // v3.8 (F9): pull down past the top to refresh the feed.
+        PullToRefreshBox(isRefreshing = refreshing, onRefresh = { refreshFeed() }, modifier = Modifier.weight(1f).fillMaxWidth()) {
         if (reels.isNotEmpty()) {
-            LazyColumn(state = listState, flingBehavior = flingBehavior, modifier = Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(state = listState, flingBehavior = flingBehavior, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(reels, key = { _, r -> r.id }) { page, reel ->
                 Box(Modifier.fillParentMaxSize()) {
                 ReelPage(
                     api2 = api2, reel = reel, myId = myId,
                     isActive = page == listState.firstVisibleItemIndex,
                     muted = muted,
+                    dataSaver = dataSaver,
+                    onTag = { tag -> notice = "#$tag — tag pages are not in the app yet"; scope.launch { delay(3000); notice = null } },
                     commentCount = reelCommentCounts[reel.id] ?: reel.commentCount,
                     followOverride = reel.author?.id?.let { authorFollowStates[it] },
                     onFollowChange = { aid, st -> authorFollowStates = authorFollowStates + (aid to st) },
                     onAuthor = onAuthor,
                     onComment = { reelComment = reel },
+                    onOpenSaved = { showSaved = true },
                     onDeleted = { reels = reels.filter { it.id != reel.id } },
                     // R19: resume from where this reel was left.
                     resumeMs = session.positions[reel.id] ?: 0,
@@ -327,6 +429,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         } else if (!loading && error == null) {
             // R34: Following with nobody followed gets guidance, not a bare "No reels yet".
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (feed == "following") "Follow people to see their reels here" else "No reels yet", color = Color.White) }
+        }
         }
     }
 }
@@ -362,8 +465,121 @@ private fun reelCount(n: Int): String {
     return "$n"
 }
 
+// v3.8 (F2+F3): extract evenly-spaced video frames as small JPEG bitmaps
+// (web /reels/new does the same with 3 frames for detect-category and a
+// row of frame thumbnails for the cover). Each bitmap is ~320px wide so a
+// base64 frame stays well under the server's 500KB limit.
+private fun extractVideoFrames(context: android.content.Context, uri: Uri, count: Int): List<Bitmap> {
+    val out = mutableListOf<Bitmap>()
+    try {
+        val mmr = MediaMetadataRetriever()
+        mmr.setDataSource(context, uri)
+        val durMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        if (durMs <= 0) { mmr.release(); return out }
+        for (i in 0 until count) {
+            val atMs = durMs * (i + 1) / (count + 1)
+            val frame = mmr.getFrameAtTime(atMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: continue
+            val w = frame.width; val h = frame.height
+            val scaled = if (w > 320) Bitmap.createScaledBitmap(frame, 320, (h * 320 / w).coerceAtLeast(1), true) else frame
+            out.add(scaled)
+            if (frame !== scaled) frame.recycle()
+        }
+        mmr.release()
+    } catch (_: Exception) {}
+    return out
+}
+
+private fun bitmapToBase64Jpeg(b: Bitmap): String {
+    val baos = ByteArrayOutputStream()
+    b.compress(Bitmap.CompressFormat.JPEG, 70, baos)
+    return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+}
+
+// v3.8 (F11): offline reel cache — watched reels are saved (video file +
+// a small JSON list of their metadata) so the feed can fall back to them
+// when the network is gone, like web's IndexedDB cache. Best-effort only.
+private fun offlineReelsDir(context: android.content.Context): File {
+    val d = File(context.cacheDir, "offline_reels")
+    if (!d.exists()) d.mkdirs()
+    return d
+}
+
+private fun saveOfflineReel(context: android.content.Context, reel: Reel) {
+    try {
+        val url = reel.videoUrl ?: return
+        val file = File(offlineReelsDir(context), "${reel.id}.mp4")
+        if (!file.exists() || file.length() == 0L) {
+            val conn = java.net.URL(url).openConnection()
+            conn.connectTimeout = 8000; conn.readTimeout = 15000
+            conn.getInputStream().use { inp -> file.outputStream().use { out -> inp.copyTo(out) } }
+        }
+        val prefs = context.getSharedPreferences("frianzo_reels", android.content.Context.MODE_PRIVATE)
+        val gson = com.google.gson.Gson()
+        val saved = try { gson.fromJson(prefs.getString("offline_reels_json", "[]"), Array<Reel>::class.java)?.toMutableList() ?: mutableListOf() } catch (_: Exception) { mutableListOf() }
+        if (saved.none { it.id == reel.id }) {
+            saved.add(0, reel.copy(videoUrl = file.absolutePath))
+            if (saved.size > 20) saved.subList(20, saved.size).clear()
+            prefs.edit().putString("offline_reels_json", gson.toJson(saved)).apply()
+        }
+    } catch (_: Exception) {}
+}
+
+private fun loadOfflineReels(context: android.content.Context): List<Reel> {
+    return try {
+        val prefs = context.getSharedPreferences("frianzo_reels", android.content.Context.MODE_PRIVATE)
+        val gson = com.google.gson.Gson()
+        val list = gson.fromJson(prefs.getString("offline_reels_json", "[]"), Array<Reel>::class.java)?.toList() ?: emptyList()
+        list.filter { File(offlineReelsDir(context), "${it.id}.mp4").exists() }
+    } catch (_: Exception) { emptyList() }
+}
+
+// v3.8 (F5): caption with web rules — truncate at 80 chars with a
+// more/less button, #tag and @user as tappable blue spans.
 @Composable
-private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }) {
+private fun ReelCaptionText(caption: String, onAuthor: (String) -> Unit = {}, onTag: (String) -> Unit = {}) {
+    var expanded by remember(caption) { mutableStateOf(false) }
+    val shown = if (expanded || caption.length <= 80) caption else caption.take(80)
+    Column {
+        val annotated = androidx.compose.ui.text.buildAnnotatedString {
+            val tagRegex = Regex("(#[A-Za-z0-9_]+|@[A-Za-z0-9_.]+)")
+            var last = 0
+            for (m in tagRegex.findAll(shown)) {
+                if (m.range.first > last) append(shown.substring(last, m.range.first))
+                val token = m.value
+                val ann = if (token.startsWith("#")) "tag:${token.drop(1)}" else "user:${token.drop(1)}"
+                pushStringAnnotation(ann, ann)
+                withStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFF93C5FD), fontWeight = FontWeight.SemiBold)) { append(token) }
+                pop()
+                last = m.range.last + 1
+            }
+            if (last < shown.length) append(shown.substring(last))
+            if (!expanded && caption.length > 80) append("…")
+        }
+        ClickableText(
+            text = annotated,
+            style = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
+            maxLines = if (expanded) 10 else 3,
+            onClick = { offset ->
+                annotated.getStringAnnotations(offset, offset).firstOrNull()?.let { ann ->
+                    when {
+                        ann.tag.startsWith("tag:") -> onTag(ann.tag.removePrefix("tag:"))
+                        ann.tag.startsWith("user:") -> onAuthor(ann.tag.removePrefix("user:"))
+                    }
+                }
+            }
+        )
+        if (caption.length > 80) {
+            Text(
+                text = if (expanded) "less" else "more",
+                color = Color(0xFF93C5FD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clickable { expanded = !expanded }.padding(top = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, dataSaver: Boolean = false, onTag: (String) -> Unit = {}, onOpenSaved: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var liked by remember(reel.id) { mutableStateOf(reel.liked) }
@@ -401,13 +617,46 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     // allowed). The progress ticker reads player.currentPosition.
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var moreOpen by remember { mutableStateOf(false) }
+    // v3.8 (F12): Data Saver tap-to-play — the reel waits for a tap.
+    var tapToPlay by remember(reel.id) { mutableStateOf(false) }
+    // v3.8 (F14): single tap reveals the play/pause controls (web rule);
+    // they hide again after 3s.
+    var controlsVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(controlsVisible) { if (controlsVisible) { delay(3000); controlsVisible = false } }
+    // v3.8 (F14): a reel starts muted, then tries to unmute (web rule).
+    var autoMuted by remember(reel.id) { mutableStateOf(true) }
+    LaunchedEffect(isActive, reel.id) { if (isActive) { delay(600); autoMuted = false } }
+    // v3.8 (F14): a video error is auto-retried once after 1.5s (web rule).
+    var errorRetries by remember(reel.id) { mutableStateOf(0) }
+    LaunchedEffect(videoError) {
+        if (videoError != null && errorRetries < 1) {
+            delay(1500); errorRetries += 1
+            videoError = null; prepared = false; player = null; videoRetryKey += 1
+        }
+    }
+    // v3.8 (F7): "Interested in #category?" prompt state.
+    var showInterest by remember(reel.id) { mutableStateOf(false) }
+    var interestAnswered by remember(reel.id) { mutableStateOf(false) }
+    LaunchedEffect(isActive, reel.id) { if (isActive) { delay(3000); if (!interestAnswered && !reel.category.isNullOrBlank()) showInterest = true } }
+    LaunchedEffect(liked) { if (liked && !interestAnswered && !reel.category.isNullOrBlank()) showInterest = true }
+    // v3.8 (F15): live download progress (-1 = not downloading).
+    var downloadProgress by remember { mutableStateOf(-1) }
+    // v3.8 (F17): optional report details (500 chars, backend accepts it).
+    var reportDetails by remember { mutableStateOf("") }
+    var seekWidthPx by remember { mutableStateOf(0) }
     // v3.4: Follow / Follow Back pill on the author (GET /api/follows/{id}/status).
-    var authorFollow by remember(reel.author?.id) { mutableStateOf<String?>(null) }
+    // v3.8 (F6): seed from the reel's own friendStatus when the backend sent it.
+    var authorFollow by remember(reel.author?.id) { mutableStateOf<String?>(reel.friendStatus) }
     LaunchedEffect(reel.author?.id) {
         val aid = reel.author?.id
-        if (aid != null && aid != myId) {
+        if (aid != null && aid != myId && authorFollow == null) {
             try { val r = api2.followStatus(aid); if (r.success) authorFollow = r.data?.status } catch (_: Exception) {}
         }
+    }
+    // v3.8 (F21): save toggle shared by the rail star and the More sheet row.
+    fun toggleFav() {
+        val prevFav = fav; fav = !prevFav; showMsg(if (!prevFav) "Saved" else "Removed from saved")
+        scope.launch { try { val r = api2.toggleReelFavorite(reel.id); if (r.success && r.data != null) fav = r.data.favorited else { fav = prevFav; showMsg("Couldn't save — try again") } } catch (_: Exception) { fav = prevFav; showMsg("Couldn't save — try again") } }
     }
     val burstScale by animateFloatAsState(if (burst) 1.4f else 1f, label = "heartBurst")
     // v3.7 (C3+C4): the heart toggles from the CURRENT state (web rule) and
@@ -453,10 +702,11 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             positionMs = player?.currentPosition ?: 0
         }
     }
-    // R21: tap anywhere on the reel pauses it, not just the video area.
+    // v3.8 (F14): single tap reveals the play/pause controls (web rule) —
+    // the centre button does the pausing. Double-tap still toggles like.
     Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(reel.id) {
         detectTapGestures(
-            onTap = { paused = !paused },
+            onTap = { controlsVisible = true },
             // R35: double-tap toggles the like (like, or unlike if liked).
             onDoubleTap = { if (liked) doUnlike() else { doLike(); burst = true } },
         )
@@ -466,7 +716,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 AndroidView(
                     factory = { ctx -> VideoView(ctx).apply {
                         setVideoURI(Uri.parse(reel.videoUrl))
-                        setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; mp.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f); if (resumeMs > 0) mp.seekTo(resumeMs); if (isActive && !paused) start() }
+                        setOnPreparedListener { mp -> player = mp; durationMs = mp.duration; prepared = true; val em = muted || autoMuted; mp.setVolume(if (em) 0f else 1f, if (em) 0f else 1f); if (resumeMs > 0) mp.seekTo(resumeMs); if (isActive && !paused && (!dataSaver || tapToPlay)) start() }
                         // R1: a broken video reports the error instead of
                         // spinning forever.
                         setOnErrorListener { _, _, _ -> videoError = "Couldn't play this video"; true }
@@ -477,8 +727,10 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     } },
                     modifier = Modifier.fillMaxSize(),
                     update = { view ->
-                        player?.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f)
-                        if (isActive && !paused) { if (!view.isPlaying) view.start() } else view.pause()
+                        val em = muted || autoMuted
+                        player?.setVolume(if (em) 0f else 1f, if (em) 0f else 1f)
+                        // v3.8 (F12): Data Saver waits for an explicit tap.
+                        if (isActive && !paused && (!dataSaver || tapToPlay)) { if (!view.isPlaying) view.start() } else view.pause()
                     },
                     // R19: remember where this reel was left.
                     onRelease = { onPosition(player?.currentPosition ?: positionMs); player = null; it.stopPlayback() },
@@ -500,9 +752,24 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Video unavailable", color = Color.White, fontSize = 15.sp) }
         }
-        if (paused && prepared) {
+        // v3.8 (F12): Data Saver shows the poster + a tap-to-play pill.
+        if (dataSaver && !tapToPlay && prepared) {
+            Box(Modifier.fillMaxSize().clickable { tapToPlay = true }, contentAlignment = Alignment.Center) {
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 16.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Tap to play", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+        // v3.8 (F14): centre play/pause button, shown while controls are up.
+        if ((controlsVisible || paused) && prepared && (!dataSaver || tapToPlay)) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = "Paused", tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(72.dp))
+                IconButton(onClick = { paused = !paused; controlsVisible = true }, modifier = Modifier.size(84.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f))) {
+                    Icon(if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause, contentDescription = if (paused) "Play" else "Pause", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
             }
         }
         if (burst) {
@@ -510,42 +777,58 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Icon(Icons.Filled.Favorite, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(96.dp).graphicsLayer(scaleX = burstScale, scaleY = burstScale))
             }
         }
-        // Progress bar (top of the reel).
+        // v3.8 (F8): seekable progress bar — tap anywhere on it to seek.
+        // Screenshot bug (owner, v3.7): web progress is 4dp, 13dp above
+        // the bottom, white fill on a #404040 track — NOT a bar at the top.
         if (prepared && durationMs > 0) {
-            LinearProgressIndicator(progress = (positionMs.toFloat() / durationMs).coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth().height(3.dp), color = Color.White, trackColor = Color.White.copy(alpha = 0.3f))
+            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 13.dp).fillMaxWidth().height(16.dp).onSizeChanged { seekWidthPx = it.width }.pointerInput(durationMs) {
+                detectTapGestures { offset ->
+                    if (seekWidthPx > 0) {
+                        val ratio = (offset.x / seekWidthPx).coerceIn(0f, 1f)
+                        val ms = (ratio * durationMs).toInt()
+                        player?.seekTo(ms); positionMs = ms
+                    }
+                }
+            }, contentAlignment = Alignment.CenterStart) {
+                Box(Modifier.fillMaxWidth().height(4.dp).background(Color(0xFF404040)))
+                Box(Modifier.fillMaxWidth((positionMs.toFloat() / durationMs).coerceIn(0f, 1f)).height(4.dp).background(Color.White))
+            }
         }
         if (actionMsg != null) {
             Box(Modifier.align(Alignment.TopCenter).padding(top = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 14.dp, vertical = 8.dp)) {
                 Text(actionMsg!!, color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
             }
         }
+        // v3.8 (F15): live download progress.
+        if (downloadProgress >= 0) {
+            Box(Modifier.align(Alignment.TopCenter).padding(top = 56.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 14.dp, vertical = 8.dp)) {
+                Text("Downloading ${downloadProgress}%", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+            }
+        }
         // Right rail: Like / Comment / Share / Views / Save / More.
-        Column(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp, bottom = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(Modifier.align(Alignment.CenterEnd).padding(end = 14.dp, bottom = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { toggleLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(30.dp)) }
-                Text(reelCount(likes), color = Color.White, fontSize = 12.sp)
+                IconButton(onClick = { toggleLike() }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(width = 28.dp, height = 24.dp)) }
+                Text(reelCount(likes), color = Color.White, fontSize = 13.sp)
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = onComment) { Icon(Icons.Filled.Chat, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(30.dp)) }
-                Text(reelCount(commentCount), color = Color.White, fontSize = 12.sp)
+                IconButton(onClick = onComment) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(width = 26.dp, height = 22.dp)) }
+                Text(reelCount(commentCount), color = Color.White, fontSize = 13.sp)
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 // R11/R6: the share sheet (DM + channels + copy). The count
                 // moves only when a channel is actually tapped, never when
                 // the sheet is opened or the chooser is cancelled.
-                IconButton(onClick = { shareOpen = true }) { Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(30.dp)) }
-                Text(if (shares > 0) reelCount(shares) else "Share", color = Color.White, fontSize = 12.sp)
+                IconButton(onClick = { shareOpen = true }) { Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(width = 26.dp, height = 22.dp)) }
+                Text(if (shares > 0) reelCount(shares) else "Share", color = Color.White, fontSize = if (shares > 0) 13.sp else 12.sp)
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Filled.Visibility, contentDescription = "Views", tint = Color.White, modifier = Modifier.size(28.dp))
-                Text(reelCount(reel.viewCount), color = Color.White, fontSize = 12.sp)
+                // Live web has NO eye icon on Views — number + "Views" only.
+                Text(reelCount(reel.viewCount), color = Color.White, fontSize = 13.sp)
+                Text("Views", color = Color.White, fontSize = 12.sp)
             }
-            IconButton(onClick = {
-                val prevFav = fav; fav = !prevFav; showMsg(if (!prevFav) "Saved" else "Removed from saved")
-                scope.launch { try { val r = api2.toggleReelFavorite(reel.id); if (r.success && r.data != null) fav = r.data.favorited else { fav = prevFav; showMsg("Couldn't save — try again") } } catch (_: Exception) { fav = prevFav; showMsg("Couldn't save — try again") } }
-            }) { Icon(if (fav) Icons.Filled.Star else Icons.Outlined.StarBorder, contentDescription = "Save reel", tint = if (fav) Color(0xFFF59E0B) else Color.White, modifier = Modifier.size(30.dp)) }
             Box {
-                IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White, modifier = Modifier.size(30.dp)) }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) { IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White, modifier = Modifier.size(24.dp)) }; Text("More", color = Color.White, fontSize = 12.sp) }
                 DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
                     DropdownMenuItem(text = { Text("Copy link") }, onClick = { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", reelLink)); showMsg("Link copied") })
                     // R13: download the watermarked mp4 into Downloads.
@@ -554,6 +837,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         scope.launch {
                             try {
                                 val body = api2.downloadReel(reel.id)
+                                val totalBytes = body.contentLength()
                                 val fileName = "frianzo-reel-${reel.id}.mp4"
                                 val values = ContentValues().apply {
                                     put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -563,8 +847,22 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
                                 if (uri == null) { showMsg("Download failed"); return@launch }
                                 val stream = body.byteStream()
-                                try { context.contentResolver.openOutputStream(uri)?.use { out -> stream.copyTo(out) }; showMsg("Downloaded") } finally { try { stream.close() } catch (_: Exception) {}; try { body.close() } catch (_: Exception) {} }
-                            } catch (e: Exception) { showMsg(friendlyReelsError(e, "Download failed — try again")) }
+                                try {
+                                    // v3.8 (F15): count bytes while copying so
+                                    // the pill above shows a live 0-100%.
+                                    downloadProgress = 0
+                                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                                        val buf = ByteArray(8192)
+                                        var read: Int
+                                        var done = 0L
+                                        while (stream.read(buf).also { read = it } != -1) {
+                                            out.write(buf, 0, read); done += read
+                                            if (totalBytes > 0) downloadProgress = ((done * 100) / totalBytes).toInt().coerceIn(0, 100)
+                                        }
+                                    }
+                                    downloadProgress = -1; showMsg("Downloaded")
+                                } finally { try { stream.close() } catch (_: Exception) {}; try { body.close() } catch (_: Exception) {}; downloadProgress = -1 }
+                            } catch (e: Exception) { downloadProgress = -1; showMsg(friendlyReelsError(e, "Download failed — try again")) }
                         }
                     })
                     // R12: "Not interested" hides this reel / creator from the feed.
@@ -587,6 +885,21 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                             } catch (_: Exception) { showMsg("Couldn't hide — try again") }
                         }
                     })
+                    // v3.8 (F7): "Interested" row alongside Not interested.
+                    if (!reel.category.isNullOrBlank()) DropdownMenuItem(text = { Text("Interested") }, onClick = {
+                        moreOpen = false
+                        scope.launch {
+                            try {
+                                val r = api2.notInterested(mapOf("type" to "interested_category", "value" to (reel.category ?: "")))
+                                if (r.success) showMsg("We'll show you more like this") else showMsg("Couldn't save — try again")
+                            } catch (_: Exception) { showMsg("Couldn't save — try again") }
+                        }
+                    })
+                    // v3.8 (F21): "Save reel" row in the More sheet (web rule).
+                    DropdownMenuItem(text = { Text(if (fav) "Remove from saved" else "Save reel") }, onClick = { moreOpen = false; toggleFav() })
+                    // Owner rule: no star icon in header/rail — the saved
+                    // list opens from this row instead.
+                    DropdownMenuItem(text = { Text("Saved reels") }, onClick = { moreOpen = false; onOpenSaved() })
                     // R30: report with a real reason + confirmation.
                     DropdownMenuItem(text = { Text("Report") }, onClick = { moreOpen = false; reportOpen = true })
                     if (reel.author?.id == myId) DropdownMenuItem(text = { Text("Delete reel", color = Color.Red) }, onClick = { moreOpen = false; showDeleteReel = true })
@@ -594,11 +907,15 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             }
         }
         // Bottom-left: author + caption pill.
-        Column(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, end = 72.dp, bottom = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { reel.author?.username?.let { onAuthor(it) } }) {
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, end = 72.dp, bottom = 28.dp)) {
+            Row(Modifier.fillMaxWidth().clickable { reel.author?.username?.let { onAuthor(it) } }, verticalAlignment = Alignment.CenterVertically) {
                 FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
                 Spacer(Modifier.width(8.dp))
-                Text("@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // v3.8 (F6): web shows the display name + "· 2d" time ago.
+                // The name takes weight(1f) and truncates, so the Follow pill
+                // never clips on a 360dp phone (owner rule).
+                Text(reel.author?.displayName ?: "@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (!reel.createdAt.isNullOrBlank()) { Spacer(Modifier.width(4.dp)); Text("· ${reelTimeAgo(reel.createdAt)}", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, softWrap = false) }
                 if (reel.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
                 val authorId = reel.author?.id
                 // v3.7 (C10): web rule — the pill shows ONLY while not
@@ -609,7 +926,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 if (authorId != null && authorId != myId && effectiveFollow != null && effectiveFollow != "self" && effectiveFollow != "following" && effectiveFollow != "friends") {
                     Spacer(Modifier.width(8.dp))
                     val label = if (effectiveFollow == "follow_back") "Follow Back" else "Follow"
-                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable {
+                    Box(Modifier.height(34.dp).clip(RoundedCornerShape(28.dp)).background(Color.White).clickable {
                         val prev = effectiveFollow
                         authorFollow = "following"
                         onFollowChange(authorId, "following")
@@ -623,16 +940,32 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 } else { authorFollow = prev; onFollowChange(authorId, prev) }
                             } catch (_: Exception) { authorFollow = prev; onFollowChange(authorId, prev) }
                         }
-                    }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                        Text(label, color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+                        Text(label, color = Color.Black, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
                 }
             }
-            reel.caption?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Color.White, fontSize = 14.sp, maxLines = 3) }
-            reel.category?.let { Spacer(Modifier.height(6.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) { Text(it, color = Color.White, fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }
+            // v3.8 (F5): 80-char truncate + more/less, #tag / @user links.
+            reel.caption?.let { Spacer(Modifier.height(8.dp)); ReelCaptionText(it, onAuthor = { u -> onAuthor(u) }, onTag = onTag) }
+            // v3.8 (F20): web chip is "#Category" with a # prefix.
+            reel.category?.let { Spacer(Modifier.height(6.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 8.dp, vertical = 2.dp)) { Text("#" + it.replaceFirstChar { c -> c.uppercase() }, color = Color.White, fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }
+            // v3.8 (F7): "Interested in #category? Yes / No" (web rule).
+            if (showInterest && !interestAnswered && !reel.category.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Interested in #${reel.category}?", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    TextButton(onClick = { interestAnswered = true; showInterest = false; scope.launch { try { api2.notInterested(mapOf("type" to "interested_category", "value" to (reel.category ?: ""))) } catch (_: Exception) {} }; showMsg("We'll show you more like this") }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Yes", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                    TextButton(onClick = { interestAnswered = true; showInterest = false }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("No", color = Color.White, fontSize = 13.sp) }
+                }
+            }
             Spacer(Modifier.height(8.dp))
-            Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White.copy(alpha = 0.2f)).clickable { onComment() }.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Text("Write a comment...", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+            Box(Modifier.height(38.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.45f)).clickable { onComment() }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                // v3.8 (F18): the pill has a 20px speech-bubble icon (web rule).
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Write a comment...", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                }
             }
         }
         if (shareOpen) {
@@ -651,6 +984,9 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 Text(label, fontSize = 15.sp)
                             }
                         }
+                        // v3.8 (F17): optional details (500 chars, web rule).
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
                     }
                 },
                 confirmButton = {
@@ -658,7 +994,8 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         reportOpen = false
                         scope.launch {
                             try {
-                                if (api2.reportReel(reel.id, mapOf("reason" to reportReason)).success) showMsg("Reported. Thanks for letting us know.") else showMsg("Couldn't report — try again")
+                                val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
+                                if (api2.reportReel(reel.id, body).success) { reportDetails = ""; showMsg("Reported. Thanks for letting us know.") } else showMsg("Couldn't report — try again")
                             } catch (_: Exception) { showMsg("Couldn't report — try again") }
                         }
                     }) { Text("Report", color = Color.Red) }
@@ -804,7 +1141,7 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
                     Button(onClick = { error = null; load() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
                 }
             }
-            else if (reels.isEmpty()) { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No saved reels yet. Tap the star on a reel to save it here.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+            else if (reels.isEmpty()) { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No saved reels yet. Save a reel from its More menu to see it here.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             else {
                 LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(reels, key = { it.id }) { reel ->
@@ -892,14 +1229,16 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                Text("$total comments", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                // v3.8 (F19): web header is "N comments", or
+                // "Join the conversation" when there are none yet.
+                Text(if (total > 0) "$total comments" else "Join the conversation", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 if (loadingFirst) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
-                else if (comments.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { Text("0 comments", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                else if (comments.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { Text("No comments yet. Be the first to comment.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                 items(comments, key = { it.id }) { c ->
                     ReelCommentRow(api2, c, reel, myId, followStatus = followStates[c.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0); onCommentDeleted() })
                     val replies = c.replies
@@ -962,7 +1301,11 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         scope.launch {
                             try {
                                 val res = api2.addReelComment(reel.id, CommentCreateRequest(text, parent))
-                                if (res.success) { total += 1; onCommentAdded(); load() } else error = friendlyReelsError(res.error?.message, "Could not send comment")
+                                if (res.success) {
+                                    // v3.8 (F16): short send sound (web rule).
+                                    try { val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60); tg.startTone(ToneGenerator.TONE_PROP_BEEP, 120); scope.launch { delay(300); try { tg.release() } catch (_: Exception) {} } } catch (_: Exception) {}
+                                    total += 1; onCommentAdded(); load()
+                                } else error = friendlyReelsError(res.error?.message, "Could not send comment")
                             } catch (e: Exception) { error = friendlyReelsError(e, "Could not send comment"); draft = text }
                         }
                     },
@@ -1134,9 +1477,18 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
 // No code in this file may reference okio.buffer, Okio.buffer, .buffer(),
 // ForwardingSink or BufferedSink.
 
+// v3.8 (F22): one filter chip, reused by the grouped filter picker.
+@Composable
+private fun FilterChip(value: String, label: String, selected: String, onSelect: (String) -> Unit) {
+    val sel = selected == value
+    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { onSelect(value) }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+        Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+    }
+}
+
 // ---------- REEL UPLOAD: video + caption + category (POST /api/reels) ----------
 @Composable
-private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, onDone: (String?) -> Unit, onClose: () -> Unit) {
+private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, onDone: (String?) -> Unit, onClose: () -> Unit, initialCoverUri: Uri? = null, initialFilter: String? = null, initialSpeed: String? = null, onOpenCamera: () -> Unit = {}) {
     val context = LocalContext.current
     var videoUri by remember { mutableStateOf<Uri?>(initialVideoUri) }
     var caption by rememberSaveable { mutableStateOf("") }
@@ -1144,11 +1496,24 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     var customCategory by rememberSaveable { mutableStateOf("") }
     // v3.4: real upload options the backend accepts (POST /api/reels):
     // cover image, speed 0.5|1|1.5|2, text overlay (<=100), trim seconds.
-    var coverUri by remember { mutableStateOf<Uri?>(null) }
-    var speed by rememberSaveable { mutableStateOf("1") }
+    var coverUri by remember { mutableStateOf<Uri?>(initialCoverUri) }
+    var speed by rememberSaveable { mutableStateOf(initialSpeed ?: "1") }
     // v3.5 (R15): server filter enum normal/warm/cool/bw/vintage/vivid/beauty.
-    var filter by rememberSaveable { mutableStateOf("normal") }
+    var filter by rememberSaveable { mutableStateOf(initialFilter ?: "normal") }
     var textOverlay by rememberSaveable { mutableStateOf("") }
+    // v3.8 (F4): editor extras — the backend schema already accepts them.
+    var template by rememberSaveable { mutableStateOf<String?>(null) }
+    var letterbox by rememberSaveable { mutableStateOf(false) }
+    var flip by rememberSaveable { mutableStateOf(false) }
+    var rotateDeg by rememberSaveable { mutableStateOf(0) }
+    var crop by rememberSaveable { mutableStateOf<String?>(null) }
+    var textPosition by rememberSaveable { mutableStateOf("top") }
+    // v3.8 (F2+F3): frames extracted from the picked video — cover
+    // thumbnails + AI category auto-detect.
+    var coverFrames by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
+    var selectedFrameIdx by remember { mutableStateOf(-1) }
+    var detecting by remember { mutableStateOf(false) }
+    var manualCategory by remember { mutableStateOf(false) }
     var trimStartF by remember { mutableStateOf(0f) }
     var trimEndF by remember { mutableStateOf(0f) }
     var maxSec by remember { mutableStateOf(180) }
@@ -1184,6 +1549,31 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         } catch (e: Exception) { message = friendlyReelsError(e, "Couldn't read this video") }
     }
     LaunchedEffect(videoUri) { val u = videoUri; if (u != null) checkVideo(u) }
+    // v3.8 (F2+F3): extract frames once per video — cover thumbnails, and
+    // AI category auto-detect (POST /api/reels/detect-category, 3 frames).
+    LaunchedEffect(videoUri) {
+        val u = videoUri ?: return@LaunchedEffect
+        scope.launch(Dispatchers.IO) {
+            val frames = extractVideoFrames(context, u, 6)
+            coverFrames = frames
+            selectedFrameIdx = -1
+            if (!manualCategory && frames.isNotEmpty()) {
+                detecting = true
+                try {
+                    val b64 = frames.take(3).map { bitmapToBase64Jpeg(it) }
+                    val r = api2.detectCategory(mapOf<String, Any>("frames" to b64, "caption" to caption))
+                    val cat = r.data?.category
+                    if (r.success && !cat.isNullOrBlank()) {
+                        val known = listOf("Funny", "Dance", "Music", "Comedy", "Food", "Travel", "Sports", "Fashion", "Education", "Gaming", "Lifestyle")
+                        val match = known.firstOrNull { it.equals(cat, ignoreCase = true) }
+                        if (match != null) { category = match; customCategory = "" }
+                        else { category = "Other"; customCategory = cat }
+                    }
+                } catch (_: Exception) {}
+                detecting = false
+            }
+        }
+    }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) videoUri = uri }
     // R27: the server rejects covers over 10MB, so check at pick time.
     val coverPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
@@ -1196,16 +1586,8 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     // v3.1: Gallery asked at pick time; Camera + Microphone asked when the
     // user taps "Record a video" (owner-confirmed permissions).
     val pickReelVideo = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) }
-    var recordUri by remember { mutableStateOf<Uri?>(null) }
-    // v3.1 fix: TakeVideo contract would not compile here (generic inference
-    // failed twice) — use the plain video-capture intent instead, same result.
-    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) { val u = recordUri; if (u != null) videoUri = u }
-    }
-    val recordReelVideo = rememberPermissionGate(cameraMicPermissions()) {
-        val u = createVideoUri(context)
-        if (u != null) { recordUri = u; takeVideo.launch(Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply { putExtra(MediaStore.EXTRA_OUTPUT, u); addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }) } else message = "Could not start camera"
-    }
+    // v3.8 (F1): "Record a video" now opens the in-app CameraX recorder
+    // (ReelCameraScreen) instead of the system camera intent.
     // v3.6 (U1): the upload form is ~850-900dp tall with a video
     // picked — scroll it so Trim and the Upload button stay reachable
     // on small phones.
@@ -1217,7 +1599,7 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { pickReelVideo() }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (videoUri == null) "Pick a video" else "Video selected", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            OutlinedButton(onClick = { recordReelVideo() }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Record a video", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            OutlinedButton(onClick = { onOpenCamera() }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Record a video", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         }
         // R25: a muted looping preview of the picked video + its length/size.
         if (videoUri != null) {
@@ -1226,9 +1608,20 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
             // instead of the 200dp letterbox where a 9:16 video
             // rendered only ~112dp wide with black bars.
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Box(Modifier.height(320.dp).aspectRatio(9f / 16f).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
+                // v3.8 (F4): preview shows flip / rotate / crop / letterbox
+                // and the text overlay at its chosen position.
+                Box(Modifier.height(320.dp).aspectRatio(if (crop == "square") 1f else 9f / 16f).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
                     key(videoUri) {
-                        AndroidView(factory = { ctx -> VideoView(ctx).apply { setVideoURI(videoUri); setOnPreparedListener { mp -> mp.setVolume(0f, 0f); mp.isLooping = true; start() } } }, modifier = Modifier.fillMaxSize())
+                        AndroidView(factory = { ctx -> VideoView(ctx).apply { setVideoURI(videoUri); setOnPreparedListener { mp -> mp.setVolume(0f, 0f); mp.isLooping = true; start() } } }, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = if (flip) -1f else 1f; rotationZ = rotateDeg.toFloat() })
+                    }
+                    if (letterbox) {
+                        Box(Modifier.fillMaxWidth().height(28.dp).background(Color.Black).align(Alignment.TopCenter))
+                        Box(Modifier.fillMaxWidth().height(28.dp).background(Color.Black).align(Alignment.BottomCenter))
+                    }
+                    if (textOverlay.isNotBlank()) {
+                        Box(Modifier.fillMaxSize().padding(12.dp), contentAlignment = when (textPosition) { "bottom" -> Alignment.BottomCenter; "middle" -> Alignment.Center; else -> Alignment.TopCenter }) {
+                            Text(textOverlay, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
             }
@@ -1237,16 +1630,15 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = caption, onValueChange = { if (it.length <= 500) caption = it }, label = { Text("Caption (optional)") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
-        // R36: category chips instead of a free-text box. Auto-detect is
-        // NOT wired: POST /api/reels/detect-category needs video frames
-        // (base64 images), which the app does not extract — named plainly,
-        // not faked.
-        Text("Category", style = MaterialTheme.typography.bodyMedium)
+        // R36: category chips instead of a free-text box.
+        // v3.8 (F2): AI auto-detect runs when a video is picked; tapping a
+        // chip overrides it (manualCategory) and stops further auto-detect.
+        Text("Category" + if (detecting) " — detecting…" else "", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(4.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(listOf("Funny", "Dance", "Music", "Comedy", "Food", "Travel", "Sports", "Fashion", "Education", "Gaming", "Lifestyle", "Other")) { cat ->
                 val sel = category == cat
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { category = cat; if (cat != "Other") customCategory = "" }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { category = cat; manualCategory = true; if (cat != "Other") customCategory = "" }.padding(horizontal = 14.dp, vertical = 8.dp)) {
                     Text(cat, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
                 }
             }
@@ -1254,18 +1646,46 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         if (category == "Other") { Spacer(Modifier.height(8.dp)); OutlinedTextField(value = customCategory, onValueChange = { customCategory = it }, label = { Text("Your category") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
         Text("Max length: ${maxSec}s" + (dailyStatus?.let { " · Reels left today: ${it.remaining} (posted ${it.postedToday})" } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = { pickCover() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (coverUri == null) "Add cover photo (optional)" else "Cover selected", maxLines = 1, softWrap = false) }
-        Spacer(Modifier.height(8.dp))
-        // R15: filter picker — the server applies it, the app only chooses.
-        Text("Filter", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(4.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(listOf("normal" to "Normal", "warm" to "Warm", "cool" to "Cool", "bw" to "B&W", "vintage" to "Vintage", "vivid" to "Vivid", "beauty" to "Beauty")) { (v, label) ->
-                val sel = filter == v
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { filter = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+        OutlinedButton(onClick = { pickCover() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (coverUri == null && selectedFrameIdx < 0) "Add cover photo (optional)" else "Cover selected", maxLines = 1, softWrap = false) }
+        // v3.8 (F3): pick the cover from the video's own frames (web rule).
+        if (coverFrames.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Cover from video", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(4.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(coverFrames.size) { idx ->
+                    val sel = selectedFrameIdx == idx
+                    Box(Modifier.size(width = 64.dp, height = 112.dp).clip(RoundedCornerShape(8.dp)).border(if (sel) 3.dp else 1.dp, if (sel) FrianzoBlue else FrianzoBorder, RoundedCornerShape(8.dp)).clickable { selectedFrameIdx = idx; coverUri = null }) {
+                        androidx.compose.foundation.Image(bitmap = coverFrames[idx].asImageBitmap(), contentDescription = "Cover frame ${idx + 1}", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    }
                 }
             }
+        }
+        Spacer(Modifier.height(8.dp))
+        // R15 + v3.8 (F22): filter picker grouped like web
+        // (Trending / Portrait / B&W) — the server applies the filter.
+        Text("Filter", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        Text("Trending", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip("normal", "Normal", filter) { filter = it }
+            FilterChip("warm", "Warm", filter) { filter = it }
+            FilterChip("vivid", "Vivid", filter) { filter = it }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Portrait", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip("beauty", "Beauty", filter) { filter = it }
+            FilterChip("cool", "Cool", filter) { filter = it }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("B&W", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip("bw", "B&W", filter) { filter = it }
+            FilterChip("vintage", "Vintage", filter) { filter = it }
         }
         Spacer(Modifier.height(8.dp))
         Text("Speed", style = MaterialTheme.typography.bodyMedium)
@@ -1278,7 +1698,56 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
             }
         }
         Spacer(Modifier.height(8.dp))
+        // v3.8 (F4): one-tap templates (web rule).
+        Text("Template", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf<Pair<String?, String>>(null to "None", "cinematic" to "Cinematic", "glow" to "Glow", "slowmo" to "Slow Mo").forEach { (v, label) ->
+                val sel = template == v
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable {
+                    template = v
+                    when (v) {
+                        "cinematic" -> { filter = "vintage"; letterbox = true }
+                        "glow" -> { filter = "beauty"; letterbox = false }
+                        "slowmo" -> { filter = "cool"; speed = "0.5" }
+                    }
+                }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { letterbox = !letterbox }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Letterbox: " + if (letterbox) "On" else "Off", fontSize = 13.sp, maxLines = 1, softWrap = false) }
+            OutlinedButton(onClick = { flip = !flip }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Flip: " + if (flip) "On" else "Off", fontSize = 13.sp, maxLines = 1, softWrap = false) }
+            OutlinedButton(onClick = { rotateDeg = when (rotateDeg) { 0 -> 90; 90 -> 180; 180 -> 270; else -> 0 } }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Rotate: ${rotateDeg}°", fontSize = 13.sp, maxLines = 1, softWrap = false) }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Crop", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf<Pair<String?, String>>(null to "Original", "square" to "Square", "portrait" to "Portrait").forEach { (v, label) ->
+                val sel = crop == v
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { crop = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         OutlinedTextField(value = textOverlay, onValueChange = { if (it.length <= 100) textOverlay = it }, label = { Text("Text overlay (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        if (textOverlay.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Text position", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("top" to "Top", "middle" to "Middle", "bottom" to "Bottom").forEach { (v, label) ->
+                    val sel = textPosition == v
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { textPosition = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         // R25: visual trim — drag the start/end of the video instead of
         // typing seconds into two boxes.
@@ -1306,7 +1775,14 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                     val videoPart = MultipartBody.Part.createFormData("video", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
                     var coverPart: MultipartBody.Part? = null
                     var coverTmp: File? = null
-                    if (coverUri != null) {
+                    // v3.8 (F3): a picked video frame beats a gallery cover.
+                    val frameCover = selectedFrameIdx.takeIf { it >= 0 }?.let { coverFrames.getOrNull(it) }
+                    if (frameCover != null) {
+                        val cTmp = File(context.cacheDir, "reel_cover.jpg")
+                        coverTmp = cTmp
+                        cTmp.outputStream().use { out -> frameCover.compress(Bitmap.CompressFormat.JPEG, 85, out) }
+                        coverPart = MultipartBody.Part.createFormData("cover", cTmp.name, cTmp.asRequestBody("image/jpeg".toMediaTypeOrNull()))
+                    } else if (coverUri != null) {
                         val cInput = context.contentResolver.openInputStream(coverUri!!) ?: throw Exception("Could not read the cover photo")
                         val cMime = try { context.contentResolver.getType(coverUri!!) } catch (_: Exception) { null } ?: "image/jpeg"
                         val cExt = when (cMime.substringAfter("/")) { "png" -> "png"; "webp" -> "webp"; else -> "jpg" }
@@ -1329,6 +1805,12 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                         trimStartSec = trimStartSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
                         trimEndSec = trimEndSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
                         filter = if (filter == "normal") null else filter.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        // v3.8 (F4): editor extras — backend schema accepts them.
+                        letterbox = if (letterbox) "true".toRequestBody("text/plain".toMediaTypeOrNull()) else null,
+                        flip = if (flip) "true".toRequestBody("text/plain".toMediaTypeOrNull()) else null,
+                        rotate = if (rotateDeg != 0) rotateDeg.toString().toRequestBody("text/plain".toMediaTypeOrNull()) else null,
+                        crop = crop?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        textPosition = if (textOverlay.isNotBlank()) textPosition.toRequestBody("text/plain".toMediaTypeOrNull()) else null,
                     )
                     try { tmp.delete() } catch (_: Exception) {}
                     try { coverTmp?.delete() } catch (_: Exception) {}

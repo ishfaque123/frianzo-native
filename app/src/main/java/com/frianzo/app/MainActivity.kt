@@ -176,7 +176,12 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         // no image logo in the header); right = Search + Messages (badge 9+).
         // Second row: Home / Reels / Notifications (badge 99+) / Profile,
         // 24dp outline icons, NO labels, active slate-900 / inactive slate-400.
+        // Screenshot bug (owner, v3.7 phone screenshot): the reels screen
+        // is FULL-SCREEN black like web — NO app header, NO second nav row
+        // above it. The chrome returns when an overlay opens (profile,
+        // chat, drawer screen, post detail), because those need it.
         topBar = {
+            if (tab != Tab.REELS || drawerScreen != null || openChat != null || openProfile != null || openPostId != null) {
             Column {
                 TopAppBar(
                     title = {
@@ -222,6 +227,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 }
                 HorizontalDivider()
             }
+            }
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
@@ -231,7 +237,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
-                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
+                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
                 tab == Tab.REELS -> ReelsScreen(api2, myId, session = reelsSession, onAuthor = { username -> openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null })
                 tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED }, onPostAsReel = { uri -> pendingMedia = null; pendingReelUri = uri; tab = Tab.REELS })
                 tab == Tab.CHAT -> ChatListScreen(api2, myId) { id, name -> openChat = id to name }

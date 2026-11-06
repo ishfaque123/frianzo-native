@@ -34,6 +34,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -559,7 +560,7 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewMode
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
+fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenReel: (String) -> Unit = {}) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val posts = vm.posts
@@ -574,6 +575,8 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     var storyViewer by remember { mutableStateOf<StatusGroup?>(null) }
     var showStoryCreate by remember { mutableStateOf(false) }
     var statusGroups by remember { mutableStateOf<List<StatusGroup>>(emptyList()) }
+    // v3.8 (F13): reels interleaved in the feed, one card every 2 posts.
+    var feedReels by remember { mutableStateOf<List<Reel>>(emptyList()) }
     var statusFailed by remember { mutableStateOf(false) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
     // + BUTTON = SYSTEM GALLERY (live behaviour): photos AND videos.
@@ -591,6 +594,10 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
         try {
             val me = vm.api2.myProfile()
             if (me.success && me.data?.user != null) myAvatar = me.data.user.profilePictureUrl
+        } catch (_: Exception) {}
+        try {
+            val rf = vm.api2.reelFeed(0, "foryou")
+            if (rf.success && rf.data != null) feedReels = rf.data.reels
         } catch (_: Exception) {}
     }
     // Per-author follow status, fetched once per author (existing endpoint).
@@ -758,7 +765,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 Spacer(Modifier.height(8.dp))
             }
         }
-        items(posts, key = { it.id }) { post ->
+        itemsIndexed(posts, key = { _, p -> p.id }) { index, post ->
             LaunchedEffect(post.id) { vm.recordPostView(post.id) }
             val liked = post.id in likedIds
             val myReaction = vm.reactionByPost[post.id]
@@ -900,6 +907,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 }
             }
             Spacer(Modifier.height(8.dp))
+            // v3.8 (F13): a reel card every 2 posts (web rule).
+            if ((index + 1) % 2 == 0) {
+                val ri = (index + 1) / 2 - 1
+                feedReels.getOrNull(ri)?.let { reel ->
+                    FeedReelCard(vm.api2, reel, onOpenReel = onOpenReel)
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
         }
         item {
             if (error != null) Text(error!!, modifier = Modifier.padding(16.dp))
@@ -1039,6 +1054,116 @@ private fun ShareTile(label: String, color: Color, letter: String, onClick: () -
         }
         Spacer(Modifier.height(4.dp))
         Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// v3.8 (F13): reel card in the home feed, one every 2 posts (web rule) —
+// muted autoplay video, caption expand, Like, comment opens the reel,
+// share, mute toggle. Web sizes: avatar 40dp, username 15sp bold,
+// caption 14sp, counts 13sp, Like 28x24, Comment/Share 26x22, NO time
+// label, NO eye icon, NO star.
+@Composable
+private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var liked by remember(reel.id) { mutableStateOf(reel.liked) }
+    var likes by remember(reel.id) { mutableStateOf(reel.likeCount) }
+    var cardMuted by remember { mutableStateOf(true) }
+    var paused by remember { mutableStateOf(false) }
+    var expanded by remember(reel.id) { mutableStateOf(false) }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var shareNote by remember { mutableStateOf<String?>(null) }
+    // Web rule: a view is recorded when the card appears.
+    LaunchedEffect(reel.id) { try { api2.recordReelView(reel.id, mapOf("watchSec" to 0)) } catch (_: Exception) {} }
+    LaunchedEffect(shareNote) { if (shareNote != null) { delay(3000); shareNote = null } }
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(reel.author?.displayName ?: "@${reel.author?.username ?: ""}", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            if (!reel.createdAt.isNullOrBlank()) { Spacer(Modifier.width(4.dp)); Text("· ${feedReelTimeAgo(reel.createdAt)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
+            if (reel.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+            IconButton(onClick = { cardMuted = !cardMuted }) { Icon(if (cardMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (cardMuted) "Unmute" else "Mute", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+        if (reel.videoUrl != null) {
+            Box(Modifier.fillMaxWidth().padding(top = 10.dp).background(Color.Black).clickable { paused = !paused }, contentAlignment = Alignment.Center) {
+                AndroidView(factory = { ctx -> VideoView(ctx).apply {
+                    setVideoURI(Uri.parse(reel.videoUrl))
+                    setOnPreparedListener { mp -> player = mp; mp.setVolume(0f, 0f); mp.isLooping = true; if (!paused) start() }
+                } }, modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f), update = { view ->
+                    player?.setVolume(if (cardMuted) 0f else 1f, if (cardMuted) 0f else 1f)
+                    if (paused) view.pause() else if (!view.isPlaying) view.start()
+                })
+                if (paused) Box(Modifier.size(84.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
+            }
+        }
+        reel.caption?.let {
+            val shown = if (expanded || it.length <= 80) it else it.take(80) + "…"
+            Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp)) {
+                Text(shown, fontSize = 14.sp, maxLines = if (expanded) 10 else 3, overflow = TextOverflow.Ellipsis)
+                if (it.length > 80) Text(if (expanded) "less" else "more", color = FrianzoBlue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { expanded = !expanded }.padding(top = 2.dp))
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.clickable {
+                val prevLiked = liked; val prevLikes = likes
+                liked = !liked; likes = (likes + if (liked) 1 else -1).coerceAtLeast(0)
+                scope.launch { try { val r = api2.toggleReelLike(reel.id); if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount } else { liked = prevLiked; likes = prevLikes } } catch (_: Exception) { liked = prevLiked; likes = prevLikes } }
+            }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(width = 28.dp, height = 24.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("$likes", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(Modifier.clickable { onOpenReel(reel.id) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(width = 26.dp, height = 22.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("${reel.commentCount}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(Modifier.clickable {
+                scope.launch {
+                    try {
+                        val r = api2.createShareLink(mapOf("type" to "reel", "id" to reel.id))
+                        val link = if (r.success && !r.data?.code.isNullOrBlank()) "https://frianzo.online/s/${r.data!!.code}" else "https://frianzo.online/reels?id=${reel.id}"
+                        try { api2.recordShareEvent(mapOf("type" to "reel", "id" to reel.id, "channel" to "system")) } catch (_: Exception) {}
+                        val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, link) }
+                        context.startActivity(Intent.createChooser(intent, "Share reel"))
+                    } catch (_: Exception) { shareNote = "Couldn't share — try again" }
+                }
+            }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(width = 26.dp, height = 22.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(if (reel.shareCount > 0) "${reel.shareCount}" else "Share", fontSize = if (reel.shareCount > 0) 13.sp else 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (shareNote != null) Text(shareNote!!, fontSize = 13.sp, color = Color.Red, modifier = Modifier.padding(start = 12.dp, bottom = 8.dp))
+    }
+}
+
+// Same relative-time rule as the reels screen ("2d", "3h") — local copy
+// because reelTimeAgo in Screens2.kt is file-private.
+private fun feedReelTimeAgo(createdAt: String?): String {
+    if (createdAt.isNullOrBlank()) return ""
+    val formats = listOf(
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US),
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US),
+    )
+    var millis: Long? = null
+    for (f in formats) {
+        f.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        try { millis = f.parse(createdAt)?.time; if (millis != null) break } catch (_: Exception) {}
+    }
+    if (millis == null) return ""
+    val seconds = ((System.currentTimeMillis() - millis) / 1000).coerceAtLeast(0)
+    return when {
+        seconds < 60 -> "now"
+        seconds < 3600 -> "${seconds / 60}m"
+        seconds < 86400 -> "${seconds / 3600}h"
+        seconds < 604800 -> "${seconds / 86400}d"
+        seconds < 2592000 -> "${seconds / 604800}w"
+        seconds < 31536000 -> "${seconds / 2592000}mo"
+        else -> "${seconds / 31536000}y"
     }
 }
 
