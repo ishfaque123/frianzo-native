@@ -1,5 +1,6 @@
 // ---------- IN-APP CAMERA RECORDER (v3.8, F1): TikTok-style recorder —
-// 15s / 60s / 3m picker, 12 effects, flash, front/back flip, countdown
+// 15s / 60s / 3m picker, 7 effects (B-B29: one name per server filter),
+// flash, front/back flip, countdown
 // timer, speed, Photo mode, gallery pick, progress + timer, auto-stop.
 // CameraX (no system camera intent). Honest limit: the 12 effects are
 // chosen here and applied by the SERVER at upload (the server filter
@@ -85,9 +86,28 @@ fun ReelCameraScreen(
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
-    var permGranted by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    // B-B16: camera and microphone are tracked SEPARATELY. Photo mode
+    // needs only the camera; only video recording needs the mic. A
+    // permanently-denied permission offers app Settings (re-launching the
+    // system request is silently ignored by Android once denied forever).
+    var cameraGranted by remember { mutableStateOf(false) }
+    var micGranted by remember { mutableStateOf(false) }
+    var permAsked by remember { mutableStateOf(false) }
+    val activity = context as? android.app.Activity
+    fun permanentlyDenied(perm: String): Boolean {
+        val act = activity ?: return false
+        return permAsked && !androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(act, perm)
+    }
+    fun openAppSettings() {
+        try {
+            context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)).apply { addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK) })
+        } catch (_: Exception) { error = "Open Settings > Apps > Frianzo > Permissions to allow the camera" }
+    }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
-        permGranted = res.values.all { it }
+        permAsked = true
+        cameraGranted = res[Manifest.permission.CAMERA] == true
+        micGranted = res[Manifest.permission.RECORD_AUDIO] == true
     }
     LaunchedEffect(Unit) {
         permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
@@ -96,7 +116,11 @@ fun ReelCameraScreen(
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     var camera by remember { mutableStateOf<Camera?>(null) }
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // B-B17: an error pill clears itself after 5s (and is cleared by a
+    // successful record/photo, above) instead of staying pinned all session.
+    LaunchedEffect(error) {
+        if (error != null) { delay(5000); error = null }
+    }
     LaunchedEffect(Unit) {
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({ try { cameraProvider = future.get() } catch (_: Exception) { error = "Camera unavailable on this phone" } }, ContextCompat.getMainExecutor(context))
@@ -135,11 +159,14 @@ fun ReelCameraScreen(
     var elapsedMs by remember { mutableStateOf(0L) }
     val recording = activeRecording != null
 
+    // B-B29: 7 distinct server filters, one name each. The old list
+    // had 12 names for the same 7 filters ("Sunset"/"Warm Glow"/"Golden"
+    // were all "warm", etc.), so different picks uploaded identically.
+    // No new server filters are invented here.
     val effects = listOf(
         "Normal" to "normal", "Vivid" to "vivid", "Warm Glow" to "warm",
         "Cool Tone" to "cool", "Beauty" to "beauty", "Mono" to "bw",
-        "Vintage" to "vintage", "Sunset" to "warm", "Neon Pop" to "vivid",
-        "Dreamy" to "beauty", "Noir" to "bw", "Golden" to "warm",
+        "Vintage" to "vintage",
     )
     // Preview hint tint for the chosen effect (the real effect is applied
     // by the server at upload — see the file header).
@@ -161,19 +188,27 @@ fun ReelCameraScreen(
     }
 
     val startRecording: () -> Unit = {
-        val file = File(context.cacheDir, "reel_${System.currentTimeMillis()}.mp4")
-        try {
-            val rec = videoCapture.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
-                .withAudioEnabled()
-                .start(ContextCompat.getMainExecutor(context)) { event ->
-                    if (event is VideoRecordEvent.Finalize) {
-                        activeRecording = null
-                        if (!event.hasError()) onVideoRecorded(Uri.fromFile(file), serverFilter, speed)
-                        else error = "Recording failed — try again"
+        // B-B16: video needs the mic; without it, ask once (or point at
+        // Settings when permanently denied) instead of failing silently.
+        // Photo mode is unaffected — it never reaches this function.
+        if (!micGranted) {
+            if (permanentlyDenied(Manifest.permission.RECORD_AUDIO)) error = "Microphone is off — open Settings to allow it, or switch to Photo mode"
+            else { error = "Microphone is needed for video — allow it, or switch to Photo mode"; permLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)) }
+        } else {
+            val file = File(context.cacheDir, "reel_${System.currentTimeMillis()}.mp4")
+            try {
+                val rec = videoCapture.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
+                    .withAudioEnabled()
+                    .start(ContextCompat.getMainExecutor(context)) { event ->
+                        if (event is VideoRecordEvent.Finalize) {
+                            activeRecording = null
+                            if (!event.hasError()) { error = null; onVideoRecorded(Uri.fromFile(file), serverFilter, speed) }
+                            else error = "Recording failed — try again"
+                        }
                     }
-                }
-            activeRecording = rec
-        } catch (_: Exception) { error = "Could not start recording" }
+                activeRecording = rec
+            } catch (_: Exception) { error = "Could not start recording" }
+        }
     }
     val takePhoto: () -> Unit = {
         val file = File(context.cacheDir, "reel_photo_${System.currentTimeMillis()}.jpg")
@@ -182,7 +217,7 @@ fun ReelCameraScreen(
                 ImageCapture.OutputFileOptions.Builder(file).build(),
                 ContextCompat.getMainExecutor(context),
                 object : ImageCapture.OnImageSavedCallback {
-                    override fun onImageSaved(output: ImageCapture.OutputFileResults) { onPhotoCaptured(Uri.fromFile(file)) }
+                    override fun onImageSaved(output: ImageCapture.OutputFileResults) { error = null; onPhotoCaptured(Uri.fromFile(file)) }
                     override fun onError(exception: ImageCaptureException) { error = "Photo failed — try again" }
                 }
             )
@@ -210,18 +245,24 @@ fun ReelCameraScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (permGranted && cameraProvider != null) {
+        if (cameraGranted && cameraProvider != null) {
             AndroidView(
                 factory = { previewView.also { preview.setSurfaceProvider(it.surfaceProvider) } },
                 modifier = Modifier.fillMaxSize(),
             )
             if (tint != Color.Transparent) Box(Modifier.fillMaxSize().background(tint))
-        } else if (!permGranted) {
+        } else if (!cameraGranted) {
             Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text("Camera and microphone are needed to record a reel.", color = Color.White, fontSize = 15.sp)
+                Text(if (permanentlyDenied(Manifest.permission.CAMERA)) "Camera permission is off. Turn it on in Settings to use the camera." else "Camera is needed to record a reel or take a photo. (Microphone is only needed for video.)", color = Color.White, fontSize = 15.sp)
                 Spacer(Modifier.height(16.dp))
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable { permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)) }.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Text("Allow camera", color = Color.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                if (permanentlyDenied(Manifest.permission.CAMERA)) {
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable { openAppSettings() }.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                        Text("Open Settings", color = Color.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                } else {
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable { permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)) }.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                        Text("Allow camera", color = Color.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
                 Box(Modifier.clickable { onClose() }.padding(8.dp)) { Text("Close", color = Color.White, fontSize = 15.sp) }
@@ -230,7 +271,7 @@ fun ReelCameraScreen(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Starting camera…", color = Color.White, fontSize = 15.sp) }
         }
 
-        if (permGranted) {
+        if (cameraGranted) {
             // Top bar: close, countdown timer, flash, flip — 40dp dark
             // circles with ~20dp glyphs (live-web sizes).
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -296,8 +337,8 @@ fun ReelCameraScreen(
                     }
                     Spacer(Modifier.height(10.dp))
                 }
-                // 12 effects (web list) — the chosen one is applied by the
-                // server at upload; the preview tint is only a hint.
+                // 7 effects (one per server filter) — the chosen one is
+                // applied by the server at upload; the preview tint is only a hint.
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(effects) { (label, server) ->
                         val sel = effect == label

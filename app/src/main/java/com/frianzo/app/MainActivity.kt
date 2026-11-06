@@ -23,7 +23,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -43,8 +46,14 @@ import kotlinx.coroutines.launch
  * is a later stage. Push notifications need a Firebase key (owner step).
  */
 class MainActivity : ComponentActivity() {
+    // C-B1: deep link waiting to be routed once the user is logged in
+    // (AppShell only exists then). Set in onCreate (cold start) and in
+    // onNewIntent (app already running, singleTop).
+    private var pendingDeepLink by mutableStateOf<DeepLink?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingDeepLink = parseDeepLink(intent?.data)
         val cookieJar = PersistentCookieJar(applicationContext)
         val api = createApi(applicationContext, cookieJar)
         val api2 = createApi2(applicationContext, cookieJar)
@@ -68,7 +77,7 @@ class MainActivity : ComponentActivity() {
                     }
                     is AuthState.LoggedIn -> {
                         val user = (state as AuthState.LoggedIn).user
-                        AppShell(api, api2, user?.id, cookieJar, session, feedVm)
+                        AppShell(api, api2, user?.id, cookieJar, session, feedVm, deepLink = pendingDeepLink, onDeepLinkConsumed = { pendingDeepLink = null })
                     }
                     is AuthState.Error -> {
                         // Network failure on /me is not "logged out": show the
@@ -87,26 +96,62 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    // C-B1: a link tapped while the app is already running arrives here
+    // (singleTop, see the manifest) instead of a fresh onCreate.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        parseDeepLink(intent.data)?.let { pendingDeepLink = it }
+    }
 }
 
 private enum class Tab { FEED, REELS, CREATE, CHAT, NOTIFS, SEARCH, PROFILE }
+
+// C-B1: deep links, URL shapes verified read-only against the web app
+// (vynzo-frontend src/app): /post/[id], /reels?id=<id>,
+// /u/[username], /s/[code]. BROWSER = short link: the backend
+// GET /api/share/{code} resolve exists, but the native Api2 has no call
+// for it (area B owns Api2.kt), so short links open in the browser
+// instead of being faked in-app — PARTIAL, see the area report.
+private enum class DeepLinkKind { POST, REEL, PROFILE, BROWSER }
+private data class DeepLink(val kind: DeepLinkKind, val value: String)
+
+private fun parseDeepLink(uri: Uri?): DeepLink? {
+    if (uri == null) return null
+    val host = uri.host ?: return null
+    if (host != "frianzo.online" && host != "www.frianzo.online") return null
+    val seg = uri.pathSegments
+    return when {
+        seg.size == 2 && seg[0] == "post" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.POST, seg[1])
+        seg.size == 1 && seg[0] == "reels" && !uri.getQueryParameter("id").isNullOrBlank() -> DeepLink(DeepLinkKind.REEL, uri.getQueryParameter("id")!!)
+        seg.size == 2 && seg[0] == "reels" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.REEL, seg[1])
+        seg.size == 2 && seg[0] == "u" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.PROFILE, seg[1])
+        seg.size == 2 && seg[0] == "s" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.BROWSER, "https://frianzo.online/s/${seg[1]}")
+        else -> null
+    }
+}
 
 private data class NavDef(val tabValue: Tab, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val badge: Int = 0)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJar: PersistentCookieJar, session: SessionViewModel, feedVm: FeedViewModel) {
-    var tab by remember { mutableStateOf(Tab.FEED) }
-    var openChat by remember { mutableStateOf<Pair<String, String>?>(null) }
-    var openProfile by remember { mutableStateOf<String?>(null) }
+private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJar: PersistentCookieJar, session: SessionViewModel, feedVm: FeedViewModel, deepLink: DeepLink? = null, onDeepLinkConsumed: () -> Unit = {}) {
+    // C-B18: navigation state survives rotation / process death. Uri
+    // state (pendingMedia / pendingReelUri) stays plain remember — a
+    // content Uri is not saveable, so a picked photo/video is lost on
+    // rotation (known limitation, see the area report).
+    var tab by rememberSaveable { mutableStateOf(Tab.FEED) }
+    var openChat by rememberSaveable { mutableStateOf<Pair<String, String>?>(null) }
+    var openProfile by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingMedia by remember { mutableStateOf<android.net.Uri?>(null) }
     var unread by remember { mutableStateOf(0) }
     var unreadMessages by remember { mutableStateOf(0) }
     var drawerOpen by remember { mutableStateOf(false) }
-    var drawerScreen by remember { mutableStateOf<String?>(null) }
+    var drawerScreen by rememberSaveable { mutableStateOf<String?>(null) }
     // v2.9: notification deep-links + AI Video "Post as Reel" handoff.
-    var openPostId by remember { mutableStateOf<String?>(null) }
-    var focusReelId by remember { mutableStateOf<String?>(null) }
+    var openPostId by rememberSaveable { mutableStateOf<String?>(null) }
+    var focusReelId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingReelUri by remember { mutableStateOf<android.net.Uri?>(null) }
     // v3.6: context must be declared BEFORE reelsSession uses it
     // (v3.5 build failed: MainActivity.kt:112 used it first).
@@ -143,6 +188,36 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     BackHandler(enabled = openProfile != null) { openProfile = null }
     BackHandler(enabled = drawerScreen != null) { drawerScreen = null }
     BackHandler(enabled = openPostId != null) { openPostId = null }
+    // C-B3: Back from a focused reel returns to the reels list, and Back
+    // from Create / Search / Chat list / Notifications / Profile returns
+    // to Feed — instead of closing the app. Registered after the overlay
+    // handlers, so an open overlay still wins. The tab handler stays off
+    // while any overlay is open.
+    BackHandler(enabled = focusReelId != null) { focusReelId = null }
+    BackHandler(enabled = tab != Tab.FEED && openChat == null && openProfile == null && drawerScreen == null && openPostId == null && focusReelId == null) {
+        // Leaving Create by Back drops the pending pick, like Close does.
+        if (tab == Tab.CREATE) pendingMedia = null
+        tab = Tab.FEED
+    }
+
+    // C-B1: route a deep link once the user is logged in (AppShell only
+    // exists then, so a cold-start link waits for login instead of
+    // being dropped).
+    LaunchedEffect(deepLink) {
+        val dl = deepLink ?: return@LaunchedEffect
+        when (dl.kind) {
+            DeepLinkKind.POST -> { openChat = null; openProfile = null; openPostId = dl.value }
+            DeepLinkKind.REEL -> { focusReelId = dl.value; tab = Tab.REELS }
+            DeepLinkKind.PROFILE -> { openProfile = dl.value }
+            DeepLinkKind.BROWSER -> {
+                // Short link: no in-app resolver (see parseDeepLink note).
+                try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(dl.value))) } catch (_: Exception) {
+                    Toast.makeText(context, "Could not open this link — no browser found.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        onDeepLinkConsumed()
+    }
 
     // Unread badge for the Alerts tab (M1): refresh whenever the tab changes
     // and after returning to it; a failed count simply shows no badge.
@@ -150,7 +225,13 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         scope.launch {
             try {
                 val res = api2.unreadCount()
-                if (res.success && res.data != null) unread = res.data.unreadCount.takeIf { it > 0 } ?: res.data.count
+                // C-B17: the backend GET /api/notifications/unread-count
+                // returns ONLY { count } — and count IS the unread total
+                // (notificationService.getUnreadCount counts read=false).
+                // There is no unreadCount field in the response, so the
+                // old `unreadCount.takeIf { >0 } ?: count` fallback was
+                // needless; use count directly, no badge when it is 0.
+                if (res.success && res.data != null) unread = res.data.count
             } catch (_: Exception) {}
         }
         scope.launch {
@@ -313,7 +394,11 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                         TextButton(onClick = {
                             drawerOpen = false
                             val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Frianzo - share posts, videos and connect with people. Download: https://play.google.com/store/apps/details?id=com.frianzo.nativeapp") }
-                            context.startActivity(Intent.createChooser(intent, "Share Frianzo"))
+                            // C-B20: no share handler on the device must
+                            // not crash the app — show a message instead.
+                            try { context.startActivity(Intent.createChooser(intent, "Share Frianzo")) } catch (_: Exception) {
+                                Toast.makeText(context, "No app available to share with.", Toast.LENGTH_LONG).show()
+                            }
                         }, modifier = Modifier.fillMaxWidth()) { Text("Share Frianzo", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         HorizontalDivider()
                         TextButton(onClick = { drawerOpen = false; logout() }, modifier = Modifier.fillMaxWidth()) { Text("Logout", color = Color.Red, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }

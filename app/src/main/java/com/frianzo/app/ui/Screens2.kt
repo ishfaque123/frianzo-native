@@ -594,14 +594,11 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     var fav by remember(reel.id) { mutableStateOf(reel.favorited) }
     // Short /s/ link for this reel (POST /api/share { type: "reel" }),
     // like the post share sheet; falls back to the plain /reel/ URL.
-    var reelLink by remember(reel.id) { mutableStateOf("https://frianzo.online/reel/${reel.id}") }
-    LaunchedEffect(reel.id) {
-        try {
-            val r = api2.createShareLink(mapOf("type" to "reel", "id" to reel.id))
-            val code = r.data?.code
-            if (r.success && !code.isNullOrBlank()) reelLink = "https://frianzo.online/s/$code"
-        } catch (_: Exception) {}
-    }
+    // B-B8: the short /s/ link is created LAZILY when the share sheet
+    // opens (see LaunchedEffect(shareOpen) below) — viewing a reel must
+    // not fire a POST /api/share for every reel scrolled past.
+    val defaultReelLink = "https://frianzo.online/reel/${reel.id}"
+    var reelLink by remember(reel.id) { mutableStateOf(defaultReelLink) }
     var paused by remember { mutableStateOf(false) }
     var burst by remember { mutableStateOf(false) }
     var prepared by remember { mutableStateOf(false) }
@@ -612,6 +609,16 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     var videoRetryKey by remember(reel.id) { mutableStateOf(0) }
     var actionMsg by remember { mutableStateOf<String?>(null) }
     var shareOpen by remember { mutableStateOf(false) }
+    // B-B8: lazy share-link creation — only when the share sheet opens.
+    LaunchedEffect(shareOpen) {
+        if (shareOpen && reelLink == defaultReelLink) {
+            try {
+                val r = api2.createShareLink(mapOf("type" to "reel", "id" to reel.id))
+                val code = r.data?.code
+                if (r.success && !code.isNullOrBlank()) reelLink = "https://frianzo.online/s/$code"
+            } catch (_: Exception) {}
+        }
+    }
     var reportOpen by remember { mutableStateOf(false) }
     var reportReason by remember { mutableStateOf("other") }
     var showDeleteReel by remember { mutableStateOf(false) }
@@ -662,16 +669,27 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     LaunchedEffect(liked) { if (liked && !interestAnswered && !reel.category.isNullOrBlank()) showInterest = true }
     // v3.8 (F15): live download progress (-1 = not downloading).
     var downloadProgress by remember { mutableStateOf(-1) }
+    // B-B23: true when the server gives no length (chunked response) —
+    // the pill then reads "Downloading…" instead of a stuck "0%".
+    var downloadUnknownLength by remember { mutableStateOf(false) }
     // v3.8 (F17): optional report details (500 chars, backend accepts it).
     var reportDetails by remember { mutableStateOf("") }
     var seekWidthPx by remember { mutableStateOf(0) }
     // v3.4: Follow / Follow Back pill on the author (GET /api/follows/{id}/status).
     // v3.8 (F6): seed from the reel's own friendStatus when the backend sent it.
     var authorFollow by remember(reel.author?.id) { mutableStateOf<String?>(reel.friendStatus) }
+    // B-B22: one retry, then fall back to showing "Follow" instead of
+    // hiding the pill forever when the single status fetch fails.
     LaunchedEffect(reel.author?.id) {
         val aid = reel.author?.id
         if (aid != null && aid != myId && authorFollow == null) {
-            try { val r = api2.followStatus(aid); if (r.success) authorFollow = r.data?.status } catch (_: Exception) {}
+            var done = false
+            var attempt = 0
+            while (attempt < 2 && !done) {
+                try { val r = api2.followStatus(aid); if (r.success) { authorFollow = r.data?.status; done = true } } catch (_: Exception) {}
+                if (!done) { attempt += 1; if (attempt < 2) delay(1500) }
+            }
+            if (!done) authorFollow = "none"
         }
     }
     // v3.8 (F21): save toggle shared by the rail star and the More sheet row.
@@ -779,7 +797,9 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         }
         // v3.8 (F12): Data Saver shows the poster + a tap-to-play pill.
         if (dataSaver && !tapToPlay && prepared) {
-            Box(Modifier.fillMaxSize().clickable { tapToPlay = true }, contentAlignment = Alignment.Center) {
+            // B-B35: the tap that starts playback also reveals the
+            // play/pause controls — the overlay used to swallow it.
+            Box(Modifier.fillMaxSize().clickable { tapToPlay = true; controlsVisible = true }, contentAlignment = Alignment.Center) {
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 16.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
@@ -839,7 +859,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // v3.8 (F15): live download progress.
         if (downloadProgress >= 0) {
             Box(Modifier.align(Alignment.TopCenter).padding(top = 56.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 14.dp, vertical = 8.dp)) {
-                Text("Downloading ${downloadProgress}%", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                Text(if (downloadUnknownLength) "Downloading…" else "Downloading ${downloadProgress}%", color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
             }
         }
         // v4.0 (audit #3): right rail, lower third of the VIDEO — its
@@ -922,9 +942,14 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     MoreSheetRow(Icons.Filled.Download, "Save video") {
                         moreOpen = false
                         scope.launch {
+                            // B-B23: the MediaStore entry is deleted again
+                            // if the download fails, so no 0-byte/corrupt
+                            // file is left behind in Downloads.
+                            var savedDownloadUri: android.net.Uri? = null
                             try {
                                 val body = api2.downloadReel(reel.id)
                                 val totalBytes = body.contentLength()
+                                downloadUnknownLength = totalBytes <= 0
                                 val fileName = "frianzo-reel-${reel.id}.mp4"
                                 val values = ContentValues().apply {
                                     put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -932,6 +957,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                                 }
                                 val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                                savedDownloadUri = uri
                                 if (uri == null) { showMsg("Download failed"); return@launch }
                                 val stream = body.byteStream()
                                 try {
@@ -948,8 +974,12 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                         }
                                     }
                                     downloadProgress = -1; showMsg("Downloaded")
-                                } finally { try { stream.close() } catch (_: Exception) {}; try { body.close() } catch (_: Exception) {}; downloadProgress = -1 }
-                            } catch (e: Exception) { downloadProgress = -1; showMsg(friendlyReelsError(e, "Download failed — try again")) }
+                                } finally { try { stream.close() } catch (_: Exception) {}; try { body.close() } catch (_: Exception) {}; downloadProgress = -1; downloadUnknownLength = false }
+                            } catch (e: Exception) {
+                                downloadProgress = -1; downloadUnknownLength = false
+                                try { savedDownloadUri?.let { context.contentResolver.delete(it, null, null) } } catch (_: Exception) {}
+                                showMsg(friendlyReelsError(e, "Download failed — try again"))
+                            }
                         }
                     }
                     MoreSheetRow(Icons.Filled.Link, "Copy link") { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", reelLink)); showMsg("Link copied") }
@@ -1026,7 +1056,9 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Spacer(Modifier.height(8.dp))
                 Row(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.2f)).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Interested in #${reel.category}?", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                    TextButton(onClick = { interestAnswered = true; showInterest = false; scope.launch { try { api2.notInterested(mapOf("type" to "interested_category", "value" to (reel.category ?: ""))) } catch (_: Exception) {} }; showMsg("We'll show you more like this") }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Yes", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                    // B-B24: "We'll show you more like this" only on
+                    // success — it used to fire even when offline.
+                    TextButton(onClick = { interestAnswered = true; showInterest = false; scope.launch { try { val r = api2.notInterested(mapOf("type" to "interested_category", "value" to (reel.category ?: ""))); if (r.success) showMsg("We'll show you more like this") else showMsg("Couldn't save — try again") } catch (_: Exception) { showMsg("Couldn't save — try again") } } }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Yes", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
                     TextButton(onClick = { interestAnswered = true; showInterest = false }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("No", color = Color.White, fontSize = 13.sp) }
                 }
             }
@@ -1142,7 +1174,9 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
             }
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                ReelShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
+                // B-D5: the DM tile is hidden when the reel has no author
+                // id — it used to sit there and do nothing when tapped.
+                if (reel.author?.id != null) ReelShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
                     val authorId = reel.author?.id
                     if (authorId != null && !dmBusy) {
                         dmBusy = true
@@ -1362,6 +1396,8 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                 }
                 Spacer(Modifier.height(8.dp))
             }
+            // B-B30: the 550ms long-press-to-like is undiscoverable — say so.
+            Text("Tip: long-press Like to like a comment instantly", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp))
             Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 FrianzoAvatar(myAvatar, 32.dp)
                 Spacer(Modifier.width(8.dp))
@@ -1383,7 +1419,10 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                     shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
                     colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White),
                     onClick = {
-                        val text = draft; val parent = replyTo?.id; draft = ""; replyTo = null
+                        // B-B10: keep the reply target so a failed send
+                        // restores the draft AS a reply, not as a new
+                        // top-level comment.
+                        val text = draft; val parent = replyTo?.id; val savedReply = replyTo; draft = ""; replyTo = null
                         scope.launch {
                             try {
                                 val res = api2.addReelComment(reel.id, CommentCreateRequest(text, parent))
@@ -1391,8 +1430,8 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                                     // v3.8 (F16): short send sound (web rule).
                                     try { val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60); tg.startTone(ToneGenerator.TONE_PROP_BEEP, 120); scope.launch { delay(300); try { tg.release() } catch (_: Exception) {} } } catch (_: Exception) {}
                                     total += 1; onCommentAdded(); load()
-                                } else error = friendlyReelsError(res.error?.message, "Could not send comment")
-                            } catch (e: Exception) { error = friendlyReelsError(e, "Could not send comment"); draft = text }
+                                } else { error = friendlyReelsError(res.error?.message, "Could not send comment"); draft = text; replyTo = savedReply }
+                            } catch (e: Exception) { error = friendlyReelsError(e, "Could not send comment"); draft = text; replyTo = savedReply }
                         }
                     },
                 ) { Text("Send", maxLines = 1, softWrap = false) }
@@ -1414,8 +1453,15 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
     var localCount by remember(c.id, c.reactionCount) { mutableStateOf(c.reactionCount) }
     var menuOpen by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    // B-B12: report reason picker (same list as the reel report dialog) —
+    // reports used to always file reason "other".
+    var showReport by remember { mutableStateOf(false) }
+    var reportReason by remember { mutableStateOf("other") }
+    var reportError by remember { mutableStateOf<String?>(null) }
     var reported by remember { mutableStateOf(false) }
     var deleteError by remember { mutableStateOf<String?>(null) }
+    // B-B11: edit-save failures are shown under the row (was: silent).
+    var editError by remember { mutableStateOf<String?>(null) }
     // v3.7 (C7): 6-reaction picker on reel comments, same as web
     // (like / love / haha / wow / sad / angry). Tap Like opens the
     // picker; long-press (550ms, web rule) toggles "like" directly.
@@ -1424,6 +1470,8 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
     // again removes it (server toggles), sending a new one switches it.
     var pickerOpen by remember { mutableStateOf(false) }
     var reactionBusy by remember { mutableStateOf(false) }
+    // B-B30: "Copied" feedback for the Copy menu item (was: silent).
+    var copied by remember { mutableStateOf(false) }
     fun applyReaction(type: String) {
         if (reactionBusy) return
         val prevReaction = localReaction; val prevCount = localCount
@@ -1457,16 +1505,14 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                             if (authorId != null && authorId != myId && followStatus != null && followStatus != "none" && followStatus != "self") {
                                 Spacer(Modifier.width(6.dp))
                                 val isFollowBack = followStatus == "follow_back"
+                                // B-B9: status display ONLY. The web
+                                // reel-comments modal has no follow pill at
+                                // all and never toggles follow from a
+                                // comment — tapping this used to silently
+                                // unfollow the author.
                                 Box(
                                     Modifier.clip(RoundedCornerShape(12.dp))
                                         .background(if (isFollowBack) FrianzoBlueTint else MaterialTheme.colorScheme.surfaceVariant)
-                                        .clickable {
-                                            scope.launch {
-                                                try {
-                                                    if (api2.toggleFollow(authorId).success) onFollowChange(authorId, if (isFollowBack) "following" else "none")
-                                                } catch (_: Exception) {}
-                                            }
-                                        }
                                         .padding(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
                                     Text(if (isFollowBack) "Follow Back" else "Following", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (isFollowBack) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
@@ -1476,9 +1522,10 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                         if (editing) {
                             Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 OutlinedTextField(value = editDraft, onValueChange = { if (it.length <= 500) editDraft = it }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(10.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder))
-                                TextButton(onClick = { scope.launch { try { if (api2.editReelComment(c.id, mapOf("content" to editDraft)).success) { editing = false; onChanged() } } catch (_: Exception) {} } }) { Text("Save", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false) }
+                                TextButton(onClick = { scope.launch { try { val r = api2.editReelComment(c.id, mapOf("content" to editDraft)); if (r.success) { editing = false; editError = null; onChanged() } else editError = friendlyReelsError(r.error?.message, "Could not save edit") } catch (e: Exception) { editError = friendlyReelsError(e, "Could not save edit") } } }) { Text("Save", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false) }
                                 TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 13.sp, maxLines = 1, softWrap = false) }
                             }
+                            if (editError != null) Text(editError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.padding(top = 4.dp))
                         } else {
                             val prefix = if (isReply && parentAuthor != null && !(c.content ?: "").trim().lowercase().startsWith("@${parentAuthor.username?.lowercase()}")) "@${parentAuthor.username} " else ""
                             Text(
@@ -1521,18 +1568,46 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                             if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; editDraft = c.content ?: ""; editing = true })
                             if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; showDelete = true })
                             DropdownMenuItem(text = { Text("Reply") }, onClick = { menuOpen = false; onReply(c) })
-                            DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")) })
-                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = {
-                                menuOpen = false
-                                scope.launch { try { if (api2.reportReelComment(c.id, mapOf("reason" to "other")).success) reported = true } catch (_: Exception) {} }
-                            })
+                            DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")); copied = true; scope.launch { delay(2000); copied = false } })
+                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = { menuOpen = false; showReport = true })
                         }
                     }
                 }
                 if (reported) Text("Comment reported. Thanks for letting us know.", fontSize = 12.sp, color = Color(0xFF16A34A), modifier = Modifier.padding(start = 8.dp))
+                if (reportError != null) Text(reportError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.padding(start = 8.dp))
+                if (copied) Text("Copied", fontSize = 12.sp, color = Color(0xFF16A34A), modifier = Modifier.padding(start = 8.dp))
                 if (deleteError != null) Text(deleteError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.padding(start = 8.dp))
             }
         }
+    }
+    if (showReport) {
+        AlertDialog(
+            onDismissRequest = { showReport = false },
+            title = { Text("Report comment") },
+            text = {
+                Column {
+                    listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "False information", "other" to "Something else").forEach { (v, label) ->
+                        Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = reportReason == v, onClick = { reportReason = v })
+                            Spacer(Modifier.width(8.dp))
+                            Text(label, fontSize = 15.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showReport = false
+                    scope.launch {
+                        try {
+                            val r = api2.reportReelComment(c.id, mapOf("reason" to reportReason))
+                            if (r.success) { reported = true; reportError = null } else reportError = friendlyReelsError(r.error?.message, "Could not report comment")
+                        } catch (e: Exception) { reportError = friendlyReelsError(e, "Could not report comment") }
+                    }
+                }) { Text("Report", color = Color.Red) }
+            },
+            dismissButton = { TextButton(onClick = { showReport = false }) { Text("Cancel") } },
+        )
     }
     if (showDelete) {
         AlertDialog(
@@ -1624,9 +1699,12 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
         if (uri == lastCheckedUri) return
         lastCheckedUri = uri
         try {
-            val mmr = MediaMetadataRetriever(); mmr.setDataSource(context, uri)
-            val durMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            mmr.release()
+            // B-B31: release in finally, not only on the happy path.
+            val mmr = MediaMetadataRetriever()
+            val durMs = try {
+                mmr.setDataSource(context, uri)
+                mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            } finally { try { mmr.release() } catch (_: Exception) {} }
             val durSec = (durMs / 1000).toInt()
             val size = try { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L } catch (_: Exception) { -1L }
             videoDurationSec = durSec
@@ -1666,7 +1744,7 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
     val coverPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
             val size = try { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L } catch (_: Exception) { -1L }
-            if (size > 10 * 1024 * 1024) message = "Cover photo must be smaller than 10MB" else coverUri = uri
+            if (size > 10 * 1024 * 1024) message = "Cover photo must be smaller than 10MB" else { coverUri = uri; selectedFrameIdx = -1 } // B-B14: a gallery cover beats a picked frame (upload prefers frames)
         }
     }
     val pickCover = rememberPermissionGate(galleryPermissions()) { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }
@@ -1794,8 +1872,13 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable {
                     template = v
                     when (v) {
-                        "cinematic" -> { filter = "vintage"; letterbox = true }
-                        "glow" -> { filter = "beauty"; letterbox = false }
+                        // B-B15: "None" resets filter/letterbox/speed to
+                        // defaults; each template also resets the speed it
+                        // does not use, so a Slow-Mo 0.5x never survives
+                        // switching to Cinematic/Glow/None.
+                        null -> { filter = "normal"; letterbox = false; speed = "1" }
+                        "cinematic" -> { filter = "vintage"; letterbox = true; speed = "1" }
+                        "glow" -> { filter = "beauty"; letterbox = false; speed = "1" }
                         "slowmo" -> { filter = "cool"; speed = "0.5" }
                     }
                 }.padding(horizontal = 14.dp, vertical = 8.dp)) {
@@ -1844,12 +1927,22 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
             Slider(value = trimEndF, onValueChange = { trimEndF = it.coerceIn(trimStartF + 1f, videoDurationSec!!.toFloat()) }, valueRange = 0f..videoDurationSec!!.toFloat())
         }
         Spacer(Modifier.height(12.dp))
-        Button(enabled = !busy && videoUri != null, onClick = {
+        // B-B37: the daily limit is enforced BEFORE the upload, not only
+        // by the server after the whole file has uploaded.
+        if (dailyStatus?.remaining == 0) {
+            Text("You've reached today's reel limit — come back tomorrow.", color = FrianzoBadgeRed, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+        }
+        Button(enabled = !busy && videoUri != null && (dailyStatus?.remaining ?: 1) > 0, onClick = {
             busy = true
             scope.launch {
+                // B-B31: temp files are deleted in finally (below), so a
+                // failed upload no longer leaks cache files.
+                var tmp: File? = null
+                var coverTmp: File? = null
                 try {
                     val uri = videoUri!!
-                    val durMs = try { val mmr = MediaMetadataRetriever(); mmr.setDataSource(context, uri); (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 15000L).also { mmr.release() } } catch (_: Exception) { 15000L }
+                    val durMs = try { val mmr = MediaMetadataRetriever(); try { mmr.setDataSource(context, uri); mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 15000L } finally { try { mmr.release() } catch (_: Exception) {} } } catch (_: Exception) { 15000L }
                     // R26: never coerce an over-long video into the limit —
                     // refuse it with a clear message instead.
                     val durationSec = (durMs / 1000).toInt()
@@ -1857,11 +1950,10 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                     if (durationSec > maxSec) throw Exception("This video is ${durationSec}s — reels can be ${maxSec}s at most.")
                     val input = context.contentResolver.openInputStream(uri) ?: throw Exception("Could not read the video")
                     val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null } ?: "video/mp4"
-                    val tmp = File(context.cacheDir, "reel_upload.mp4")
-                    input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
-                    val videoPart = MultipartBody.Part.createFormData("video", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
+                    tmp = File(context.cacheDir, "reel_upload.mp4")
+                    input.use { inp -> tmp!!.outputStream().use { out -> inp.copyTo(out) } }
+                    val videoPart = MultipartBody.Part.createFormData("video", tmp!!.name, tmp!!.asRequestBody(mime.toMediaTypeOrNull()))
                     var coverPart: MultipartBody.Part? = null
-                    var coverTmp: File? = null
                     // v3.8 (F3): a picked video frame beats a gallery cover.
                     val frameCover = selectedFrameIdx.takeIf { it >= 0 }?.let { coverFrames.getOrNull(it) }
                     if (frameCover != null) {
@@ -1899,13 +1991,11 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                         crop = crop?.toRequestBody("text/plain".toMediaTypeOrNull()),
                         textPosition = if (textOverlay.isNotBlank()) textPosition.toRequestBody("text/plain".toMediaTypeOrNull()) else null,
                     )
-                    try { tmp.delete() } catch (_: Exception) {}
-                    try { coverTmp?.delete() } catch (_: Exception) {}
                     if (!res.success) throw Exception(res.error?.message ?: "Upload failed")
                     // R29: hand the new reel's id back so the feed opens it.
                     onDone(res.data?.reel?.id)
                 } catch (e: Exception) { message = friendlyReelsError(e, "Upload failed — try again") }
-                finally { busy = false }
+                finally { busy = false; try { tmp?.delete() } catch (_: Exception) {}; try { coverTmp?.delete() } catch (_: Exception) {} }
             }
         }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (busy) "Uploading..." else "Upload reel", maxLines = 1, softWrap = false) }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
@@ -1934,6 +2024,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     LaunchedEffect(initialUri) {
         if (initialUri != null) {
             imageUri = initialUri
+            bgStyle = null // B-B13: pre-attached media also drops the background
             val mime = try { context.contentResolver.getType(initialUri) } catch (_: Exception) { null }
             mediaMime = mime
             mediaIsVideo = mime?.startsWith("video") == true
@@ -1995,6 +2086,10 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
             imageUri = uri
+            // B-B13: a picked photo/video drops any text background — the
+            // backend rejects background + image together, so the style
+            // must never be sent with a media post.
+            bgStyle = null
             val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
             mediaMime = mime
             mediaIsVideo = mime?.startsWith("video") == true
@@ -2047,6 +2142,11 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
             Spacer(Modifier.height(8.dp))
             AsyncImage(model = imageUri, contentDescription = null, modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
         }
+        // B-B13: attached media can be removed without cancelling the post.
+        if (imageUri != null) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = { imageUri = null; mediaIsVideo = false; mediaMime = null }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (mediaIsVideo) "Remove video" else "Remove photo", maxLines = 1, softWrap = false) }
+        }
         if (mediaIsVideo) {
             Spacer(Modifier.height(8.dp))
             Text("Video selected from Gallery. Feed posts here accept only a photo — a video-post endpoint does not exist yet — so Post stays off for a video. Pick a photo instead, or post the video as a reel.", style = MaterialTheme.typography.bodySmall)
@@ -2068,7 +2168,7 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
                     }
                 }
             } else {
-                OutlinedButton(onClick = { locationLauncher.launch(locationPermissions()) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (locationBusy) "Finding place..." else "Add location", maxLines = 1, softWrap = false) }
+                OutlinedButton(enabled = !locationBusy, onClick = { locationLauncher.launch(locationPermissions()) }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (locationBusy) "Finding place..." else "Add location", maxLines = 1, softWrap = false) }
             }
             if (onPostAsReel != null) {
                 OutlinedButton(onClick = { recordVideo() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Record video", maxLines = 1, softWrap = false) }
@@ -2101,6 +2201,10 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
                     var tmpFile: File? = null
                     val uri = imageUri
                     if (uri != null) {
+                        // B-B32: refuse an over-10MB photo BEFORE copying
+                        // and uploading it (same 10MB cap as reel covers).
+                        val photoSize = try { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L } catch (_: Exception) { -1L }
+                        if (photoSize > 10 * 1024 * 1024) throw Exception("Photo must be smaller than 10MB")
                         val input = context.contentResolver.openInputStream(uri)
                             ?: throw Exception("Could not read the selected photo")
                         val mime = mediaMime ?: (try { context.contentResolver.getType(uri) } catch (_: Exception) { null }) ?: "image/jpeg"
@@ -2112,9 +2216,12 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
                     }
                     val locValue = location ?: locationText.trim().takeIf { it.isNotBlank() }
                     val res = api2.createPost(
-                        text.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        // B-B40: omit the content part for image-only posts
+                        // (backend-verified: empty content is accepted only
+                        // with an image; omitting it is the clean form).
+                        if (text.isBlank()) null else text.toRequestBody("text/plain".toMediaTypeOrNull()),
                         part,
-                        backgroundStyle = bgStyle?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                        backgroundStyle = if (imageUri != null) null else bgStyle?.toRequestBody("text/plain".toMediaTypeOrNull()),
                         visibility = visibility.toRequestBody("text/plain".toMediaTypeOrNull()),
                         commentAudience = commentAudience.toRequestBody("text/plain".toMediaTypeOrNull()),
                         taggedUserIds = if (tagged.isEmpty()) null else com.google.gson.Gson().toJson(tagged.mapNotNull { it.id }).toRequestBody("text/plain".toMediaTypeOrNull()),
@@ -2158,8 +2265,10 @@ private fun TagPeopleDialog(api2: FrianzoApi2, initial: List<PublicProfile>, onD
     LaunchedEffect(q) {
         if (q.isBlank()) { results = emptyList(); return@LaunchedEffect }
         delay(300)
+        // B-B7: stale responses must not overwrite newer results.
+        val term = q
         scope.launch {
-            try { val r = api2.searchUsers(q); if (r.success && r.data != null) results = r.data.users } catch (_: Exception) {}
+            try { val r = api2.searchUsers(term); if (term != q) return@launch; if (r.success && r.data != null) results = r.data.users } catch (_: Exception) {}
         }
     }
     AlertDialog(
@@ -2197,6 +2306,11 @@ private fun TagPeopleDialog(api2: FrianzoApi2, initial: List<PublicProfile>, onD
 fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, String) -> Unit) {
     var list by remember { mutableStateOf<List<Conversation>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    // B-B18: loading flag so "No chats yet" never flashes before the
+    // first load finishes.
+    var loading by remember { mutableStateOf(true) }
+    // B-B19: starting a new chat shows its error instead of doing nothing.
+    var newChatError by remember { mutableStateOf<String?>(null) }
     // v3.4: this box filters the loaded conversations (client-side — the
     // backend has no conversation-search endpoint).
     var q by rememberSaveable { mutableStateOf("") }
@@ -2206,19 +2320,24 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
     var found by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     val scope = rememberCoroutineScope()
     fun loadList() {
+        loading = true
         scope.launch {
             try {
                 val res = api2.conversations()
                 if (res.success && res.data != null) list = res.data else error = res.error?.message
             } catch (e: Exception) { error = e.message }
+            finally { loading = false }
         }
     }
     LaunchedEffect(Unit) { loadList() }
+    // B-B7: only the latest query may write results — a slow earlier
+    // response must not overwrite a newer one.
     LaunchedEffect(newQ) {
         if (newQ.isBlank()) { found = emptyList(); return@LaunchedEffect }
         delay(300)
+        val term = newQ
         scope.launch {
-            try { val r = api2.searchUsers(newQ); if (r.success && r.data != null) found = r.data.users } catch (_: Exception) {}
+            try { val r = api2.searchUsers(term); if (term != newQ) return@launch; if (r.success && r.data != null) found = r.data.users } catch (_: Exception) {}
         }
     }
     val shown = if (q.isBlank()) list else list.filter { c ->
@@ -2237,6 +2356,9 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
             item {
                 OutlinedTextField(value = newQ, onValueChange = { newQ = it }, label = { Text("Search people to message") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
             }
+            if (newChatError != null) {
+                item { Text(newChatError!!, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+            }
             items(found, key = { it.id ?: it.username ?: "" }) { u ->
                 ListItem(
                     headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -2244,7 +2366,11 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
                     leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
                     modifier = Modifier.clickable {
                         if (u.id != null) scope.launch {
-                            try { val r = api2.createConversation(CreateConversationRequest(u.id)); if (r.success && r.data != null) { newQ = ""; showNewChat = false; onOpen(r.data.id, u.displayName ?: u.username ?: "") } } catch (_: Exception) {}
+                            try {
+                                val r = api2.createConversation(CreateConversationRequest(u.id))
+                                if (r.success && r.data != null) { newChatError = null; newQ = ""; showNewChat = false; onOpen(r.data.id, u.displayName ?: u.username ?: "") }
+                                else newChatError = r.error?.message ?: "Couldn't start chat — try again"
+                            } catch (e: Exception) { newChatError = e.message ?: "Couldn't start chat — try again" }
                         }
                     },
                 )
@@ -2296,7 +2422,8 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
             HorizontalDivider()
         }
         if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-        if (shown.isEmpty() && error == null) item { Text(if (list.isEmpty()) "No chats yet" else "No conversations match", Modifier.padding(16.dp)) }
+        if (loading) item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
+        if (!loading && shown.isEmpty() && error == null) item { Text(if (list.isEmpty()) "No chats yet" else "No conversations match", Modifier.padding(16.dp)) }
     }
 }
 
@@ -2356,18 +2483,41 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             } catch (_: Exception) {}
         }
     }
+    // B-B39: the other side's read/delivered watermarks (see tickFor).
+    var otherLastReadAt by remember { mutableStateOf<String?>(null) }
+    var otherLastDeliveredAt by remember { mutableStateOf<String?>(null) }
+    // B-B36: only replace the list when it actually changed — a wholesale
+    // replace every 5s recomposed (and could jump) the list even when
+    // nothing new arrived.
+    fun mergeMessages(fresh: List<ConversationMessage>) {
+        val current = messages
+        val changed = fresh.size != current.size || fresh.zip(current).any { (a, b) -> a.id != b.id || a.content != b.content || a.isDeleted != b.isDeleted }
+        if (changed) messages = fresh
+    }
     // PERMANENT FIX for H3: poll every 5s while the thread is open, so
     // incoming messages appear without leaving and re-opening the thread.
     // The loop is tied to LaunchedEffect, so it stops when the thread closes.
     LaunchedEffect(conversationId) {
+        var tick = 0
         while (true) {
             try {
                 val res = api2.messages(conversationId)
                 // Backend already returns messages chronological (old -> new);
                 // reverse once so newest-first pairs with reverseLayout below.
-                if (res.success && res.data != null) { messages = res.data.messages.reversed(); loadError = null }
+                if (res.success && res.data != null) { mergeMessages(res.data.messages.reversed()); otherLastReadAt = res.data.otherLastReadAt; otherLastDeliveredAt = res.data.otherLastDeliveredAt; loadError = null }
                 else loadError = res.error?.message
             } catch (e: Exception) { loadError = e.message }
+            // B-B25: presence ("Active now" / last seen) and the timer are
+            // refreshed every 3rd tick (15s) instead of freezing at open.
+            tick += 1
+            if (tick % 3 == 0) {
+                try {
+                    val conv = api2.conversations().data?.firstOrNull { it.id == conversationId }
+                    val other = conv?.otherUser
+                    if (other != null) { otherIsOnline = other.isOnline == true; otherLastActiveAt = other.lastActiveAt }
+                    if (conv != null && conv.disappearingDuration != disappearingDuration) { disappearingDuration = conv.disappearingDuration; timerLabel = disappearingLabel(conv.disappearingDuration) }
+                } catch (_: Exception) {}
+            }
             delay(5000)
         }
     }
@@ -2375,7 +2525,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         scope.launch {
             try {
                 val res = api2.messages(conversationId)
-                if (res.success && res.data != null) messages = res.data.messages.reversed()
+                if (res.success && res.data != null) { mergeMessages(res.data.messages.reversed()); otherLastReadAt = res.data.otherLastReadAt; otherLastDeliveredAt = res.data.otherLastDeliveredAt }
             } catch (e: Exception) { loadError = e.message }
         }
     }
@@ -2436,7 +2586,12 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         if (showTimer) {
             AlertDialog(onDismissRequest = { showTimer = false }, title = { Text("Disappearing messages") },
                 text = { Column { listOf(null to "Off", 3600 to "1 hour", 86400 to "1 day", 604800 to "1 week").forEach { (secs, label) ->
-                    TextButton(onClick = { showTimer = false; timerLabel = label; disappearingDuration = secs; scope.launch { try { api2.setDisappearing(conversationId, mapOf<String, Any?>("duration" to secs)) } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false) }
+                    // B-B2: Off sends an explicit {"duration":null} — the
+                    // backend accepts null = Off (0 would be rejected 400),
+                    // and default Gson drops nulls from a Map, so the body
+                    // is built as raw JSON. The optimistic UI reverts on
+                    // failure instead of lying about the timer.
+                    TextButton(onClick = { showTimer = false; val prevLabel = timerLabel; val prevDuration = disappearingDuration; timerLabel = label; disappearingDuration = secs; scope.launch { try { val body = (if (secs == null) "{\"duration\":null}" else "{\"duration\":$secs}").toRequestBody("application/json".toMediaTypeOrNull()); val r = api2.setDisappearing(conversationId, body); if (!r.success) { timerLabel = prevLabel; disappearingDuration = prevDuration; sendError = r.error?.message ?: "Couldn't change disappearing timer" } } catch (e: Exception) { timerLabel = prevLabel; disappearingDuration = prevDuration; sendError = e.message } } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false) }
                 } } },
                 confirmButton = {}, dismissButton = { TextButton(onClick = { showTimer = false }) { Text("Cancel") } })
         }
@@ -2471,10 +2626,23 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 },
                 dismissButton = { TextButton(onClick = { showReport = false }) { Text("Cancel") } })
         }
+        // B-B39: per-message read ticks. The backend does not (yet)
+        // populate per-message isRead/readAt, so ticks derive from the
+        // other side's watermarks (GET .../messages returns
+        // otherLastReadAt / otherLastDeliveredAt); when the backend fills
+        // isRead, that wins. NEEDS-BACKEND for the per-message fields.
+        fun tickFor(m: ConversationMessage): Pair<String, Boolean> {
+            if (m.isRead == true) return "✓✓" to true
+            val ts = m.createdAt ?: return "✓" to false
+            if (otherLastReadAt != null && ts <= otherLastReadAt!!) return "✓✓" to true
+            if (otherLastDeliveredAt != null && ts <= otherLastDeliveredAt!!) return "✓✓" to false
+            return "✓" to false
+        }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
             items(messages, key = { it.id ?: "" }) { m ->
                 val mine = m.senderId == myId
                 Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                    Column(horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
                     Surface(color = if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp)) {
                         // v3.4: a received photo/voice has no text content —
                         // show "Photo"/"Voice message" instead of an empty bubble.
@@ -2487,6 +2655,11 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                         val shown = if ((m.content ?: "").isBlank()) mediaLabel ?: "" else m.content ?: ""
                         Text(shown, Modifier.padding(12.dp), color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
                     }
+                    if (mine) {
+                        val (tick, tickRead) = tickFor(m)
+                        Text(tick, fontSize = 11.sp, color = if (tickRead) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, end = 4.dp), maxLines = 1, softWrap = false)
+                    }
+                    } // Column
                 }
             }
         }
@@ -2499,11 +2672,16 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             // v3.4: Send appears only once text is typed.
             if (draft.isNotBlank()) {
                 Spacer(Modifier.width(8.dp))
+                // B-B1: a server rejection restores the draft (was: the
+                // message vanished with no error on success == false).
                 Button(shape = RoundedCornerShape(28.dp), onClick = {
                     sendError = null
                     val text = draft; draft = ""
                     scope.launch {
-                        try { api2.sendMessage(conversationId, SendMessageRequest(text)); load() } catch (e: Exception) { draft = text; sendError = e.message }
+                        try {
+                            val r = api2.sendMessage(conversationId, SendMessageRequest(text))
+                            if (r.success) load() else { draft = text; sendError = r.error?.message ?: "Couldn't send message" }
+                        } catch (e: Exception) { draft = text; sendError = e.message }
                     }
                 }) { Text("Send", maxLines = 1, softWrap = false) }
             }
@@ -2517,13 +2695,32 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
  * type with underscores replaced, never a blank headline. */
 private fun notificationTitle(n: NotificationItem): String {
     val actor = n.actor?.displayName ?: n.actor?.username ?: "Someone"
+    // B-B34: every type the backend can send (notificationService
+    // NotificationType union), plus "message" for safety. Unknown future
+    // types fall back to plain English, never the raw snake_case code.
     val action = when (n.type) {
-        "post_like", "reel_like" -> "liked your post"
-        "post_comment", "reel_comment", "comment" -> "commented on your post"
+        "post_like" -> "liked your post"
+        "reel_like" -> "liked your reel"
+        "post_comment" -> "commented on your post"
+        "reel_comment" -> "commented on your reel"
+        "comment" -> "commented on your post"
+        "comment_like" -> "liked your comment"
+        "comment_reply" -> "replied to your comment"
+        "reel_reply" -> "replied to your reel comment"
+        "comment_mention" -> "mentioned you in a comment"
+        "post_share" -> "shared your post"
         "follow" -> "started following you"
         "new_device_login" -> "signed in from a new device"
         "message" -> "sent you a message"
-        else -> (n.type ?: "notification").replace("_", " ")
+        "account_restricted" -> "your account was restricted"
+        "account_banned" -> "your account was banned"
+        "verification_approved" -> "your verification was approved"
+        "verification_rejected" -> "your verification was not approved"
+        "comment_removed" -> "a comment was removed"
+        "post_removed" -> "a post was removed"
+        "reel_removed" -> "a reel was removed"
+        "messaging_restricted" -> "your messaging was restricted"
+        else -> "sent you a notification"
     }
     return "$actor $action"
 }
@@ -2550,13 +2747,20 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteAllConfirm by remember { mutableStateOf(false) }
+    // B-B18: loading flag so "You're all caught up" never flashes before
+    // the first load finishes. B-B20: action failures are shown (was: the
+    // dialog closed and nothing changed, silently).
+    var loading by remember { mutableStateOf(true) }
+    var actionError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     fun load() {
+        loading = true
         scope.launch {
             try {
                 val res = api2.notifications()
                 if (res.success && res.data != null) items = res.data.notifications else error = res.error?.message
             } catch (e: Exception) { error = e.message }
+            finally { loading = false }
         }
     }
     LaunchedEffect(Unit) { load() }
@@ -2583,12 +2787,12 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
         if (selecting && selected.isNotEmpty()) {
             Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("${selected.size} selected", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Button(onClick = { scope.launch { try { if (api2.deleteNotifications(DeleteIdsRequest(selected.toList())).success) { items = items.filter { it.id !in selected }; selected = emptySet(); selecting = false } } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Delete selected", maxLines = 1, softWrap = false) }
+                Button(onClick = { scope.launch { try { val r = api2.deleteNotifications(DeleteIdsRequest(selected.toList())); if (r.success) { items = items.filter { it.id !in selected }; selected = emptySet(); selecting = false; actionError = null } else actionError = r.error?.message ?: "Couldn't delete notifications" } catch (e: Exception) { actionError = e.message ?: "Couldn't delete notifications" } } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Delete selected", maxLines = 1, softWrap = false) }
             }
         }
         if (showDeleteAllConfirm) {
             AlertDialog(onDismissRequest = { showDeleteAllConfirm = false }, title = { Text("Delete all notifications?") }, text = { Text("This can't be undone.") },
-                confirmButton = { Button(onClick = { showDeleteAllConfirm = false; scope.launch { try { if (api2.deleteAllNotifications().success) items = emptyList() } catch (_: Exception) {} } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete all", maxLines = 1, softWrap = false) } },
+                confirmButton = { Button(onClick = { scope.launch { try { val r = api2.deleteAllNotifications(); if (r.success) { items = emptyList(); showDeleteAllConfirm = false; actionError = null } else actionError = r.error?.message ?: "Couldn't delete notifications" } catch (e: Exception) { actionError = e.message ?: "Couldn't delete notifications" } } }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete all", maxLines = 1, softWrap = false) } },
                 dismissButton = { TextButton(onClick = { showDeleteAllConfirm = false }) { Text("Cancel") } })
         }
         if (showMarkAllConfirm) {
@@ -2596,7 +2800,7 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                 onDismissRequest = { showMarkAllConfirm = false },
                 title = { Text("Mark all as read?") },
                 text = { Text("All notifications will be marked as read.") },
-                confirmButton = { Button(onClick = { showMarkAllConfirm = false; scope.launch { try { api2.markAllNotificationsRead(); load() } catch (_: Exception) {} } }) { Text("Mark all read", maxLines = 1, softWrap = false) } },
+                confirmButton = { Button(onClick = { scope.launch { try { val r = api2.markAllNotificationsRead(); if (r.success) { showMarkAllConfirm = false; actionError = null; load() } else actionError = r.error?.message ?: "Couldn't mark notifications read" } catch (e: Exception) { actionError = e.message ?: "Couldn't mark notifications read" } } }) { Text("Mark all read", maxLines = 1, softWrap = false) } },
                 dismissButton = { TextButton(onClick = { showMarkAllConfirm = false }) { Text("Cancel") } },
             )
         }
@@ -2610,7 +2814,9 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                 }
             }
         }
+        actionError?.let { Text(it, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         LazyColumn(Modifier.weight(1f)) {
+            if (loading) item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
             items(filtered, key = { it.id }) { n ->
                 ListItem(
                     headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -2645,7 +2851,7 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                 HorizontalDivider()
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-            if (filtered.isEmpty() && error == null) item { Text(if (items.isEmpty()) "You're all caught up. New activity will show up here." else "Nothing in $filter", Modifier.padding(16.dp)) }
+            if (!loading && filtered.isEmpty() && error == null) item { Text(if (items.isEmpty()) "You're all caught up. New activity will show up here." else "Nothing in $filter", Modifier.padding(16.dp)) }
         }
     }
 }
@@ -2675,10 +2881,13 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
         scope.launch {
             try {
                 val res = api2.searchUsers(term)
+                // B-B7: a stale response (a newer query already started)
+                // must not overwrite the newer results or error.
+                if (term != q) return@launch
                 if (res.success && res.data != null) results = res.data.users
-                else searchError = res.error?.message
-            } catch (e: Exception) { searchError = e.message }
-            finally { searching = false }
+                else searchError = res.error?.message ?: "Couldn't search — try again" // B-B33: never a null error masquerading as "No people found"
+            } catch (e: Exception) { if (term == q) searchError = e.message ?: "Couldn't search — try again" }
+            finally { if (term == q) searching = false }
         }
     }
     // Live search as you type (300ms debounce), plus the Search button.
@@ -2802,17 +3011,25 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // B-B4: private profile viewed by a non-follower — posts/photos/all
+    // are already gated; the Reels grid was not. (Highlights are NOT
+    // gated: the web profile shows them for private accounts too —
+    // ProfileClient.tsx renders the Highlights row without any
+    // isPrivateView check, while its reels grid is gated.)
+    val isPrivateView = profile?.isPrivate == true && username != null && !following
     fun profileUrl(u: String?) = "https://frianzo.online/u/${u ?: ""}"
     fun copyProfileLink(u: String?) {
         clipboard.setText(AnnotatedString(profileUrl(u)))
         linkMsg = "Link copied"
         scope.launch { delay(2000); linkMsg = null }
     }
+    // B-B27: after a successful upload the profile is reloaded so the
+    // new photo/cover shows at once (was: "reopen profile to see it").
     val avatarPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
             try {
                 val part = uriToImagePart(context, uri, "avatar_upload")
-                if (api2.uploadAvatar(part).success) photoMsg = "Photo updated — reopen profile to see it." else photoMsg = "Photo upload failed"
+                if (api2.uploadAvatar(part).success) { try { val rp = api2.myProfile(); if (rp.success && rp.data?.user != null) profile = rp.data.user } catch (_: Exception) {}; photoMsg = "Photo updated" } else photoMsg = "Photo upload failed"
             } catch (e: Exception) { photoMsg = e.message }
         }
     }
@@ -2820,7 +3037,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
         if (uri != null) scope.launch {
             try {
                 val part = uriToImagePart(context, uri, "cover_upload")
-                if (api2.uploadCover(part).success) photoMsg = "Cover updated." else photoMsg = "Cover upload failed"
+                if (api2.uploadCover(part).success) { try { val rp = api2.myProfile(); if (rp.success && rp.data?.user != null) profile = rp.data.user } catch (_: Exception) {}; photoMsg = "Cover updated" } else photoMsg = "Cover upload failed"
             } catch (e: Exception) { photoMsg = e.message }
         }
     }
@@ -2850,11 +3067,15 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     profile = res.data.user
                     val uname = res.data.user.username
                     if (uname != null) {
+                        // B-B5: try/finally — a throwing userPosts() used
+                        // to leave postsLoading true and the tab spinning
+                        // forever with no error or retry.
                         postsLoading = true
-                        val pr = api2.userPosts(uname)
-                        if (pr.success && pr.data != null) posts = pr.data.posts ?: emptyList()
-                        else postsError = pr.error?.message
-                        postsLoading = false
+                        try {
+                            val pr = api2.userPosts(uname)
+                            if (pr.success && pr.data != null) posts = pr.data.posts ?: emptyList()
+                            else postsError = pr.error?.message
+                        } finally { postsLoading = false }
                     }
                     if (res.data.user.id != null) {
                         try { val fc = api2.followCounts(res.data.user.id); if (fc.success && fc.data != null) followCounts = fc.data } catch (_: Exception) {}
@@ -3016,6 +3237,10 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                     Text(label, style = MaterialTheme.typography.bodySmall, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                             }
+                            // B-B21 (backend-verified): GET /api/posts/user/{u}
+                            // and GET /api/reels/user/{u} return the FULL
+                            // lists (no paging, no total field), so the
+                            // loaded sizes ARE the true totals.
                             countCol("${posts.size}", "Posts")
                             Box(Modifier.width(1.dp).height(32.dp).background(MaterialTheme.colorScheme.outline))
                             countCol("${userReels.size}", "Reels") { activeTab = "reels" }
@@ -3052,6 +3277,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     var edProvince by remember { mutableStateOf(cur.province ?: "") }
                     var edCountry by remember { mutableStateOf(cur.country ?: "") }
                     var edWeb by remember { mutableStateOf(cur.website ?: "") }
+                    var edSaving by remember { mutableStateOf(false) }
                     AlertDialog(
                         onDismissRequest = { showEdit = false },
                         title = { Text("Edit profile") },
@@ -3078,7 +3304,11 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             }
                         },
                         confirmButton = {
-                            Button(onClick = {
+                            Button(enabled = !edSaving, onClick = {
+                                // B-B26: a blank name must not blank the
+                                // display name, and Save cannot double-fire.
+                                if (edName.isBlank()) { editError = "Name can't be empty"; return@Button }
+                                edSaving = true
                                 scope.launch {
                                     try {
                                         val body = mapOf<String, Any>("displayName" to edName, "bio" to edBio, "city" to edCity, "province" to edProvince, "country" to edCountry, "website" to edWeb)
@@ -3086,8 +3316,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                         if (r.success) { profile = cur.copy(displayName = edName, bio = edBio, city = edCity, province = edProvince, country = edCountry, website = edWeb); showEdit = false; editError = null }
                                         else editError = r.error?.message ?: "Could not save profile"
                                     } catch (e: Exception) { editError = e.message }
+                                    finally { edSaving = false }
                                 }
-                            }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text("Save Changes", maxLines = 1, softWrap = false) }
+                            }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text(if (edSaving) "Saving..." else "Save Changes", maxLines = 1, softWrap = false) }
                         },
                         dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
                     )
@@ -3175,7 +3406,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                 if (activeTab == "reels") {
-                    if (reelsLoading) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                    if (isPrivateView) { /* private banner above already explains it */ }
+                    else if (reelsLoading) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { DotsLoading() }
                     else if (userReels.isEmpty()) Text("No reels yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
                 } else if (activeTab == "photos") {
                     if (posts.filter { !it.imageUrl.isNullOrBlank() }.isEmpty()) Text("No photos yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
@@ -3191,7 +3423,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
         // v3.2: Reels tab = 3-column grid of the user's real reels;
         // Photos tab = 3-column grid of posts with photos; All = post cards.
         if (activeTab == "reels") {
-            items(userReels.chunked(3), key = { row -> row.firstOrNull()?.id ?: "empty" }) { row ->
+            // B-B4: same private gate as the Photos/All tabs.
+            items(if (isPrivateView) emptyList() else userReels.chunked(3), key = { row -> row.firstOrNull()?.id ?: "empty" }) { row ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     row.forEach { reel ->
                         Box(Modifier.weight(1f).aspectRatio(9f / 16f).clip(RoundedCornerShape(4.dp)).background(Color(0xFF1E293B)).clickable { onOpenReel?.invoke(reel.id) }) {
@@ -3283,16 +3516,33 @@ private fun HighlightViewerDialog(api2: FrianzoApi2, highlight: Highlight, isOwn
     var notice by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val item = highlight.items.getOrNull(idx)
+    // B-B3: per-item video error (reset when the item changes).
+    var videoError by remember(item?.id) { mutableStateOf<String?>(null) }
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             when {
                 item == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Empty highlight", color = Color.White) }
                 item.mediaType == "video" -> {
-                    key(item.id) {
-                        AndroidView(factory = { ctx -> VideoView(ctx).apply {
-                            setVideoURI(Uri.parse(item.mediaUrl))
-                            setOnPreparedListener { mp -> mp.isLooping = true; mp.start() }
-                        } }, modifier = Modifier.fillMaxSize(), onRelease = { it.stopPlayback() })
+                    // B-B3: a video item with no media URL used to call
+                    // Uri.parse(null) and crash; a video that fails to
+                    // load now shows an error instead of a black screen.
+                    if (item.mediaUrl.isNullOrBlank()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("This video can't be played.", color = Color.White, fontSize = 15.sp)
+                                Spacer(Modifier.height(8.dp))
+                                Text("Close this highlight and try again.", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                            }
+                        }
+                    } else {
+                        key(item.id) {
+                            AndroidView(factory = { ctx -> VideoView(ctx).apply {
+                                setVideoURI(Uri.parse(item.mediaUrl))
+                                setOnPreparedListener { mp -> mp.isLooping = true; mp.start() }
+                                setOnErrorListener { _, _, _ -> videoError = "This video can't be played."; true }
+                            } }, modifier = Modifier.fillMaxSize(), onRelease = { it.stopPlayback() })
+                        }
+                        if (videoError != null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(videoError!!, color = Color.White, fontSize = 15.sp) }
                     }
                 }
                 else -> AsyncImage(model = item.mediaUrl, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Fit, modifier = Modifier.fillMaxSize())
@@ -3382,6 +3632,9 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
     var total by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(false) }
     var q by rememberSaveable { mutableStateOf("") }
+    // B-B28: all pages combined, for searching (the backend has no
+    // search param on this endpoint, so extra pages are fetched on demand).
+    var allUsers by remember { mutableStateOf<List<FollowListUser>?>(null) }
     val scope = rememberCoroutineScope()
     fun load(p: Int) {
         loading = true
@@ -3399,7 +3652,20 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
         }
     }
     LaunchedEffect(userId, direction) { load(1) }
-    val shown = if (q.isBlank()) users else users.filter {
+    LaunchedEffect(q, pages) {
+        if (q.isBlank() || pages <= 1) { allUsers = null; return@LaunchedEffect }
+        // Fetch every page (1..pages), not just the current one plus the
+        // rest — the loaded page alone would miss page 1 when paging.
+        val combined = mutableListOf<FollowListUser>()
+        for (p in 1..pages) {
+            try {
+                val res = api2.followUsers(userId, direction, p, 20)
+                if (res.success && res.data?.users != null) combined += res.data.users!!
+            } catch (_: Exception) { break }
+        }
+        allUsers = combined
+    }
+    val shown = if (q.isBlank()) users else (allUsers ?: users).filter {
         (it.displayName ?: "").contains(q, ignoreCase = true) || (it.username ?: "").contains(q, ignoreCase = true)
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -3420,7 +3686,7 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
             if (loading) item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
-            if (shown.isEmpty() && error == null && !loading) item { Text(if (users.isEmpty()) "Nobody here yet" else "No matches on this page", Modifier.padding(16.dp)) }
+            if (shown.isEmpty() && error == null && !loading) item { Text(if (users.isEmpty()) "Nobody here yet" else "No matches", Modifier.padding(16.dp)) }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(enabled = page > 1 && !loading, onClick = { load(page - 1) }) { Text("Prev", maxLines = 1, softWrap = false) }

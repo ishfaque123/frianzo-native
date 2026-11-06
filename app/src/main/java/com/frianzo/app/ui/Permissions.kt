@@ -7,10 +7,13 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.platform.LocalContext
 
 /**
@@ -53,17 +56,34 @@ fun locationPermissions(): Array<String> =
  * Returns a function that runs [onGranted] immediately if all [permissions]
  * are already granted, otherwise asks for them first and runs [onGranted]
  * only if the user grants all of them.
+ *
+ * C-B19: [onGranted] is read through rememberUpdatedState, so a changed
+ * callback (e.g. a different pending media Uri) is never stale — the
+ * cached gate lambda always calls the latest one.
+ * C-B19 + C-D3: on denial the pick button no longer goes silently dead:
+ * [onDenied] runs when supplied; otherwise a Toast explains that the
+ * permission can be allowed in the app's Settings.
  */
 @Composable
-fun rememberPermissionGate(permissions: Array<String>, onGranted: () -> Unit): () -> Unit {
+fun rememberPermissionGate(permissions: Array<String>, onGranted: () -> Unit, onDenied: (() -> Unit)? = null): () -> Unit {
     val context = LocalContext.current
+    val currentOnGranted by rememberUpdatedState(onGranted)
+    val currentOnDenied by rememberUpdatedState(onDenied)
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-        if (granted.values.all { it }) onGranted()
+        if (granted.values.all { it }) {
+            currentOnGranted()
+        } else {
+            currentOnDenied?.invoke() ?: Toast.makeText(
+                context,
+                "Permission denied — allow it in the app Settings to use this.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
     return remember(permissions.contentHashCode()) {
         {
             if (permissions.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
-                onGranted()
+                currentOnGranted()
             } else {
                 launcher.launch(permissions)
             }

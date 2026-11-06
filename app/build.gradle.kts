@@ -28,8 +28,8 @@ android {
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 23
-        versionName = "4.0"
+        versionCode = 24
+        versionName = "4.1"
     }
 
     buildFeatures { compose = true }
@@ -67,7 +67,10 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.navigation:navigation-compose:2.8.5")
+
+    // C-B24: navigation-compose REMOVED (was 2.8.5) — nothing in the app
+    // uses NavController/NavHost; navigation is hand-rolled state in
+    // MainActivity. Dead dependency, slightly larger APK.
 
     // Networking: Retrofit + OkHttp. Auth is COOKIE based on this backend
     // (authMiddleware reads vynzo_auth_token from cookies only, it does NOT

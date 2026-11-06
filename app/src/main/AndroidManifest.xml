@@ -17,6 +17,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- C-B9: READ_EXTERNAL_STORAGE is what the gallery gate requests on
+         Android 12 and below (see Permissions.kt galleryPermissions());
+         without this declaration the request is auto-denied and the
+         picker never opens on pre-13 phones. maxSdkVersion 32: Android
+         13+ uses READ_MEDIA_IMAGES/VIDEO instead. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- v3.4: composer "Add location" only (GPS -> GET /api/geo/reverse).
@@ -32,10 +38,27 @@
         android:theme="@style/Theme.FrianzoNative">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- C-B1: deep links for shared frianzo.online URLs. Parsed in
+                 MainActivity (onCreate cold start + onNewIntent): /post/<id>
+                 opens the post, /reels?id=<id> focuses the reel,
+                 /u/<username> opens the profile. /s/<code> short links are
+                 NOT resolved in-app (no Api2 call exists for
+                 GET /api/share/{code}); they fall through to the browser.
+                 Unknown paths under these hosts are ignored by the parser. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="frianzo.online" />
+                <data android:scheme="https" android:host="www.frianzo.online" />
+                <data android:scheme="http" android:host="frianzo.online" />
+                <data android:scheme="http" android:host="www.frianzo.online" />
             </intent-filter>
         </activity>
     </application>

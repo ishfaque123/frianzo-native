@@ -28,8 +28,14 @@ class SessionViewModel(private val api: FrianzoApi) : ViewModel() {
         viewModelScope.launch {
             try {
                 val res = api.me()
+                // A-B31: a 2xx {success:false} is NOT "logged out" — the
+                // backend only returns success:false with an HTTP error
+                // status (verified: sendSuccess always sets success:true;
+                // failures go through sendError + ApiError status), so a
+                // 2xx success:false here is transient. Show Error + Retry
+                // instead of bouncing a valid session to the login screen.
                 _state.value = if (res.success) AuthState.LoggedIn(res.data?.user)
-                    else AuthState.LoggedOut
+                    else AuthState.Error(res.error?.message ?: "Session check failed. Try again.")
             } catch (e: HttpException) {
                 // 401-on-start fix: a clean unauthenticated /me (HTTP 401)
                 // is NOT an error — it simply means "not logged in", so go

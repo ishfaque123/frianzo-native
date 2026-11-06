@@ -122,9 +122,16 @@ class PersistentCookieJar(context: Context) : CookieJar {
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        // A-B32: a cookie with no Expires/Max-Age is a session cookie and
+        // OkHttp reports expiresAt == Long.MIN_VALUE for it — the old
+        // `expiresAt > now` filter silently dropped every such cookie.
+        // Session cookies are valid until the app closes, so keep them.
+        // Unparseable stored values are still dropped (they cannot be
+        // sent), but the stored raw value is left in prefs for debugging
+        // instead of being wiped.
         return prefs.all.values.mapNotNull { raw ->
             try { Cookie.parse(url, raw as String) } catch (_: Exception) { null }
-        }.filter { it.expiresAt > System.currentTimeMillis() }
+        }.filter { it.expiresAt == Long.MIN_VALUE || it.expiresAt > System.currentTimeMillis() }
     }
 
     fun clear() {
@@ -141,6 +148,12 @@ class PersistentCookieJar(context: Context) : CookieJar {
      * that can work. Never called with a hard-coded token.
      */
     fun saveAuthToken(token: String) {
+        // A-B32: the 7-day expiry is NOT arbitrary — it matches the
+        // server's own auth-cookie maxAge (vynzo-backend authController
+        // COOKIE_OPTIONS: maxAge 7 * 24h). The Set-Cookie expiry from
+        // saveFromResponse is always preferred when the server sets a
+        // cookie; this fallback only fires when a login response carries
+        // a token with no usable cookie, so it mirrors the server value.
         val cookie = Cookie.Builder()
             .name("vynzo_auth_token")
             .value(token)

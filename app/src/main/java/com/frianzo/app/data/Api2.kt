@@ -90,7 +90,10 @@ data class PostResponse(val post: Post?)
 
 // ---------- Chat ----------
 data class ConversationUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val lastActiveAt: String? = null, val isOnline: Boolean = false, val showOnlineStatus: Boolean? = null)
-data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?, val mediaUrl: String? = null, val mediaType: String? = null, val voiceDuration: Int? = null, val isDeleted: Boolean = false)
+// B-B39: read ticks. isRead/deliveredAt/readAt are populated by the
+// backend when it sends them (nullable until then); the thread also
+// reads otherLastReadAt/DeliveredAt from MessagesData below.
+data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?, val mediaUrl: String? = null, val mediaType: String? = null, val voiceDuration: Int? = null, val isDeleted: Boolean = false, val isRead: Boolean? = null, val deliveredAt: String? = null, val readAt: String? = null)
 data class Conversation(
     val id: String,
     val otherUser: ConversationUser?,
@@ -103,7 +106,11 @@ data class Conversation(
     val disappearingDuration: Int? = null,
     val updatedAt: String? = null,
 )
-data class MessagesData(val messages: List<ConversationMessage>)
+// B-B39: GET /api/messages/conversations/{id}/messages returns
+// { messages, otherLastReadAt, otherLastDeliveredAt } (messageService).
+// B-B6: it does NOT mark the conversation read — there is no mark-read
+// endpoint; the backend must add one (NEEDS-BACKEND).
+data class MessagesData(val messages: List<ConversationMessage>, val otherLastReadAt: String? = null, val otherLastDeliveredAt: String? = null)
 data class CreateConversationRequest(val userId: String)
 data class CreateConversationData(val id: String)
 data class SendMessageRequest(val content: String)
@@ -347,7 +354,10 @@ interface FrianzoApi2 {
     @Multipart
     @POST("api/posts")
     suspend fun createPost(
-        @Part("content") content: RequestBody,
+        // B-B40: nullable — image-only posts omit the content part
+        // entirely (backend-verified: empty content is accepted only
+        // with an image; the part is optional in the multipart body).
+        @Part("content") content: RequestBody? = null,
         @Part image: MultipartBody.Part?,
         @Part("backgroundStyle") backgroundStyle: RequestBody? = null,
         @Part("visibility") visibility: RequestBody? = null,
@@ -436,8 +446,13 @@ interface FrianzoApi2 {
     suspend fun sendMessage(@Path("id") id: String, @Body body: SendMessageRequest): Envelope<ConversationMessage>
     @DELETE("api/messages/conversations/{id}")
     suspend fun deleteConversation(@Path("id") id: String): Envelope<Any>
+    // B-B2: the body is a raw JSON RequestBody, NOT a Map — default
+    // Gson drops null values, so a Map could never send the explicit
+    // {"duration":null} that means Off. The backend accepts null = Off
+    // (messageController: null or one of 3600/86400/604800/7776000; 0 is
+    // rejected 400). Callers build the JSON string themselves.
     @POST("api/messages/conversations/{id}/disappearing")
-    suspend fun setDisappearing(@Path("id") id: String, @Body body: Map<String, Any?>): Envelope<Any>
+    suspend fun setDisappearing(@Path("id") id: String, @Body body: okhttp3.RequestBody): Envelope<Any>
 
     // Notifications
     @GET("api/notifications")
@@ -454,6 +469,9 @@ interface FrianzoApi2 {
     suspend fun updateNotificationPref(@Body body: Map<String, Any>): Envelope<Any>
     @DELETE("api/notifications/all")
     suspend fun deleteAllNotifications(): Envelope<Any>
+    // B-B38 (backend-verified): the Express handler reads req.body.ids,
+    // so the bodied DELETE is accepted server-side; kept as-is, and B-B20
+    // now surfaces a failure instead of silently doing nothing.
     @HTTP(method = "DELETE", path = "api/notifications", hasBody = true)
     suspend fun deleteNotifications(@Body body: DeleteIdsRequest): Envelope<Any>
 

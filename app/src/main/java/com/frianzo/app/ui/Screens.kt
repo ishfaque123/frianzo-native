@@ -113,9 +113,32 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     val scope = rememberCoroutineScope()
     var email by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
-    var codeSent by remember { mutableStateOf(false) }
+    // A-B21: codeSent must survive rotation like email/code do.
+    var codeSent by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    // A-B26: Resend cooldown countdown (seconds left). Set to 30 on every
+    // code send; the Resend button stays disabled until it reaches 0.
+    var resendWait by remember { mutableStateOf(0) }
+    LaunchedEffect(resendWait) {
+        while (resendWait > 0) { delay(1000); resendWait -= 1 }
+    }
+    // A-B26: client-side validation — "abc" must never reach the server.
+    val emailValid = EMAIL_REGEX.matches(email.trim())
+    val codeValid = code.trim().length == 6 && code.trim().all { it.isDigit() }
+    // A-B22: after a login response says success, verify the session
+    // actually works (/api/auth/me reads the cookie back) before leaving
+    // the login screen. Returns true only when the session is verified.
+    suspend fun verifySessionAndEnter(user: MeData?): Boolean {
+        return try {
+            val me = api.me()
+            if (me.success) { session.markLoggedIn(me.data?.user ?: user); true }
+            else { message = me.error?.message ?: "Login succeeded but the session check failed. Please try again."; false }
+        } catch (e: Exception) {
+            message = e.message ?: "Login succeeded but the session check failed. Please try again."
+            false
+        }
+    }
 
     // LIVE SITE LOGIN (same-to-same): fixed pale blue-gray/off-white
     // background, white field/button, gray text — regardless of the
@@ -204,8 +227,9 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                         )
                         if (!login.success) throw Exception(login.error?.message ?: "Google login failed")
                         login.data?.token?.let { cookieJar?.saveAuthToken(it) }
-                        session.markLoggedIn(login.data?.user)
-                        onLoggedIn()
+                        // A-B22: navigate only if /api/auth/me proves the
+                        // session (cookie) actually works.
+                        if (verifySessionAndEnter(login.data?.user)) onLoggedIn()
                     } catch (e: GetCredentialCancellationException) {
                         // User backed out of the picker: distinct from a failure.
                         fail(Exception("Google sign-in cancelled. Tap again to try."), "Google sign-in failed")
@@ -273,25 +297,40 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                 colors = fieldColors,
             )
         }
+        if (!codeSent && email.isNotBlank() && !emailValid) {
+            Spacer(Modifier.height(6.dp))
+            Text("Enter a valid email address.", fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+        }
+        if (codeSent && code.isNotBlank() && !codeValid) {
+            Spacer(Modifier.height(6.dp))
+            Text("Enter the 6-digit code.", fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+        }
         Spacer(Modifier.height(12.dp))
         Button(
-            enabled = !busy && email.isNotBlank(),
+            // A-B26: enabled only when the current step's input is valid.
+            enabled = !busy && (!codeSent && emailValid || codeSent && codeValid),
             onClick = {
                 busy = true
                 scope.launch {
                     try {
                         if (!codeSent) {
+                            // A-B26: never send a malformed email address.
+                            if (!emailValid) throw Exception("Enter a valid email address.")
                             val res = api.requestEmailCode(EmailCodeRequest(email.trim()))
                             if (!res.success) throw Exception(res.error?.message ?: "Could not send code")
                             codeSent = true
+                            resendWait = 30
                             message = "Code sent to your email."
                         } else {
+                            // A-B26: never send a blank/non-6-digit code.
+                            if (!codeValid) throw Exception("Enter the 6-digit code from your email.")
                             val res = api.verifyEmailCode(
                                 EmailVerifyRequest(email.trim(), code.trim(), deviceToken(context))
                             )
                             if (!res.success) throw Exception(res.error?.message ?: "Wrong code")
-                            session.markLoggedIn(res.data?.user)
-                            onLoggedIn()
+                            // A-B22: navigate only if /api/auth/me proves the
+                            // session (cookie) actually works.
+                            if (verifySessionAndEnter(res.data?.user)) onLoggedIn()
                         }
                     } catch (e: Exception) { fail(e, "Email login failed") }
                     finally { busy = false }
@@ -307,18 +346,19 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         if (codeSent) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
-                TextButton(enabled = !busy, onClick = {
+                TextButton(enabled = !busy && resendWait == 0, onClick = {
                     busy = true
                     scope.launch {
                         try {
                             val res = api.requestEmailCode(EmailCodeRequest(email.trim()))
                             if (!res.success) throw Exception(res.error?.message ?: "Could not resend code")
+                            resendWait = 30
                             message = "Code sent again to your email."
                         } catch (e: Exception) { fail(e, "Could not resend code") }
                         finally { busy = false }
                     }
-                }) { Text("Resend code", color = loginGrey) }
-                TextButton(enabled = !busy, onClick = { codeSent = false; code = ""; message = null }) { Text("Change email", color = loginGrey) }
+                }) { Text(if (resendWait > 0) "Resend code (${resendWait}s)" else "Resend code", color = loginGrey) }
+                TextButton(enabled = !busy, onClick = { codeSent = false; code = ""; message = null; resendWait = 0 }) { Text("Change email", color = loginGrey) }
             }
         }
 
@@ -349,7 +389,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             text = legalText,
             style = MaterialTheme.typography.bodySmall.copy(color = loginGrey, textAlign = androidx.compose.ui.text.style.TextAlign.Center),
             modifier = Modifier.fillMaxWidth(),
-            onClick = { offset -> legalText.getStringAnnotations("url", offset, offset).firstOrNull()?.let { openWebUrl(context, it.item) } },
+            onClick = { offset -> legalText.getStringAnnotations("url", offset, offset).firstOrNull()?.let { if (!openWebUrl(context, it.item)) message = "Couldn't open the link — no browser app found on this phone." } },
         )
         Spacer(Modifier.height(28.dp))
         val footerText = androidx.compose.ui.text.buildAnnotatedString {
@@ -369,7 +409,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             text = footerText,
             style = MaterialTheme.typography.bodySmall.copy(textAlign = androidx.compose.ui.text.style.TextAlign.Center),
             modifier = Modifier.fillMaxWidth(),
-            onClick = { offset -> footerText.getStringAnnotations("url", offset, offset).firstOrNull()?.let { openWebUrl(context, it.item) } },
+            onClick = { offset -> footerText.getStringAnnotations("url", offset, offset).firstOrNull()?.let { if (!openWebUrl(context, it.item)) message = "Couldn't open the link — no browser app found on this phone." } },
         )
     }
 }
@@ -403,10 +443,16 @@ private fun randomNonce(): String {
 // timestamps must never be shown to the user.
 // v2.9: open a web page in the browser. Adds https:// when the stored
 // value has no scheme (profile websites are often bare domains).
-internal fun openWebUrl(context: Context, url: String) {
+// A-D10: returns false when no app can open the link, so callers can
+// tell the user instead of failing silently.
+internal fun openWebUrl(context: Context, url: String): Boolean {
     val fixed = if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
-    try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fixed))) } catch (_: Exception) {}
+    return try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fixed))); true } catch (_: Exception) { false }
 }
+
+// A-B26: simple email shape check (client-side only; the server still
+// validates). Kept permissive on purpose — no MX/DNS check.
+private val EMAIL_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 private fun feedTime(createdAt: String?): String {
     if (createdAt.isNullOrBlank()) return ""
@@ -462,8 +508,23 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
             try {
                 val res = api.feed(offset)
                 if (res.success && res.data != null) {
+                    // A-B2: a later successful load clears any earlier error.
+                    error = null
                     val newPosts = res.data.posts ?: emptyList()
-                    posts = posts + newPosts
+                    // A-B23: defensive dedup by id. The backend always
+                    // returns nextOffset = offset + posts.length
+                    // (verified in vynzo-backend postController
+                    // getFeedHandler), so a repeated page should not
+                    // happen — but if it ever does, appending it again
+                    // would duplicate keys and can crash the LazyColumn
+                    // (itemsIndexed key = post.id). A page that adds no
+                    // new ids also ends pagination instead of looping.
+                    val fresh = newPosts.filter { np -> posts.none { it.id == np.id } }
+                    posts = posts + fresh
+                    if (newPosts.isNotEmpty() && fresh.isEmpty()) {
+                        hasMore = false
+                        return@launch
+                    }
                     // Seed already-liked state from the server, but never
                     // overwrite a reaction the user just set in this session.
                     newPosts.forEach { post ->
@@ -496,6 +557,12 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
 
     fun updateShareCount(postId: String, newCount: Int) {
         posts = posts.map { if (it.id == postId) it.copy(shareCount = newCount) else it }
+    }
+
+    // A-B8: keep the feed copy's commentAudience in sync after a
+    // successful "Who can comment" change.
+    fun updateCommentAudience(postId: String, audience: String) {
+        posts = posts.map { if (it.id == postId) it.copy(commentAudience = audience) else it }
     }
 
     // Web handleTap: tap sends the CURRENT reaction (which toggles it
@@ -570,7 +637,6 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     val likedIds = vm.likedIds
     var commentPost by remember { mutableStateOf<Post?>(null) }
     var sharePost by remember { mutableStateOf<Post?>(null) }
-    var storyInfo by remember { mutableStateOf<String?>(null) }
     var detailPostId by remember { mutableStateOf<String?>(null) }
     var storyViewer by remember { mutableStateOf<StatusGroup?>(null) }
     var showStoryCreate by remember { mutableStateOf(false) }
@@ -578,7 +644,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     // v3.8 (F13): reels interleaved in the feed, one card every 2 posts.
     var feedReels by remember { mutableStateOf<List<Reel>>(emptyList()) }
     var statusFailed by remember { mutableStateOf(false) }
+    // A-D9: statusFailed is now read — a failed story load shows a Retry
+    // row instead of silently falling back to placeholders.
     var myAvatar by remember { mutableStateOf<String?>(null) }
+    // A-B4: authors whose Follow tap is in flight, and the last follow
+    // error to show at the bottom of the feed.
+    var followBusyIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var followError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(followError) { if (followError != null) { delay(4000); followError = null } }
     // + BUTTON = SYSTEM GALLERY (live behaviour): photos AND videos.
     // v3.1: Gallery permission is asked here, at pick time, before the
     // system photo picker opens (owner-confirmed permission).
@@ -602,11 +675,18 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     }
     // Per-author follow status, fetched once per author (existing endpoint).
     var followStates by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // A-B30: authors whose status fetch is already in flight. The check
+    // and the add happen in the same LaunchedEffect pass (main thread),
+    // so a second request for the same author cannot launch while the
+    // first is still running and a stale reply cannot overwrite a
+    // fresher state.
+    var followStatusFetching by remember { mutableStateOf<Set<String>>(emptySet()) }
     val followScope = rememberCoroutineScope()
     LaunchedEffect(posts) {
         for (post in posts) {
             val aid = post.author?.id ?: continue
-            if (aid in followStates) continue
+            if (aid in followStates || aid in followStatusFetching) continue
+            followStatusFetching = followStatusFetching + aid
             followScope.launch {
                 try {
                     val fs = vm.api2.followStatus(aid)
@@ -614,6 +694,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         followStates = followStates + (aid to (fs.data.status ?: "none"))
                     }
                 } catch (_: Exception) {}
+                finally { followStatusFetching = followStatusFetching - aid }
             }
         }
     }
@@ -621,7 +702,15 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
             .collect { idx ->
-                if (idx != null && vm.posts.isNotEmpty() && idx >= vm.posts.size - 3) vm.loadMore()
+                // A-B1: the LazyColumn has 2 header items (composer +
+                // stories) before the posts, so the raw LazyColumn index
+                // is 2 ahead of the post index. The old check triggered
+                // page 2 as soon as the first post was visible. Convert
+                // to a post index first (idx - 2).
+                if (idx != null && vm.posts.isNotEmpty()) {
+                    val lastPostIdx = idx - 2
+                    if (lastPostIdx >= 0 && lastPostIdx >= vm.posts.size - 3) vm.loadMore()
+                }
             }
     }
     commentPost?.let { post ->
@@ -631,7 +720,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
     }
     sharePost?.let { post -> PostShareSheet(vm, post, onClose = { sharePost = null }, onOpenChat = onOpenChat) }
     detailPostId?.let { pid ->
-        PostDetailScreen(vm, pid, myId, myAvatar = myAvatar, onClose = { detailPostId = null }, onAuthor = onAuthor, onOpenChat = onOpenChat)
+        PostDetailScreen(vm, pid, myId, myAvatar = myAvatar, onClose = { detailPostId = null }, onAuthor = onAuthor, onOpenChat = onOpenChat, onOpenPost = { detailPostId = it })
     }
     storyViewer?.let { group ->
         StoryViewerDialog(vm.api2, group, myId, onClose = { storyViewer = null }, onDeleted = {
@@ -641,22 +730,26 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         })
     }
+    // A-B28: StoryCreateScreen used to be emitted as a bare top-level
+    // composable, so whether the feed stayed visible/interactive behind
+    // it was unverifiable from code. It now opens inside a full-screen
+    // Dialog, which guarantees it covers the feed. PHONE-TEST-OWED.
     if (showStoryCreate) {
-        StoryCreateScreen(vm.api2, onDone = {
+        Dialog(onDismissRequest = { showStoryCreate = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                StoryCreateScreen(vm.api2, onDone = {
             showStoryCreate = false
             followScope.launch {
                 try { val sf = vm.api2.statusFeed(); if (sf.success && sf.data != null) statusGroups = sf.data.feed ?: emptyList() } catch (_: Exception) {}
             }
-        }, onClose = { showStoryCreate = false })
+                }, onClose = { showStoryCreate = false })
+            }
+        }
     }
-    storyInfo?.let { name ->
-        AlertDialog(
-            onDismissRequest = { storyInfo = null },
-            title = { Text("Stories") },
-            text = { Text("$name's story will open here in a future update. Stories viewing is not in this build yet.") },
-            confirmButton = { TextButton(onClick = { storyInfo = null }) { Text("OK") } },
-        )
-    }
+    // A-D2: the old placeholder-story dialog ("will open here in a
+    // future update") is deleted — real StoryViewerDialog exists, so a
+    // face that looks like a story must never promise a future build.
+    // Placeholder authors below are no longer tappable as stories.
 
     PullToRefreshBox(
         isRefreshing = vm.refreshing,
@@ -744,7 +837,9 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(vertical = 12.dp)) {
                     LazyRow(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         item {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { onCreatePost() }) {
+                            // A-D1: this row is labelled "Your story", so it
+                            // must open story creation like the real row does.
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { showStoryCreate = true }) {
                                 Box(contentAlignment = Alignment.BottomEnd) {
                                     Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) { FrianzoAvatar(myAvatar, 56.dp) }
                                     Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
@@ -753,8 +848,31 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                 Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
+                        // A-D9: the story load failed — offer a retry
+                        // instead of silently showing placeholders.
+                        if (statusFailed) {
+                            item {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
+                                    Box(Modifier.size(60.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                                        Text("!", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    TextButton(onClick = {
+                                        statusFailed = false
+                                        followScope.launch {
+                                            try {
+                                                val sf = vm.api2.statusFeed()
+                                                if (sf.success && sf.data != null) statusGroups = sf.data.feed ?: emptyList() else statusFailed = true
+                                            } catch (_: Exception) { statusFailed = true }
+                                        }
+                                    }, contentPadding = PaddingValues(0.dp)) { Text("Retry", fontSize = 11.sp, color = FrianzoBlue) }
+                                }
+                            }
+                        }
                         items(storyAuthors) { author ->
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { storyInfo = author.displayName ?: author.username ?: "User" }) {
+                            // A-D2: placeholders are authors with no loaded
+                            // story — not tappable as stories any more.
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
                                 Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { FrianzoAvatar(author.profilePictureUrl, 56.dp) }
                                 Spacer(Modifier.height(4.dp))
                                 Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
@@ -792,18 +910,28 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     }
                     val authorId = post.author?.id
                     val fstatus = authorId?.let { followStates[it] }
-                    if (authorId != null && authorId != myId && fstatus != "self") {
+                    // A-B4: no button at all until the status has loaded —
+                    // showing "Follow" first lets a tap accidentally
+                    // unfollow someone already followed. Disabled + guarded
+                    // while a toggle is in flight; failures show an error
+                    // instead of silently doing nothing.
+                    if (authorId != null && authorId != myId && fstatus != null && fstatus != "self") {
                         val ftext = when (fstatus) { "following" -> "Following"; "friends" -> "Friends"; "follow_back" -> "Follow Back"; else -> "Follow" }
+                        val fBusy = authorId in followBusyIds
                         OutlinedButton(
+                            enabled = !fBusy,
                             onClick = {
+                                if (authorId in followBusyIds) return@OutlinedButton
+                                followBusyIds = followBusyIds + authorId
                                 followScope.launch {
                                     try {
                                         val r = vm.api2.toggleFollow(authorId)
                                         if (r.success && r.data != null) {
                                             val ns = r.data.friendStatus ?: if (r.data.following || r.data.isFollowing) "following" else "none"
                                             followStates = followStates + (authorId to ns)
-                                        }
-                                    } catch (_: Exception) {}
+                                        } else followError = r.error?.message ?: "Could not change follow status"
+                                    } catch (e: Exception) { followError = e.message ?: "Could not change follow status" }
+                                    finally { followBusyIds = followBusyIds - authorId }
                                 }
                             },
                             modifier = Modifier.height(36.dp),
@@ -819,7 +947,10 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         PostMenuSheet(vm, post, myId, followStates[post.author?.id], onClose = { menuPost = false }, onAuthor = onAuthor, onShare = { sharePost = post }, onComments = { commentPost = post }, onDetail = { detailPostId = post.id })
                     }
                     // Always-visible Hide X, live layout.
-                    IconButton(onClick = { followScope.launch { try { vm.api2.hidePost(post.id) } catch (_: Exception) {} ; vm.hidePost(post.id) } }) { Icon(Icons.Filled.Close, contentDescription = "Hide", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    // A-B5: only hide locally when the server hide
+                    // succeeded — hiding offline used to vanish the post
+                    // until the next refresh, with no error.
+                    IconButton(onClick = { followScope.launch { try { val r = vm.api2.hidePost(post.id); if (r.success) vm.hidePost(post.id) else followError = r.error?.message ?: "Could not hide post" } catch (e: Exception) { followError = e.message ?: "Could not hide post" } } }) { Icon(Icons.Filled.Close, contentDescription = "Hide", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 // Web PostCard: a post with backgroundStyle and no image
                 // renders as a centred white bold text on a gradient tile
@@ -839,7 +970,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     Spacer(Modifier.height(10.dp))
                     PostPhoto(it, onClick = { detailPostId = post.id })
                 }
-                post.originalPost?.let { Spacer(Modifier.height(10.dp)); OriginalPostCard(it, onAuthor = onAuthor, onDetail = { detailPostId = post.id }) }
+                post.originalPost?.let { orig -> Spacer(Modifier.height(10.dp)); OriginalPostCard(orig, onAuthor = onAuthor, onDetail = { detailPostId = orig.id }) }
                 Spacer(Modifier.height(10.dp))
                 // Counts row, live style: up to 3 overlapping reaction icons + total, shares pill.
                 if (post.likeCount > 0 || post.commentCount > 0 || post.shareCount > 0) {
@@ -917,6 +1048,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         }
         item {
+            if (followError != null) Text(followError!!, color = Color.Red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             if (error != null) Text(error!!, modifier = Modifier.padding(16.dp))
             if (loading) {
                 Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
@@ -970,7 +1102,11 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
     var dmBusy by remember { mutableStateOf(false) }
-    var reposted by remember { mutableStateOf(false) }
+    // A-D8: `reposted` was dead state (never read or written) — deleted.
+    // A-B11/A-D4/A-D5: errors from share taps (no author, app missing).
+    var shareError by remember { mutableStateOf<String?>(null) }
+    // A-B13: Repost in-flight guard.
+    var repostBusy by remember { mutableStateOf(false) }
     // Web: the feed's permanent share code is used first, no API call.
     var link by remember { mutableStateOf(if (!post.shareCode.isNullOrBlank()) "https://frianzo.online/s/${post.shareCode}" else "https://frianzo.online/post/${post.id}") }
     LaunchedEffect(post.id) {
@@ -982,8 +1118,32 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
         } catch (_: Exception) {}
     }
     fun record(channel: String) { scope.launch { try { vm.api2.recordShareEvent(mapOf("type" to "post", "id" to post.id, "channel" to channel)) } catch (_: Exception) {} } }
-    // Web openAndClose: external taps close the sheet after recording.
-    fun openUrl(url: String, channel: String) { record(channel); onShared(); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {}; onClose() }
+    // A-B11 + A-D5: an external share is counted ONLY after its app
+    // actually opens — never before the tap, never when the target app
+    // is missing, and never when the user only opened the sheet. The
+    // local count (onShared) is NOT bumped for external intents at all:
+    // Android cannot know whether the user completed the share, so
+    // incrementing on tap inflated the count (a cancelled WhatsApp
+    // share still counted). Copy and DM increment because those actions
+    // complete inside this app. NOTE: the backend has no "confirmed
+    // share" concept — recordShareEvent just inserts a ShareEvent row
+    // per call (verified in vynzo-backend shareService), so the server
+    // count stays tap-based by design; NEEDS-BACKEND if a confirmed
+    // share count is ever wanted server-side.
+    fun openUrl(url: String, channel: String) {
+        val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
+        if (intent.resolveActivity(context.packageManager) == null) {
+            shareError = "That app isn't installed on this phone."
+            return
+        }
+        try {
+            context.startActivity(intent)
+            record(channel)
+            onClose()
+        } catch (e: Exception) {
+            shareError = "Couldn't open that app. Try again."
+        }
+    }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
             Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
@@ -993,7 +1153,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
                 Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(8.dp))
                 Button(
-                    onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); scope.launch { kotlinx.coroutines.delay(2000); copied = false } },
+                    onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); onShared(); scope.launch { kotlinx.coroutines.delay(2000); copied = false } },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (copied) "Copied!" else "Copy link") }
@@ -1002,18 +1162,23 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
             // Web grid order, 4 per row, no "More" tile on web. Brand logos
             // are web SVGs; native keeps its letter circles (no logo assets).
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                ShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
+                // A-D8: disabled while a DM is already being created.
+                ShareTile("Frianzo DM", Color(0xFF0F172A), "F", enabled = !dmBusy) {
+                    // A-B13: double-tap guard — a second tap while the
+                    // first createConversation is in flight is ignored.
+                    if (dmBusy) return@ShareTile
                     val authorId2 = post.author?.id
-                    if (authorId2 != null) {
-                        dmBusy = true; record("dm")
-                        scope.launch {
-                            try {
-                                val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId2))
-                                val convId = res.data?.id
-                                if (convId != null) { onShared(); onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
-                            } catch (_: Exception) {}
-                            dmBusy = false
-                        }
+                    // A-D4: no author id — say so instead of doing nothing.
+                    if (authorId2 == null) { shareError = "Can't message this post's author."; return@ShareTile }
+                    dmBusy = true; shareError = null
+                    scope.launch {
+                        try {
+                            val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId2))
+                            val convId = res.data?.id
+                            if (res.success && convId != null) { record("dm"); onShared(); onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
+                            else shareError = res.error?.message ?: "Couldn't start the chat. Try again."
+                        } catch (e: Exception) { shareError = e.message ?: "Couldn't start the chat. Try again." }
+                        finally { dmBusy = false }
                     }
                 }
                 ShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") }
@@ -1026,29 +1191,40 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
                 ShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") }
                 ShareTile("Text message", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") }
             }
-            Spacer(Modifier.height(8.dp))
+            if (shareError != null) { Spacer(Modifier.height(8.dp)); Text(shareError!!, fontSize = 13.sp, color = Color.Red) }
+            Spacer(Modifier.height(12.dp))
             // Web: reposts are counted server-side and must NOT also be
             // recorded as a share event (that would double-count them).
             // On success the sheet closes (web: onClose + reload).
             var repostError by remember { mutableStateOf<String?>(null) }
             if (repostError != null) { Spacer(Modifier.height(8.dp)); Text(repostError!!, fontSize = 13.sp, color = Color.Red) }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            TextButton(onClick = {
+            TextButton(enabled = !repostBusy, onClick = {
+                // A-B13: double-tap guard — a second tap while the first
+                // repost is in flight is ignored, so no duplicate repost.
+                if (repostBusy) return@TextButton
+                repostBusy = true
                 scope.launch {
                     try {
                         val r = vm.api2.repostPost(post.id, mapOf("content" to ""))
-                        if (r.success) { vm.refresh(); onClose() } else repostError = r.error?.message ?: "Could not repost"
+                        // A-B13: no vm.refresh() on success — a full
+                        // refresh wipes the feed list and scroll position.
+                        // The repost appears after the next pull-to-refresh.
+                        if (r.success) { onClose() } else repostError = r.error?.message ?: "Could not repost"
                     } catch (e: Exception) { repostError = e.message }
+                    finally { repostBusy = false }
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text("Repost to your feed") }
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (repostBusy) "Reposting…" else "Repost to your feed") }
             Spacer(Modifier.height(24.dp))
         }
     }
 }
 
 @Composable
-private fun ShareTile(label: String, color: Color, letter: String, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onClick() }.padding(4.dp)) {
+private fun ShareTile(label: String, color: Color, letter: String, enabled: Boolean = true, onClick: () -> Unit) {
+    // A-D8: a disabled tile (e.g. DM while one is being created) is dimmed
+    // and does not fire.
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(enabled = enabled) { onClick() }.padding(4.dp).let { if (!enabled) it.alpha(0.4f) else it }) {
         Box(Modifier.size(56.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
             Text(letter, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
         }
@@ -1072,6 +1248,9 @@ private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> 
     var paused by remember { mutableStateOf(false) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var shareNote by remember { mutableStateOf<String?>(null) }
+    // A-B24: local share count, bumped only after a share chooser
+    // actually opens (see the share row below).
+    var shares by remember(reel.id) { mutableStateOf(reel.shareCount) }
     // Web rule: a view is recorded when the card appears.
     LaunchedEffect(reel.id) { try { api2.recordReelView(reel.id, mapOf("watchSec" to 0)) } catch (_: Exception) {} }
     LaunchedEffect(shareNote) { if (shareNote != null) { delay(3000); shareNote = null } }
@@ -1086,13 +1265,16 @@ private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> 
         }
         if (reel.videoUrl != null) {
             Box(Modifier.fillMaxWidth().padding(top = 10.dp).background(Color.Black).clickable { paused = !paused }, contentAlignment = Alignment.Center) {
+                // A-B24: onRelease stops playback when the card leaves
+                // the composition — without it, off-screen videos kept
+                // playing (muted) after scrolling away.
                 AndroidView(factory = { ctx -> VideoView(ctx).apply {
                     setVideoURI(Uri.parse(reel.videoUrl))
                     setOnPreparedListener { mp -> player = mp; mp.setVolume(0f, 0f); mp.isLooping = true; if (!paused) start() }
                 } }, modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f), update = { view ->
                     player?.setVolume(if (cardMuted) 0f else 1f, if (cardMuted) 0f else 1f)
                     if (paused) view.pause() else if (!view.isPlaying) view.start()
-                })
+                }, onRelease = { player = null; it.stopPlayback() })
                 if (paused) Box(Modifier.size(84.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(40.dp))
                 }
@@ -1125,12 +1307,14 @@ private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> 
                         try { api2.recordShareEvent(mapOf("type" to "reel", "id" to reel.id, "channel" to "system")) } catch (_: Exception) {}
                         val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, link) }
                         context.startActivity(Intent.createChooser(intent, "Share reel"))
+                        // A-B24: chooser opened — bump the displayed count.
+                        shares += 1
                     } catch (_: Exception) { shareNote = "Couldn't share — try again" }
                 }
             }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(width = 26.dp, height = 22.dp))
                 Spacer(Modifier.width(4.dp))
-                Text(if (reel.shareCount > 0) "${reel.shareCount}" else "Share", fontSize = if (reel.shareCount > 0) 13.sp else 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (shares > 0) "$shares" else "Share", fontSize = if (shares > 0) 13.sp else 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (shareNote != null) Text(shareNote!!, fontSize = 13.sp, color = Color.Red, modifier = Modifier.padding(start = 12.dp, bottom = 8.dp))
@@ -1237,6 +1421,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
     var replyTo by remember { mutableStateOf<Comment?>(null) }
     var imageUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // A-B14: sending state — the Send button had none.
+    var sending by remember { mutableStateOf(false) }
     var count by remember { mutableStateOf(initialCount) }
     var expandedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     // Follow status per comment author (same GET /api/follows/{id}/status
@@ -1251,7 +1437,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         scope.launch {
             try {
                 val res = api2.postComments(postId)
-                if (res.success && res.data != null) comments = res.data.comments else error = res.error?.message
+                // A-B3: a later successful load clears an earlier error.
+                if (res.success && res.data != null) { comments = res.data.comments; error = null } else error = res.error?.message
             } catch (e: Exception) { error = e.message }
         }
     }
@@ -1294,7 +1481,20 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                             TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${flatReplies.size} ${if (flatReplies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         } else {
                             flatReplies.forEach { (r, parentAuthor) ->
-                                CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, followStatus = followStates[r.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val nc = (count - 1).coerceAtLeast(0); count = nc; onCountChange(nc) })
+                                // A-B16: deleting a REPLY does not change the
+                                // count — the server's commentCount counts
+                                // ONLY top-level comments (verified in
+                                // vynzo-backend postService toPostDTO:
+                                // _count.comments where parentCommentId ==
+                                // null). Replies are cascade-deleted with
+                                // their parent (Prisma Comment "Replies"
+                                // relation onDelete: Cascade), and the
+                                // parent delete below decrements by exactly
+                                // 1, which is the correct server delta.
+                                // deleteComment returns only {deleted:true},
+                                // no count — NEEDS-BACKEND if a server
+                                // count is ever wanted in that response.
+                                CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, followStatus = followStates[r.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = {})
                             }
                             TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
@@ -1371,35 +1571,66 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
             )
             Spacer(Modifier.width(8.dp))
             Button(
-                enabled = draft.isNotBlank() || imageUri != null,
+                // A-B14: disabled while a send is in flight (no double send).
+                enabled = !sending && (draft.isNotBlank() || imageUri != null),
                 modifier = Modifier.height(FrianzoUi.ButtonHeight),
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
                 colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White),
                 onClick = {
-                    val text = draft; val uri = imageUri; val parent = replyTo?.id; draft = ""; imageUri = null; replyTo = null; mentionQuery = null
+                    if (sending) return@Button
+                    // A-B14: capture the values but do NOT clear the
+                    // composer yet. The draft / photo / reply target are
+                    // cleared only on success — on a server rejection
+                    // (success == false, not an exception) the old code
+                    // lost the typed comment forever; now it stays put
+                    // with an error, and a failed reply stays a reply.
+                    val text = draft; val uri = imageUri; val parent = replyTo?.id
+                    sending = true; error = null
                     scope.launch {
                         try {
                             val ok = if (uri != null) {
-                                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                if (bytes == null) false
-                                else if (bytes.size > 5 * 1024 * 1024) { error = "Image must be under 5MB."; imageUri = uri; draft = text; false }
+                                // A-B29: check the size BEFORE reading the
+                                // whole file into memory. openFileDescriptor
+                                // gives statSize without allocating; when
+                                // the size is unknown, stream with a cap so
+                                // a huge photo can never OOM the app.
+                                val fdSize = try { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } } catch (_: Exception) { null }
+                                if (fdSize != null && fdSize > 5 * 1024 * 1024) { error = "Image must be under 5MB."; false }
                                 else {
-                                    val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-                                    val body = okhttp3.RequestBody.create(mime.toMediaTypeOrNull(), bytes)
-                                    val part = okhttp3.MultipartBody.Part.createFormData("image", "comment.jpg", body)
-                                    val contentBody = okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), text)
-                                    val parentBody = parent?.let { okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), it) }
-                                    api2.addPostCommentImage(postId, contentBody, parentBody, part).success
+                                    val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
+                                        val out = java.io.ByteArrayOutputStream()
+                                        val buf = ByteArray(8192)
+                                        var total = 0L
+                                        while (true) {
+                                            val n = stream.read(buf)
+                                            if (n < 0) break
+                                            total += n
+                                            if (total > 5 * 1024 * 1024) return@use null
+                                            out.write(buf, 0, n)
+                                        }
+                                        out.toByteArray()
+                                    }
+                                    if (bytes == null) { error = "Image must be under 5MB."; false }
+                                    else {
+                                        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                                        val body = okhttp3.RequestBody.create(mime.toMediaTypeOrNull(), bytes)
+                                        val part = okhttp3.MultipartBody.Part.createFormData("image", "comment.jpg", body)
+                                        val contentBody = okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), text)
+                                        val parentBody = parent?.let { okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), it) }
+                                        api2.addPostCommentImage(postId, contentBody, parentBody, part).success
+                                    }
                                 }
                             } else {
                                 api2.addPostComment(postId, CommentCreateRequest(text, parent)).success
                             }
-                            if (ok) { load(); count += 1; onCountChange(count) } else if (error == null) error = "Could not send comment"
-                        } catch (e: Exception) { error = e.message; draft = text }
+                            if (ok) { draft = ""; imageUri = null; replyTo = null; mentionQuery = null; load(); count += 1; onCountChange(count) }
+                            else if (error == null) error = "Could not send comment"
+                        } catch (e: Exception) { error = e.message ?: "Could not send comment" }
+                        finally { sending = false }
                     }
                 },
-            ) { Text("Send") }
+            ) { Text(if (sending) "Sending…" else "Send") }
         }
     }
 }
@@ -1409,12 +1640,16 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf(false) }
-    var editDraft by rememberSaveable { mutableStateOf(c.content ?: "") }
-    var localReaction by remember { mutableStateOf(c.myReaction) }
-    var localCount by remember { mutableStateOf(c.reactionCount) }
+    // A-B15: key all per-comment state to the comment id / server values,
+    // so a list reload after a web like (or an edit elsewhere) cannot
+    // leave this row showing stale reaction/count/text.
+    var editDraft by rememberSaveable(c.id) { mutableStateOf(c.content ?: "") }
+    var localReaction by remember(c.id, c.myReaction) { mutableStateOf(c.myReaction) }
+    var localCount by remember(c.id, c.reactionCount) { mutableStateOf(c.reactionCount) }
     var menuOpen by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var reported by remember { mutableStateOf(false) }
+    var reportError by remember { mutableStateOf<String?>(null) }
     var deleteError by remember { mutableStateOf<String?>(null) }
     val isReply = depth > 0
     val isOwner = myId != null && c.author?.id == myId
@@ -1508,12 +1743,15 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                             DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")) })
                             DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = {
                                 menuOpen = false
-                                scope.launch { try { if (api2.reportComment(c.id, mapOf("reason" to "other")).success) reported = true } catch (_: Exception) {} }
+                                // A-D11: a failed report used to close the
+                                // menu with no confirmation and no error.
+                                scope.launch { try { val r = api2.reportComment(c.id, mapOf("reason" to "other")); if (r.success) { reported = true; reportError = null } else reportError = r.error?.message ?: "Could not report comment" } catch (e: Exception) { reportError = e.message ?: "Could not report comment" } }
                             })
                         }
                     }
                 }
                 if (reported) Text("Comment reported. Thanks for letting us know.", fontSize = 12.sp, color = Color(0xFF16A34A), modifier = Modifier.padding(start = 8.dp))
+                if (reportError != null) Text(reportError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.padding(start = 8.dp))
                 if (deleteError != null) Text(deleteError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.padding(start = 8.dp))
             }
         }
@@ -1590,10 +1828,20 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
     var editText by rememberSaveable { mutableStateOf(post.content ?: "") }
     var showDelete by remember { mutableStateOf(false) }
     var showAudience by remember { mutableStateOf(false) }
+    // A-B7: in-flight guards + visible errors for Edit/Delete.
+    var editBusy by remember { mutableStateOf(false) }
+    var editError by remember { mutableStateOf<String?>(null) }
+    var deleteBusy by remember { mutableStateOf(false) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
+    var audienceError by remember { mutableStateOf<String?>(null) }
     val isOwner = post.author?.id != null && post.author?.id == myId
     val clipboard = LocalClipboardManager.current
-    fun act(label: String, run: suspend () -> Unit) {
-        scope.launch { try { run(); notice = label } catch (e: Exception) { notice = e.message ?: "Failed" } }
+    // A-B6: run returns null on success or an error message on failure.
+    // The success notice ("Reported", "Pinned", ...) is shown ONLY when
+    // the server actually accepted the action — the old version showed
+    // it even when the server rejected the call.
+    fun act(label: String, run: suspend () -> String?) {
+        scope.launch { try { val err = run(); notice = err ?: label } catch (e: Exception) { notice = e.message ?: "Failed" } }
     }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -1617,19 +1865,20 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
             }, modifier = Modifier.fillMaxWidth()) { Text("Copy link", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onShare() }, modifier = Modifier.fillMaxWidth()) { Text("Share", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onComments() }, modifier = Modifier.fillMaxWidth()) { Text("Comments", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { act("Hidden") { vm.api2.hidePost(post.id); vm.hidePost(post.id); onClose() } }, modifier = Modifier.fillMaxWidth()) { Text("Hide post", modifier = Modifier.fillMaxWidth()) }
+            // A-B5 (menu): hide locally only on server success.
+            TextButton(onClick = { act("Hidden") { val r = vm.api2.hidePost(post.id); if (r.success) { vm.hidePost(post.id); onClose(); null } else r.error?.message ?: "Could not hide post" } }, modifier = Modifier.fillMaxWidth()) { Text("Hide post", modifier = Modifier.fillMaxWidth()) }
             // v2.9: "Not interested" records creator feedback
             // (POST /api/users/me/not-interested { type: "creator",
             // value: authorId }) and hides the post locally. It is NOT
             // the same as "Hide post" any more.
-            TextButton(onClick = { act("Not interested") { post.author?.id?.let { vm.api2.notInterested(mapOf("type" to "creator", "value" to it)) }; vm.hidePost(post.id); onClose() } }, modifier = Modifier.fillMaxWidth()) { Text("Not interested", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { act("Reported") { vm.api2.reportPost(post.id, mapOf("reason" to "other")) } }, modifier = Modifier.fillMaxWidth()) { Text("Report post", modifier = Modifier.fillMaxWidth()) }
+            TextButton(onClick = { act("Not interested") { val aid = post.author?.id ?: return@act "Could not mark not interested"; val r = vm.api2.notInterested(mapOf("type" to "creator", "value" to aid)); if (r.success) { vm.hidePost(post.id); onClose(); null } else r.error?.message ?: "Could not mark not interested" } }, modifier = Modifier.fillMaxWidth()) { Text("Not interested", modifier = Modifier.fillMaxWidth()) }
+            TextButton(onClick = { act("Reported") { val r = vm.api2.reportPost(post.id, mapOf("reason" to "other")); if (r.success) null else r.error?.message ?: "Could not report post" } }, modifier = Modifier.fillMaxWidth()) { Text("Report post", modifier = Modifier.fillMaxWidth()) }
             if (followStatus == "following" || followStatus == "friends") {
-                TextButton(onClick = { act("Unfollowed") { post.author?.id?.let { vm.api2.toggleFollow(it) } } }, modifier = Modifier.fillMaxWidth()) { Text("Unfollow", modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = { act("Unfollowed") { val aid = post.author?.id ?: return@act "Could not unfollow"; val r = vm.api2.toggleFollow(aid); if (r.success) null else r.error?.message ?: "Could not unfollow" } }, modifier = Modifier.fillMaxWidth()) { Text("Unfollow", modifier = Modifier.fillMaxWidth()) }
             }
             if (isOwner) {
                 TextButton(onClick = { showEdit = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit post", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = { act(if (post.isPinned) "Unpinned" else "Pinned") { vm.api2.togglePin(post.id) } }, modifier = Modifier.fillMaxWidth()) { Text(if (post.isPinned) "Unpin from profile" else "Pin to profile", modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = { act(if (post.isPinned) "Unpinned" else "Pinned") { val r = vm.api2.togglePin(post.id); if (r.success) null else r.error?.message ?: "Could not change pin" } }, modifier = Modifier.fillMaxWidth()) { Text(if (post.isPinned) "Unpin from profile" else "Pin to profile", modifier = Modifier.fillMaxWidth()) }
                 TextButton(onClick = { showAudience = true }, modifier = Modifier.fillMaxWidth()) { Text("Who can comment", modifier = Modifier.fillMaxWidth()) }
                 TextButton(onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete post", color = Color.Red, modifier = Modifier.fillMaxWidth()) }
             }
@@ -1637,19 +1886,28 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
         }
     }
     if (showEdit) {
-        AlertDialog(onDismissRequest = { showEdit = false }, title = { Text("Edit post") }, text = { OutlinedTextField(value = editText, onValueChange = { editText = it }, modifier = Modifier.fillMaxWidth()) },
-            confirmButton = { Button(onClick = { scope.launch { try { if (vm.api2.updatePost(post.id, mapOf("content" to editText)).success) { showEdit = false; onClose(); vm.refresh() } } catch (_: Exception) {} } }) { Text("Save") } },
+        // A-B7: Save is disabled while saving (no double submit); a
+        // server rejection or network failure shows the error in the
+        // dialog instead of silently leaving it open.
+        AlertDialog(onDismissRequest = { if (!editBusy) showEdit = false }, title = { Text("Edit post") }, text = { Column { OutlinedTextField(value = editText, onValueChange = { editText = it }, modifier = Modifier.fillMaxWidth()); if (editError != null) { Spacer(Modifier.height(8.dp)); Text(editError!!, fontSize = 13.sp, color = Color.Red) } } },
+            confirmButton = { Button(enabled = !editBusy, onClick = { if (editBusy) return@Button; editBusy = true; editError = null; scope.launch { try { val r = vm.api2.updatePost(post.id, mapOf("content" to editText)); if (r.success) { showEdit = false; onClose(); vm.refresh() } else editError = r.error?.message ?: "Could not save post" } catch (e: Exception) { editError = e.message ?: "Could not save post" } finally { editBusy = false } } }) { Text(if (editBusy) "Saving…" else "Save") } },
             dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } })
     }
     if (showDelete) {
-        AlertDialog(onDismissRequest = { showDelete = false }, title = { Text("Delete this post?") }, text = { Text("This can't be undone.") },
-            confirmButton = { Button(onClick = { scope.launch { try { if (vm.api2.deletePost(post.id).success) { vm.hidePost(post.id); showDelete = false; onClose() } } catch (_: Exception) {} } }) { Text("Delete") } },
+        // A-B7: same guard + error for Delete.
+        AlertDialog(onDismissRequest = { if (!deleteBusy) showDelete = false }, title = { Text("Delete this post?") }, text = { Column { Text("This can't be undone."); if (deleteError != null) { Spacer(Modifier.height(8.dp)); Text(deleteError!!, fontSize = 13.sp, color = Color.Red) } } },
+            confirmButton = { Button(enabled = !deleteBusy, onClick = { if (deleteBusy) return@Button; deleteBusy = true; deleteError = null; scope.launch { try { val r = vm.api2.deletePost(post.id); if (r.success) { vm.hidePost(post.id); showDelete = false; onClose() } else deleteError = r.error?.message ?: "Could not delete post" } catch (e: Exception) { deleteError = e.message ?: "Could not delete post" } finally { deleteBusy = false } } }) { Text(if (deleteBusy) "Deleting…" else "Delete") } },
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } })
     }
     if (showAudience) {
+        // A-B8: the dialog only closes when the server accepts the
+        // change; a rejection shows the error and stays open. The feed
+        // copy is also updated locally on success so the detail/comment
+        // screens do not keep showing the old audience.
         AlertDialog(onDismissRequest = { showAudience = false }, title = { Text("Who can comment") }, text = { Column {
+            if (audienceError != null) { Text(audienceError!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(8.dp)) }
             listOf("everyone" to "Everyone", "followers" to "Followers", "only_me" to "Only me").forEach { (v, label) ->
-                TextButton(onClick = { scope.launch { try { vm.api2.updatePost(post.id, mapOf("commentAudience" to v)); showAudience = false } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = { scope.launch { try { val r = vm.api2.updatePost(post.id, mapOf("commentAudience" to v)); if (r.success) { audienceError = null; vm.updateCommentAudience(post.id, v); showAudience = false } else audienceError = r.error?.message ?: "Could not change who can comment" } catch (e: Exception) { audienceError = e.message ?: "Could not change who can comment" } } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
             }
         } }, confirmButton = {}, dismissButton = { TextButton(onClick = { showAudience = false }) { Text("Cancel") } })
     }
@@ -1657,7 +1915,10 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar: String? = null, onClose: () -> Unit, onAuthor: (String) -> Unit, onOpenChat: (String, String) -> Unit) {
+// A-D3: onOpenPost opens another post's detail (the original post inside
+// a repost). FeedScreen passes { detailPostId = it }; A-B9's reset in
+// LaunchedEffect(postId) makes the new post load cleanly.
+fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar: String? = null, onClose: () -> Unit, onAuthor: (String) -> Unit, onOpenChat: (String, String) -> Unit, onOpenPost: (String) -> Unit = {}) {
     var detail by remember { mutableStateOf<Post?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1672,8 +1933,20 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
     var detailShareCount by remember { mutableStateOf<Int?>(null) }
     var shareDetail by remember { mutableStateOf<Post?>(null) }
     var detailPicker by remember { mutableStateOf(false) }
+    // A-B10: same in-flight guard as the feed's setReaction — rapid taps
+    // must not fire concurrent reaction calls that land out of order.
+    var detailReactionBusy by remember { mutableStateOf(false) }
+    // A-D6: fullscreen photo viewer (null = closed).
+    var photoViewer by remember { mutableStateOf<String?>(null) }
+    // A-B9: reload tick for the Retry button.
+    var reloadTick by remember { mutableStateOf(0) }
     val detailScroll = rememberScrollState()
-    LaunchedEffect(postId) {
+    LaunchedEffect(postId, reloadTick) {
+        // A-B9: reset ALL detail state first — opening post B after post
+        // A used to flash A's text/like state until B loaded.
+        detail = null; liked = false; detailReaction = null; likeCount = 0
+        error = null; detailCommentCount = null; detailShareCount = null
+        detailPicker = false; loading = true
         vm.recordPostView(postId)
         try {
             val r = vm.api2.postById(postId)
@@ -1685,7 +1958,9 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().verticalScroll(detailScroll).padding(bottom = 24.dp)) {
             if (loading) { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { DotsLoading() }; return@Column }
-            if (error != null || detail == null) { Text(error ?: "Post not found", modifier = Modifier.padding(16.dp)); return@Column }
+            // A-B9: a failed load gets a Retry button instead of a bare
+            // error with no way back except closing and reopening.
+            if (error != null || detail == null) { Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(error ?: "Post not found"); Spacer(Modifier.height(12.dp)); Button(onClick = { reloadTick++ }) { Text("Retry") } }; return@Column }
             val post = detail!!
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.clickable { post.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(post.author?.profilePictureUrl, 40.dp) }
@@ -1699,8 +1974,9 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
                 }
             }
             post.content?.let { Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp)) }
-            post.imageUrl?.let { Spacer(Modifier.height(10.dp)); PostPhoto(it) }
-            post.originalPost?.let { Spacer(Modifier.height(10.dp)); OriginalPostCard(it, onAuthor = onAuthor, onDetail = {}) }
+            post.imageUrl?.let { Spacer(Modifier.height(10.dp)); PostPhoto(it, onClick = { photoViewer = it }) }
+            // A-D3: the original-post card now opens that post's detail.
+            post.originalPost?.let { orig -> Spacer(Modifier.height(10.dp)); OriginalPostCard(orig, onAuthor = onAuthor, onDetail = { onOpenPost(orig.id) }) }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 val detailTop = (post.reactionCounts?.entries?.sortedByDescending { it.value }?.map { it.key } ?: listOfNotNull(detailReaction)).take(3)
@@ -1727,7 +2003,10 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
                 // Web picker above the Like button, left-aligned, icons 40.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.Start) {
                     ReactionPickerPill(40.dp, reactionTypes()) { type ->
+                        // A-B10: ignore picks while a reaction is in flight.
+                        if (detailReactionBusy) return@ReactionPickerPill
                         detailPicker = false
+                        detailReactionBusy = true
                         val wasLiked = liked; val wasReaction = detailReaction; val wasCount = likeCount
                         val removing = detailReaction == type
                         val switching = detailReaction != null && !removing
@@ -1743,6 +2022,7 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
                                     detailReaction = effR; liked = effR != null
                                 } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
                             } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                            finally { detailReactionBusy = false }
                         }
                     }
                 }
@@ -1758,6 +2038,9 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
                         val released = tryAwaitRelease()
                         timer.cancel()
                         if (released && !opened) {
+                            // A-B10: ignore taps while a reaction is in flight.
+                            if (detailReactionBusy) return@detectTapGestures
+                            detailReactionBusy = true
                             val sendType = detailReaction ?: "like"
                             val wasLiked = liked; val wasReaction = detailReaction; val wasCount = likeCount
                             // BUG FIX: removing a non-like reaction previously
@@ -1775,6 +2058,7 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
                                         detailReaction = effR2; liked = effR2 != null
                                     } else { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
                                 } catch (_: Exception) { liked = wasLiked; detailReaction = wasReaction; likeCount = wasCount }
+                                finally { detailReactionBusy = false }
                             }
                         }
                     })
@@ -1785,13 +2069,28 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
                         else -> ReactionIcon(detailReaction, 24.dp)
                     }
                 }
-                Box(Modifier.weight(1f).height(48.dp).clickable { scope.launch { detailScroll.animateScrollTo(detailScroll.maxValue) } }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                // A-B25: the old code read maxValue at tap time, when the
+                // comments had not loaded yet and the scrollable height was
+                // still small — the sheet barely moved. Now it waits (up
+                // to ~3s) for the content to grow, then scrolls to the
+                // composer. PHONE-TEST-OWED: verify on a real phone that
+                // the tap lands on the comment box.
+                Box(Modifier.weight(1f).height(48.dp).clickable { scope.launch { repeat(10) { delay(300); if (detailScroll.maxValue > 0) { detailScroll.animateScrollTo(detailScroll.maxValue); return@launch } } } }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Box(Modifier.weight(1f).height(48.dp).clickable { shareDetail = post }, contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
             Spacer(Modifier.height(12.dp))
             CommentSection(vm.api2, post.id, detailCommentCount ?: post.commentCount, myId, post.author?.id, myAvatar = myAvatar) { detailCommentCount = it; vm.updateCommentCount(post.id, it) }
             shareDetail?.let { sp -> PostShareSheet(vm, sp, onClose = { shareDetail = null }, onOpenChat = onOpenChat, onShared = { val nc = (detailShareCount ?: post.shareCount) + 1; detailShareCount = nc; vm.updateShareCount(post.id, nc) }) }
+            // A-D6: fullscreen photo viewer for the detail photo tap.
+            photoViewer?.let { url ->
+                Dialog(onDismissRequest = { photoViewer = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+                        AsyncImage(model = url, contentDescription = "Post photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                        IconButton(onClick = { photoViewer = null }, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) { Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White) }
+                    }
+                }
+            }
         }
     }
 }
@@ -1822,12 +2121,28 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
     // restarts only when idx changes.
     val durationMs = if (isVideo) 15000L else 5000L
     fun advance() { if (idx < group.items.size - 1) idx++ else onClose() }
-    fun goBack() { if (idx > 0) idx-- }
+    // A-D7: left-tap on the first story closes the viewer (web/FB go to
+    // the previous story group) instead of doing nothing.
+    fun goBack() { if (idx > 0) idx-- else onClose() }
     LaunchedEffect(item?.id) {
         if (item != null && !isOwn) { try { api2.viewStatus(item.id) } catch (_: Exception) {} }
         liked = item?.liked == true
     }
+    // A-B18: load the real mute state once when the viewer opens, from
+    // GET /api/statuses/muted — the menu used to always offer "Mute
+    // stories" even for an already-muted author.
+    LaunchedEffect(group.user?.id ?: group.userId) {
+        if (isOwn) return@LaunchedEffect
+        try {
+            val r = api2.mutedStories()
+            val uid = group.user?.id ?: group.userId
+            if (r.success && r.data != null) isMuted = r.data.muted?.any { it.id == uid } == true
+        } catch (_: Exception) {}
+    }
     LaunchedEffect(idx) {
+        // A-B19: "Reply sent" belongs to the story it was sent on — reset
+        // it (and any notice) when the story changes.
+        replySent = false; notice = null
         progress = 0f
         while (progress < 1f) {
             delay(100)
@@ -1888,7 +2203,7 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                         Box {
                             IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White) }
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                                DropdownMenuItem(text = { Text(if (isMuted) "Unmute stories" else "Mute stories") }, onClick = { menuOpen = false; scope.launch { try { val uid = group.user?.id ?: group.userId; if (isMuted) { api2.unmuteStories(uid); isMuted = false; notice = "Stories unmuted" } else { api2.muteStories(uid); isMuted = true; notice = "Stories muted" } } catch (e: Exception) { notice = e.message } } })
+                                DropdownMenuItem(text = { Text(if (isMuted) "Unmute stories" else "Mute stories") }, onClick = { menuOpen = false; scope.launch { try { val uid = group.user?.id ?: group.userId; val r = if (isMuted) api2.unmuteStories(uid) else api2.muteStories(uid); if (r.success) { isMuted = !isMuted; notice = if (isMuted) "Stories muted" else "Stories unmuted" } else notice = r.error?.message ?: "Could not change mute setting" } catch (e: Exception) { notice = e.message } } })
                             }
                         }
                     }
@@ -1900,7 +2215,9 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                 notice?.let { Text(it, color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
                 if (isOwn) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { scope.launch { try { val r = api2.statusViewers(item?.id ?: ""); if (r.success && r.data != null) { viewers = r.data.viewers; showViewers = true } else notice = r.error?.message } catch (e: Exception) { notice = e.message } } }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("Viewers") }
+                        // A-B20: hidden when item == null — the old code
+                        // fired a request with an empty story id.
+                        if (item != null) OutlinedButton(onClick = { scope.launch { try { val r = api2.statusViewers(item!!.id); if (r.success && r.data != null) { viewers = r.data.viewers; showViewers = true } else notice = r.error?.message } catch (e: Exception) { notice = e.message } } }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("Viewers") }
                         OutlinedButton(onClick = { showDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) { Text("Delete story") }
                     }
                 } else {
@@ -1909,13 +2226,16 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                         Spacer(Modifier.width(8.dp))
                         IconButton(onClick = {
                             val text = replyText.trim(); if (text.isBlank()) return@IconButton
-                            replyText = ""
+                            // A-B19: clear the reply text ONLY on success —
+                            // a failed reply used to lose the typed message.
                             // Web story reply goes to the author's DM; the
                             // backend has no story-reply endpoint, so the
                             // reply is sent as a real chat message.
-                            scope.launch { try { val uid = group.user?.id ?: group.userId; val conv = api2.createConversation(CreateConversationRequest(uid)); val cid = conv.data?.id; if (cid != null && api2.sendMessage(cid, SendMessageRequest(text)).success) { replySent = true; notice = "Reply sent" } else notice = "Could not send reply" } catch (e: Exception) { notice = e.message } }
+                            scope.launch { try { val uid = group.user?.id ?: group.userId; val conv = api2.createConversation(CreateConversationRequest(uid)); val cid = conv.data?.id; if (cid != null && api2.sendMessage(cid, SendMessageRequest(text)).success) { replyText = ""; replySent = true; notice = "Reply sent" } else notice = "Could not send reply" } catch (e: Exception) { notice = e.message } }
                         }) { Icon(Icons.Filled.Send, contentDescription = "Send reply", tint = Color.White) }
-                        IconButton(onClick = { val was = liked; liked = !was; scope.launch { try { if (item != null) api2.toggleStatusLike(item.id) } catch (_: Exception) { liked = was } } }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(28.dp)) }
+                        // A-B17: revert the heart when the server rejects
+                        // the like, not only on exception.
+                        IconButton(onClick = { val was = liked; liked = !was; scope.launch { try { if (item != null) { val r = api2.toggleStatusLike(item.id); if (!r.success) liked = was } } catch (_: Exception) { liked = was } } }) { Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(28.dp)) }
                     }
                     if (replySent) Text("Reply sent as a message.", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                 }
@@ -1949,8 +2269,12 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
             mediaUri = uri
+            // A-B27: some providers return a null MIME type — a video
+            // from one used to be misclassified as a photo and uploaded
+            // as story_upload.jpg. Fall back to the file extension.
             val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
-            mediaIsVideo = mime?.startsWith("video") == true
+            val ext = uri.lastPathSegment?.substringAfterLast(".", "")?.lowercase() ?: ""
+            mediaIsVideo = mime?.startsWith("video") == true || ext in listOf("mp4", "mov", "webm", "mkv", "3gp", "avi")
         }
     }
     val pickStoryMedia = rememberPermissionGate(galleryPermissions()) { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) }

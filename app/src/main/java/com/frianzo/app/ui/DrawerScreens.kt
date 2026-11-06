@@ -2,7 +2,12 @@ package com.frianzo.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import java.net.URL
 import androidx.compose.foundation.background
@@ -11,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +28,7 @@ import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +56,13 @@ import kotlinx.coroutines.launch
 // verified backend route (see Api2). Nothing here shows faked data: a
 // failed load shows the backend error text, and a gated feature shows its
 // real gate (for example AI Video referrals) instead of a fake result.
+
+// C-B16: process-level scope for account operations (Delete Account,
+// account switch) that must finish even if the user navigates away
+// mid-request. rememberCoroutineScope() is cancelled with the screen,
+// which left the outcome unknowable. Only these two operations use it;
+// everything else stays on the composition scope.
+private val accountOpsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
 @Composable
 fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null) {
@@ -112,7 +126,17 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // v2.9: in-settings sub-screens (My Interests, Verification).
-    var subScreen by remember { mutableStateOf<String?>(null) }
+    // C-B18: subScreen survives rotation.
+    var subScreen by rememberSaveable { mutableStateOf<String?>(null) }
+    // C-B16: true while a Delete Account request is in flight; Back is
+    // swallowed until it finishes, so the outcome stays knowable.
+    var deleteBusy by remember { mutableStateOf(false) }
+    // C-B2: system Back from a sub-screen returns to the Settings list,
+    // not to Feed. Registered before the early returns below so it is
+    // active while a sub-screen is shown. The delete handler is
+    // registered after it, so it wins while a delete is in flight.
+    BackHandler(enabled = subScreen != null) { subScreen = null }
+    BackHandler(enabled = deleteBusy) { /* delete in flight — wait for the result */ }
     if (subScreen == "interests") { MyInterestsScreen(api2, onBack = { subScreen = null }); return }
     if (subScreen == "verification") { VerificationScreen(api2, onBack = { subScreen = null }); return }
     if (subScreen == "privacy") { AccountPrivacyScreen(api2, onBack = { subScreen = null }); return }
@@ -132,14 +156,19 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
     var showEdit by remember { mutableStateOf(false) }
     var editError by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
+    // C-B12: true while the Private switch auto-save is in flight.
+    var privateSaving by remember { mutableStateOf(false) }
     // v2.9: saved accounts on this device (GET /api/auth/accounts).
     var savedAccounts by remember { mutableStateOf<List<SavedAccount>>(emptyList()) }
     var switchingId by remember { mutableStateOf<String?>(null) }
     // v3.4: Login & Security section (expanded by default) + local prefs.
-    var loginSecurityExpanded by remember { mutableStateOf(true) }
+    // C-B18: expanded state survives rotation.
+    var loginSecurityExpanded by rememberSaveable { mutableStateOf(true) }
     var themeMode by remember { mutableStateOf(readThemeMode(context)) }
     var dataSaver by remember { mutableStateOf(readDataSaver(context)) }
     fun load() {
+        // C-B23: reset so Retry re-runs a clean load.
+        loading = true; error = null
         scope.launch {
             try {
                 val res = api2.myProfile()
@@ -164,6 +193,10 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
             ErrorText(error)
+            // C-B23: retry the profile load (only while it never
+            // succeeded — a later error may be a failed Save, and
+            // reloading then would discard the user's edits).
+            if (error != null && profile == null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
             Text("Profile", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
@@ -180,15 +213,35 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                     Text("Private account", fontSize = 14.sp)
                     Text("Only people who follow you can see your posts.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Switch(checked = isPrivate, onCheckedChange = { isPrivate = it })
+                // C-B12: the toggle saves immediately (like the comments
+                // switch) and rolls back on failure — it is no longer
+                // silently lost when leaving without pressing Save.
+                Switch(checked = isPrivate, enabled = !privateSaving, onCheckedChange = { checked ->
+                    val prev = isPrivate
+                    isPrivate = checked
+                    privateSaving = true
+                    scope.launch {
+                        try {
+                            val r = api2.updateMe(mapOf("isPrivate" to checked))
+                            if (r.success) profile = profile?.copy(isPrivate = checked)
+                            else { isPrivate = prev; error = r.error?.message ?: "Could not update private account setting" }
+                        } catch (e: Exception) { isPrivate = prev; error = e.message }
+                        privateSaving = false
+                    }
+                })
             }
             Spacer(Modifier.height(8.dp))
-            Button(enabled = !saving, onClick = {
+            // C-B7: Save stays off until the profile actually loaded, so
+            // a failed load can no longer wipe the name/bio with "".
+            Button(enabled = !saving && profile != null, onClick = {
                 saving = true
                 scope.launch {
                     try {
                         val res = api2.updateMe(mapOf("displayName" to displayName, "bio" to bio, "isPrivate" to isPrivate))
-                        if (res.success) notice = "Profile saved." else error = res.error?.message ?: "Could not save profile"
+                        // C-B7: keep the local profile in step, so the
+                        // Edit Profile dialog (which reads `profile`)
+                        // shows the new name instead of the old one.
+                        if (res.success) { profile = profile?.copy(displayName = displayName, bio = bio, isPrivate = isPrivate); notice = "Profile saved." } else error = res.error?.message ?: "Could not save profile"
                     } catch (e: Exception) { error = e.message }
                     saving = false
                 }
@@ -223,7 +276,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = { subScreen = "interests" }, modifier = Modifier.fillMaxWidth()) { Text("My Interests", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                 TextButton(onClick = { subScreen = "notifprefs" }, modifier = Modifier.fillMaxWidth()) { Text("Notifications", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                TextButton(onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete Account", color = Color.Red, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                TextButton(enabled = !deleteBusy, onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete Account", color = Color.Red, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             }
             Spacer(Modifier.height(16.dp))
             Text("Preferences", fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -249,7 +302,10 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                     if (isCurrent) Text("Current", fontSize = 12.sp, color = FrianzoBlue, maxLines = 1, softWrap = false)
                     else if (acc.id != null) TextButton(enabled = switchingId != acc.id, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), onClick = {
                         switchingId = acc.id
-                        scope.launch {
+                        // C-B16: the switch runs on the app scope, so
+                        // leaving Settings mid-switch cannot cancel it
+                        // with an ambiguous outcome.
+                        accountOpsScope.launch {
                             try {
                                 val r = api2.switchAccount(mapOf("accountId" to acc.id))
                                 if (r.success) onSwitched() else error = r.error?.message ?: "Could not switch account"
@@ -257,17 +313,25 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                             switchingId = null
                         }
                     }) { Text("Switch", maxLines = 1, softWrap = false) }
+                    // C-D1: a saved account with no id cannot be switched
+                    // to — say so instead of showing a dead row.
+                    else Text("Can't switch", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
             }
             TextButton(onClick = { showAddAccount = true }, modifier = Modifier.fillMaxWidth()) { Text("Add Account", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             Spacer(Modifier.height(16.dp))
             TextButton(onClick = {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/privacy"))
-                context.startActivity(intent)
+                // C-B20: no browser on the device must not crash the app.
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/privacy"))
+                    context.startActivity(intent)
+                } catch (e: Exception) { error = "Could not open Privacy Policy — no browser found on this device." }
             }, modifier = Modifier.fillMaxWidth()) { Text("Privacy Policy", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             TextButton(onClick = {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/terms"))
-                context.startActivity(intent)
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/terms"))
+                    context.startActivity(intent)
+                } catch (e: Exception) { error = "Could not open Terms of Service — no browser found on this device." }
             }, modifier = Modifier.fillMaxWidth()) { Text("Terms of Service", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("Logout", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         }
@@ -283,6 +347,8 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
         var edProvince by remember { mutableStateOf(cur.province ?: "") }
         var edCountry by remember { mutableStateOf(cur.country ?: "") }
         var edWeb by remember { mutableStateOf(cur.website ?: "") }
+        // C-B15: double-submit guard for Save Changes.
+        var edSaving by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showEdit = false },
             title = { Text("Edit profile") },
@@ -304,7 +370,9 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                 }
             },
             confirmButton = {
-                Button(onClick = {
+                Button(enabled = !edSaving, onClick = {
+                    if (edSaving) return@Button
+                    edSaving = true
                     scope.launch {
                         try {
                             val body = mapOf<String, Any>("displayName" to edName, "bio" to edBio, "city" to edCity, "province" to edProvince, "country" to edCountry, "website" to edWeb)
@@ -312,8 +380,9 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                             if (r.success) { profile = cur.copy(displayName = edName, bio = edBio, city = edCity, province = edProvince, country = edCountry, website = edWeb); displayName = edName; bio = edBio; showEdit = false; editError = null; notice = "Profile saved." }
                             else editError = r.error?.message ?: "Could not save profile"
                         } catch (e: Exception) { editError = e.message }
+                        edSaving = false
                     }
-                }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text("Save Changes", maxLines = 1, softWrap = false) }
+                }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text(if (edSaving) "Saving..." else "Save Changes", maxLines = 1, softWrap = false) }
             },
             dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
         )
@@ -338,14 +407,19 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             // v2.9 FIX: only log out when the delete actually succeeded.
             // On failure show the error and STAY logged in.
             confirmButton = {
-                TextButton(onClick = {
+                TextButton(enabled = !deleteBusy, onClick = {
                     showDelete = false
-                    scope.launch {
+                    deleteBusy = true
+                    // C-B16: the delete runs on the app scope, so
+                    // navigating away cannot cancel it mid-request.
+                    // Logout still happens ONLY on success.
+                    accountOpsScope.launch {
                         try {
                             val r = api2.deleteMe()
                             if (r.success) onLogout()
                             else error = r.error?.message ?: "Could not delete account. Please try again."
                         } catch (e: Exception) { error = e.message ?: "Could not delete account. Please try again." }
+                        deleteBusy = false
                     }
                 }) { Text("Delete", color = Color.Red, maxLines = 1, softWrap = false) }
             },
@@ -387,7 +461,13 @@ fun AccountPrivacyScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var phone by rememberSaveable { mutableStateOf("") }
     var commentsDisabled by remember { mutableStateOf(false) }
     var commentsSaving by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
+    // C-B23: true once the settings loaded — Retry only shows while the
+    // first load never succeeded, so it cannot discard the user's edits.
+    var privacyLoaded by remember { mutableStateOf(false) }
+    // C-B12: true while a toggle/radio auto-save is in flight.
+    var privacySaving by remember { mutableStateOf(false) }
+    fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val r = api2.myProfile()
@@ -399,24 +479,46 @@ fun AccountPrivacyScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     tagPermission = u.tagPermission ?: "everyone"
                     phone = u.phone ?: ""
                     commentsDisabled = u.commentsDisabled ?: false
+                    privacyLoaded = true
                 } else error = r.error?.message ?: "Could not load privacy settings"
             } catch (e: Exception) { error = e.message }
             loading = false
         }
     }
+    // C-B12: discrete choices (toggles, radios) save immediately, like
+    // the comments switch, and roll back on failure — leaving without
+    // pressing Save no longer loses them. The phone field still saves
+    // with the Save button (it is free text, not a discrete choice).
+    fun persistPrivacy(changed: Map<String, Any>, rollback: () -> Unit) {
+        if (privacySaving) return
+        privacySaving = true
+        scope.launch {
+            try {
+                val r = api2.updateMe(changed)
+                if (!r.success) { rollback(); error = r.error?.message ?: "Could not save privacy settings" }
+            } catch (e: Exception) { rollback(); error = e.message }
+            privacySaving = false
+        }
+    }
+    LaunchedEffect(Unit) { load() }
     DrawerScaffold("Account Privacy", onBack) {
       Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         if (loading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
             ErrorText(error)
+            if (error != null && !privacyLoaded) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Private account", fontSize = 14.sp)
                     Text("Only people who follow you can see your posts.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Switch(checked = isPrivate, onCheckedChange = { isPrivate = it })
+                Switch(checked = isPrivate, enabled = !privacySaving, onCheckedChange = { checked ->
+                    val prev = isPrivate
+                    isPrivate = checked
+                    persistPrivacy(mapOf("isPrivate" to checked)) { isPrivate = prev }
+                })
             }
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -424,12 +526,26 @@ fun AccountPrivacyScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     Text("Show online status", fontSize = 14.sp)
                     Text("Let others see when you're active.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Switch(checked = showOnlineStatus, onCheckedChange = { showOnlineStatus = it })
+                Switch(checked = showOnlineStatus, enabled = !privacySaving, onCheckedChange = { checked ->
+                    val prev = showOnlineStatus
+                    showOnlineStatus = checked
+                    persistPrivacy(mapOf("showOnlineStatus" to checked)) { showOnlineStatus = prev }
+                })
             }
             Spacer(Modifier.height(16.dp))
-            PermissionChoice("Who can message you", messagePermission) { messagePermission = it }
+            PermissionChoice("Who can message you", messagePermission) { v ->
+                if (privacySaving) return@PermissionChoice
+                val prev = messagePermission
+                messagePermission = v
+                persistPrivacy(mapOf("messagePermission" to v)) { messagePermission = prev }
+            }
             Spacer(Modifier.height(16.dp))
-            PermissionChoice("Who can tag you", tagPermission) { tagPermission = it }
+            PermissionChoice("Who can tag you", tagPermission) { v ->
+                if (privacySaving) return@PermissionChoice
+                val prev = tagPermission
+                tagPermission = v
+                persistPrivacy(mapOf("tagPermission" to v)) { tagPermission = prev }
+            }
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(value = phone, onValueChange = { if (it.length <= 30) phone = it }, label = { Text("WhatsApp number") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Spacer(Modifier.height(16.dp))
@@ -484,7 +600,8 @@ fun MutedStoriesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var users by remember { mutableStateOf<List<MutedUser>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val r = api2.mutedStories()
@@ -493,6 +610,7 @@ fun MutedStoriesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             loading = false
         }
     }
+    LaunchedEffect(Unit) { load() }
     DrawerScaffold("Muted Stories", onBack) {
         Text("Stories from these people are hidden from your feed.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(12.dp))
@@ -500,10 +618,13 @@ fun MutedStoriesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (users.isEmpty() && error == null) Text("No muted stories.")
         }
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-            items(users, key = { it.id ?: it.username ?: "" }) { u ->
+            // C-B22: stable unique keys even when id/username are null
+            // (the old `it.id ?: it.username ?: ""` key collided on "").
+            itemsIndexed(users, key = { index, u -> u.id ?: "muted-${u.username ?: "?"}-$index" }) { _, u ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     FrianzoAvatar(u.profilePictureUrl, 44.dp)
                     Spacer(Modifier.width(12.dp))
@@ -511,7 +632,11 @@ fun MutedStoriesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                         Text(u.displayName ?: u.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         Text("@${u.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
-                    if (u.id != null) TextButton(onClick = { scope.launch { try { if (api2.unmuteStories(u.id).success) users = users.filter { it.id != u.id } } catch (_: Exception) {} } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Unmute", maxLines = 1, softWrap = false) }
+                    // C-B13: a failed Unmute now shows the error instead
+                    // of silently doing nothing. C-B22: a row with no id
+                    // has no action — say so instead of showing a dead row.
+                    if (u.id != null) TextButton(onClick = { scope.launch { try { val r = api2.unmuteStories(u.id); if (r.success) users = users.filter { it.id != u.id } else error = r.error?.message ?: "Could not unmute" } catch (e: Exception) { error = e.message } } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Unmute", maxLines = 1, softWrap = false) }
+                    else Text("Unavailable", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -526,7 +651,8 @@ fun BlockedAccountsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var blocked by remember { mutableStateOf<List<BlockedEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val r = api2.blockedUsers()
@@ -535,21 +661,29 @@ fun BlockedAccountsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             loading = false
         }
     }
+    LaunchedEffect(Unit) { load() }
     DrawerScaffold("Blocked Accounts", onBack) {
         if (loading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (blocked.isEmpty() && error == null) Text("Nobody blocked.")
         }
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-            items(blocked, key = { it.user?.id ?: "" }) { entry ->
+            // C-B22: stable unique keys even when the user id is null
+            // (the old `it.user?.id ?: ""` key collided on "").
+            itemsIndexed(blocked, key = { index, entry -> entry.user?.id ?: "blocked-${entry.user?.username ?: "?"}-$index" }) { _, entry ->
                 val u = entry.user
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     FrianzoAvatar(u?.profilePictureUrl, 44.dp)
                     Spacer(Modifier.width(12.dp))
                     Text(u?.displayName ?: u?.username ?: "User", fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                    if (u?.id != null) TextButton(onClick = { scope.launch { try { if (api2.unblockUser(u.id).success) blocked = blocked.filter { it.user?.id != u.id } } catch (_: Exception) {} } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Unblock", maxLines = 1, softWrap = false) }
+                    // C-B13: a failed Unblock now shows the error instead
+                    // of silently doing nothing. C-B22: a row with no id
+                    // has no action — say so instead of showing a dead row.
+                    if (u?.id != null) TextButton(onClick = { scope.launch { try { val r = api2.unblockUser(u.id); if (r.success) blocked = blocked.filter { it.user?.id != u.id } else error = r.error?.message ?: "Could not unblock" } catch (e: Exception) { error = e.message } } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Unblock", maxLines = 1, softWrap = false) }
+                    else Text("Unavailable", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -564,7 +698,8 @@ fun DevicesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var devices by remember { mutableStateOf<List<DeviceItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val r = api2.devices()
@@ -573,11 +708,16 @@ fun DevicesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             loading = false
         }
     }
+    LaunchedEffect(Unit) { load() }
     DrawerScaffold("Devices", onBack) {
         if (loading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
+            // C-B11: the list scrolls — with many devices the rows below
+            // the fold (and "Revoke all other devices") were unreachable.
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (devices.isEmpty() && error == null) Text("No other devices.")
             devices.forEach { d ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -585,11 +725,14 @@ fun DevicesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                         Text((d.label ?: "Device") + if (d.isCurrent) " (this device)" else "", fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         Text(listOfNotNull(d.location, d.lastActiveAt?.take(10)).joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
-                    if (!d.isCurrent && d.id != null) TextButton(onClick = { scope.launch { try { if (api2.revokeDevice(d.id).success) devices = devices.filter { it.id != d.id } } catch (_: Exception) {} } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Revoke", maxLines = 1, softWrap = false) }
+                    // C-B13: a failed Revoke now shows the error instead
+                    // of silently doing nothing.
+                    if (!d.isCurrent && d.id != null) TextButton(onClick = { scope.launch { try { val r = api2.revokeDevice(d.id); if (r.success) devices = devices.filter { it.id != d.id } else error = r.error?.message ?: "Could not revoke device" } catch (e: Exception) { error = e.message } } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Revoke", maxLines = 1, softWrap = false) }
                 }
             }
             if (devices.size > 1) {
-                TextButton(onClick = { scope.launch { try { if (api2.revokeOtherDevices().success) devices = devices.filter { it.isCurrent } } catch (_: Exception) {} } }, modifier = Modifier.fillMaxWidth()) { Text("Revoke all other devices", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                TextButton(onClick = { scope.launch { try { val r = api2.revokeOtherDevices(); if (r.success) devices = devices.filter { it.isCurrent } else error = r.error?.message ?: "Could not revoke devices" } catch (e: Exception) { error = e.message } } }, modifier = Modifier.fillMaxWidth()) { Text("Revoke all other devices", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            }
             }
         }
     }
@@ -603,7 +746,8 @@ fun NotificationPrefsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var prefs by remember { mutableStateOf<List<NotificationPref>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val r = api2.notificationPrefs()
@@ -612,20 +756,34 @@ fun NotificationPrefsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             loading = false
         }
     }
+    LaunchedEffect(Unit) { load() }
     DrawerScaffold("Notifications", onBack) {
         if (loading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
+            // C-B11: the list scrolls — with many categories the rows
+            // below the fold were unreachable.
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (prefs.isEmpty() && error == null) Text("Notification settings could not be loaded.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             prefs.forEach { pref ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(pref.category.replaceFirstChar { it.uppercase() }, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     Switch(checked = pref.enabled, onCheckedChange = { checked ->
+                        // C-B5: roll back on failure, like the comments
+                        // switch — the toggle no longer lies about saving.
+                        val prev = prefs
                         prefs = prefs.map { if (it.category == pref.category) it.copy(enabled = checked) else it }
-                        scope.launch { try { api2.updateNotificationPref(mapOf("category" to pref.category, "enabled" to checked)) } catch (_: Exception) {} }
+                        scope.launch {
+                            try {
+                                val r = api2.updateNotificationPref(mapOf("category" to pref.category, "enabled" to checked))
+                                if (!r.success) { prefs = prev; error = r.error?.message ?: "Could not update notification setting" }
+                            } catch (e: Exception) { prefs = prev; error = e.message }
+                        }
                     })
                 }
+            }
             }
         }
     }
@@ -634,8 +792,18 @@ fun NotificationPrefsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
 // ---------- My Interests (v2.9) ----------
 // GET /api/users/interests returns the 12 fixed interests; PUT
 // /api/users/me/interests { interests: [...] } saves them and returns the
-// saved list. There is NO endpoint for the user's current interests, so the
-// screen starts unselected and shows the saved list after Save.
+// saved list.
+// C-B4 (backend check 2026-11-06, vynzo-backend main): GET returns ONLY
+// the available list — userController.getInterests sends
+// { interests: AVAILABLE_INTERESTS } and nothing else, PUT replaces the
+// whole saved list (prisma.user.update data.interests = valid), and
+// toPrivateProfile (GET /api/users/me) does NOT include interests. So
+// there is NO endpoint that returns the user's current selections and no
+// Api2 caller to add. NEEDS-BACKEND: the backend must return the current
+// selections (e.g. a `selected` field on GET /api/users/interests, or
+// `interests` on GET /api/users/me) before this screen can pre-select
+// them. Until then the honest app-side part is the warning below: saving
+// replaces everything previously saved.
 @Composable
 fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -645,7 +813,8 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
+    fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val r = api2.interests()
@@ -654,13 +823,20 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             loading = false
         }
     }
+    LaunchedEffect(Unit) { load() }
     DrawerScaffold("My Interests", onBack) {
       Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text("Pick what you like. Frianzo uses this to show you more of it.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        // C-B4: saving replaces ALL previously saved interests, because
+        // the server keeps no readable copy of the current ones. Select
+        // every interest you want to keep before saving.
+        Text("Saving replaces your previously saved interests — select all the ones you want to keep.", fontSize = 13.sp, color = Color(0xFFB45309))
         Spacer(Modifier.height(12.dp))
         if (loading) { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() } }
         else {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
             // Chips in rows of 3 (a simple wrap; no flow-layout dep).
             Column(Modifier.fillMaxWidth()) {
@@ -721,6 +897,7 @@ fun VerificationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var reason by rememberSaveable { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val r = api2.verificationRequest()
@@ -737,6 +914,7 @@ fun VerificationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         if (loading) { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() } }
         else {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
             val eligibility = data?.eligibility
             val request = data?.request
@@ -765,7 +943,12 @@ fun VerificationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     Text("${verificationValue(req.current)} / ${verificationValue(req.required)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (eligibility?.requirements.isNullOrEmpty()) Text("Requirements could not be loaded.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (eligibility?.requirements.isNullOrEmpty()) {
+                Text("Requirements could not be loaded.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // C-D5: a failed requirements load leaves a disabled
+                // Submit with no way forward — Retry reloads them.
+                TextButton(onClick = { load() }) { Text("Retry") }
+            }
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(value = reason, onValueChange = { if (it.length <= 1000) reason = it }, label = { Text("Why should you be verified?") }, modifier = Modifier.fillMaxWidth().height(120.dp))
             Spacer(Modifier.height(12.dp))
@@ -800,7 +983,8 @@ fun ActivityScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var hourly by remember { mutableStateOf(List(24) { 0 }) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val cal = Calendar.getInstance()
@@ -826,6 +1010,7 @@ fun ActivityScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             loading = false
         }
     }
+    LaunchedEffect(Unit) { load() }
     val total = hourly.sum()
     val max = (hourly.maxOrNull() ?: 0).coerceAtLeast(1)
     DrawerScaffold("Your Activity", onBack) {
@@ -835,6 +1020,7 @@ fun ActivityScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             Text("Today", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(formatMinutes(total), fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
@@ -872,8 +1058,16 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var copied by remember { mutableStateOf(false) }
     var achievements by remember { mutableStateOf<List<Achievement>>(emptyList()) }
     var strikes by remember { mutableStateOf<StrikesData?>(null) }
+    // C-B6: separate failure flags — without them a failed load left
+    // achievements empty and strikes null, which the UI read as
+    // "No achievements yet." and a green "Account health: Good" badge.
+    var achievementsFailed by remember { mutableStateOf(false) }
+    var strikesFailed by remember { mutableStateOf(false) }
     fun load(days: Int) {
         loading = true; error = null
+        // C-B21: drop the old range's stats at once, so a failed reload
+        // never shows stale numbers under the new range's error.
+        data = null
         scope.launch {
             try {
                 val res = api2.dashboard(days)
@@ -882,13 +1076,21 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             loading = false
         }
     }
-    LaunchedEffect(range) { load(range) }
-    LaunchedEffect(Unit) {
+    fun loadExtras() {
+        achievementsFailed = false; strikesFailed = false
         scope.launch {
-            try { val r = api2.myAchievements(); if (r.success && r.data?.achievements != null) achievements = r.data.achievements } catch (_: Exception) {}
-            try { val r = api2.myStrikes(); if (r.success && r.data != null) strikes = r.data } catch (_: Exception) {}
+            try {
+                val r = api2.myAchievements()
+                if (r.success && r.data?.achievements != null) achievements = r.data.achievements else achievementsFailed = true
+            } catch (_: Exception) { achievementsFailed = true }
+            try {
+                val r = api2.myStrikes()
+                if (r.success && r.data != null) strikes = r.data else strikesFailed = true
+            } catch (_: Exception) { strikesFailed = true }
         }
     }
+    LaunchedEffect(range) { load(range) }
+    LaunchedEffect(Unit) { loadExtras() }
     DrawerScaffold("Professional Dashboard", onBack) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(7, 30, 90).forEach { d ->
@@ -901,6 +1103,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load(range); loadExtras() }) { Text("Retry") } }
             val stats = data?.stats
             if (data != null) {
                 Text("Earnings", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -948,7 +1151,10 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                         Spacer(Modifier.height(12.dp))
                     }
                     Text("Achievements (${achievements.size} earned)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    if (achievements.isEmpty()) { Text("No achievements yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    // C-B6: on a failed load say so — "No achievements
+                    // yet." would be a guess, not a fact.
+                    if (achievementsFailed) { Text("Could not load achievements.", fontSize = 13.sp, color = Color.Red) }
+                    else if (achievements.isEmpty()) { Text("No achievements yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     achievements.forEach { a ->
                         Text(a.name ?: a.key ?: "Achievement", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         a.description?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
@@ -957,7 +1163,11 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     Spacer(Modifier.height(12.dp))
                     Text("Strikes", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     val totalStrikes = strikes?.total ?: 0
-                    if (totalStrikes == 0) {
+                    // C-B6: a failed strikes load must not render the
+                    // green "Good" badge — no data means no verdict.
+                    if (strikesFailed) {
+                        Text("Account health could not be checked.", fontSize = 13.sp, color = Color.Red)
+                    } else if (totalStrikes == 0) {
                         Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color(0xFFDCFCE7)).padding(horizontal = 12.dp, vertical = 6.dp)) {
                             Text("Account health: Good", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF15803D), maxLines = 1, softWrap = false)
                         }
@@ -1025,6 +1235,7 @@ fun CloseFriendsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var busyId by remember { mutableStateOf<String?>(null) }
     fun load() {
+        loading = true; error = null
         scope.launch {
             try {
                 val res = api2.closeFriends()
@@ -1041,6 +1252,7 @@ fun CloseFriendsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
         } else {
             ErrorText(error)
+            if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (candidates.isEmpty() && error == null) {
                 Text("You need to follow people before you can add them as close friends.")
             }
@@ -1096,11 +1308,13 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
     var videoUrl by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var elapsed by remember { mutableStateOf(0) }
+    // C-B8: the generation poll job, so Cancel can stop it.
+    var genJob by remember { mutableStateOf<Job?>(null) }
     // v3.4: referral-link button on the locked screen.
     val clipboard = LocalClipboardManager.current
     var referralCopied by remember { mutableStateOf(false) }
     var referralError by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    fun loadStatus() {
         scope.launch {
             try {
                 val res = api2.videoGenStatus()
@@ -1108,10 +1322,15 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
             } catch (e: Exception) { statusError = e.message }
         }
     }
+    LaunchedEffect(Unit) { loadStatus() }
     DrawerScaffold("AI Video Generator", onBack) {
         val scroll = rememberScrollState()
         Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
-            if (statusError != null) { ErrorText(statusError) }
+            if (statusError != null) {
+                ErrorText(statusError)
+                // C-B23: retry the status load without leaving the screen.
+                TextButton(onClick = { statusError = null; loadStatus() }) { Text("Retry") }
+            }
             status?.let { s ->
                 if (!s.enabled) Text("AI Video Generator is not enabled.", fontSize = 14.sp)
                 if (!s.hasAccess) {
@@ -1151,18 +1370,30 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
             val gated = status != null && (!status!!.enabled || !status!!.hasAccess)
             Button(enabled = prompt.trim().length >= 3 && phase != "generating" && !gated, onClick = {
                 phase = "generating"; error = null; videoUrl = null; elapsed = 0
-                scope.launch {
+                genJob = scope.launch {
                     try {
                         val start = api2.generateVideo(VideoGenGenerateRequest(prompt.trim(), aspect, duration))
                         val op = start.data?.operationName
                         if (!start.success || op.isNullOrBlank()) {
                             phase = "error"; error = start.error?.message ?: "Failed to start generation."
                         } else {
+                            // C-B8: the old loop was `while (true)` with
+                            // `if (!st.success) continue` — it polled
+                            // forever, silently, with no way to stop.
+                            // Now: ~5 minute timeout, and 3 consecutive
+                            // failed status checks surface an error.
+                            var statusFailures = 0
                             while (true) {
                                 delay(3000)
                                 elapsed += 3
+                                if (elapsed >= 300) { phase = "error"; error = "Generation timed out after 5 minutes. Please try again."; break }
                                 val st = api2.videoGenOperation(op)
-                                if (!st.success) continue
+                                if (!st.success) {
+                                    statusFailures++
+                                    if (statusFailures >= 3) { phase = "error"; error = st.error?.message ?: "Could not check generation status. Please try again."; break }
+                                    continue
+                                }
+                                statusFailures = 0
                                 val d = st.data
                                 if (d?.done == true) {
                                     if (!d.videoUrl.isNullOrBlank()) { videoUrl = d.videoUrl; phase = "done" } else { phase = "error"; error = d.error ?: "Generation finished but no video was returned." }
@@ -1171,9 +1402,17 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
                                 if (!d?.error.isNullOrBlank()) { phase = "error"; error = d!!.error; break }
                             }
                         }
-                    } catch (e: Exception) { phase = "error"; error = e.message }
+                    } catch (e: Exception) {
+                        // Cancel is not a failure: back to idle, no error.
+                        if (e is CancellationException) { phase = "idle"; elapsed = 0 } else { phase = "error"; error = e.message }
+                    }
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text(if (phase == "generating") "Creating your video... (${elapsed}s)" else "Generate Video", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            // C-B8: Cancel stops the poll (the job above is cancelled).
+            if (phase == "generating") {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { genJob?.cancel() }, modifier = Modifier.fillMaxWidth()) { Text("Cancel", maxLines = 1, softWrap = false) }
+            }
             Spacer(Modifier.height(8.dp))
             Text("Generation usually takes 1–3 minutes.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
@@ -1184,8 +1423,12 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
                 Text(videoUrl!!, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(videoUrl))
-                    context.startActivity(intent)
+                    // C-B20: no video player on the device must not crash
+                    // the app — show the error instead.
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(videoUrl))
+                        context.startActivity(intent)
+                    } catch (e: Exception) { error = "Could not open the video — no video player found on this device." }
                 }) { Text("Open video", maxLines = 1, softWrap = false) }
                 Spacer(Modifier.height(8.dp))
                 if (onPostAsReel != null) {
@@ -1220,7 +1463,14 @@ fun AiVideoScreen(api2: FrianzoApi2, onBack: () -> Unit, onPostAsReel: ((android
 fun IsaiScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     // v3.4: greeting is the first assistant message, like the web.
-    var messages by remember { mutableStateOf(listOf(IsaiMessage("assistant", "Hey! I'm ISAI — Frianzo's AI assistant."))) }
+    // C-B14: the chat survives rotation. IsaiMessage is a plain data
+    // class (not Parcelable), so the default saver cannot store it —
+    // save as "role\u0001content" strings instead.
+    val isaiMessagesSaver = listSaver<List<IsaiMessage>, String>(
+        save = { list -> list.map { "${it.role}\u0001${it.content}" } },
+        restore = { saved -> saved.map { val parts = it.split("\u0001", limit = 2); IsaiMessage(parts.getOrElse(0) { "assistant" }, parts.getOrElse(1) { "" }) } },
+    )
+    var messages by rememberSaveable(stateSaver = isaiMessagesSaver) { mutableStateOf(listOf(IsaiMessage("assistant", "Hey! I'm ISAI — Frianzo's AI assistant."))) }
     var input by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var remaining by remember { mutableStateOf<Int?>(null) }
@@ -1260,10 +1510,12 @@ fun IsaiScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         }
         ErrorText(error)
         // v3.4: the web's 5 suggestion chips — tapping one sends it.
+        // C-D4: chips are disabled (and dimmed) while a reply is in
+        // flight, instead of silently ignoring the tap.
         LazyRow(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(listOf("Who created Frianzo?", "Why isn't my video on ForYou?", "How do I go viral?", "How do I get a blue tick?", "Give me content ideas for today")) { s ->
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable { sendIsai(s) }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(s, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable(enabled = !sending) { sendIsai(s) }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text(s, fontSize = 13.sp, color = if (sending) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
                 }
             }
         }
