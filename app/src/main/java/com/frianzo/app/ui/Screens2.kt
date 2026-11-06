@@ -1045,11 +1045,11 @@ private class CountingRequestBody(private val delegate: okhttp3.RequestBody, pri
         val counting = object : okio.ForwardingSink(sink) {
             override fun write(source: okio.Buffer, byteCount: Long) { super.write(source, byteCount); written += byteCount; if (total > 0) onProgress(written.toFloat() / total) }
         }
-        // v3.6: okio.buffer(...) does not resolve in Okio 3.x
-        // (okhttp 4.12.0) — buffer() lives on the Okio object.
-        val buffered = okio.Okio.buffer(counting)
-        delegate.writeTo(buffered)
-        buffered.flush()
+        // v3.6 fix 2: Okio 3.x — buffer() is an extension on Sink,
+        // and the project treats deprecated calls as errors.
+        // Write straight through the counting sink, no buffer() call.
+        delegate.writeTo(counting)
+        counting.flush()
     }
 }
 
