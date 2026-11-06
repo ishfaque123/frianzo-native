@@ -2,6 +2,12 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    // Firebase Phase 1 (Crashlytics + Analytics). google-services MUST be
+    // applied before the Crashlytics plugin. Both read app/google-services.json
+    // at build time — that file is NEVER committed (repo is public); in CI it
+    // is restored from the FIREBASE_GOOGLE_SERVICES_JSON secret (see REPORT.md).
+    id("com.google.gms.google-services")
+    id("com.google.firebase.crashlytics")
 }
 
 android {
@@ -95,4 +101,15 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
+
+    // Firebase Phase 1: Crashlytics + Analytics. Versions are managed by
+    // the BOM (35.1.0 pins firebase-analytics 24.0.0 and
+    // firebase-crashlytics 21.0.1; verified on Google's Maven repo).
+    // Crashlytics 21.0.1 AAR declares minCompileSdk=1, so compileSdk 35
+    // is fine; both libraries need minSdk 21 at most, project is 24.
+    // No code changes needed: both SDKs auto-initialise from
+    // google-services.json. No mapping-file config: minify is off.
+    implementation(platform("com.google.firebase:firebase-bom:35.1.0"))
+    implementation("com.google.firebase:firebase-analytics")
+    implementation("com.google.firebase:firebase-crashlytics")
 }
