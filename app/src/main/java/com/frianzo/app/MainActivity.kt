@@ -108,6 +108,8 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var openPostId by remember { mutableStateOf<String?>(null) }
     var focusReelId by remember { mutableStateOf<String?>(null) }
     var pendingReelUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // v3.5 (R2): the reels session survives tab/profile/chat switches.
+    val reelsSession = remember { ReelsSession(context) }
     var myProfile by remember { mutableStateOf<PublicProfile?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -228,7 +230,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
                 tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name })
-                tab == Tab.REELS -> ReelsScreen(api2, myId, onAuthor = { username -> openProfile = username }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null })
+                tab == Tab.REELS -> ReelsScreen(api2, myId, session = reelsSession, onAuthor = { username -> openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null })
                 tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED }, onPostAsReel = { uri -> pendingMedia = null; pendingReelUri = uri; tab = Tab.REELS })
                 tab == Tab.CHAT -> ChatListScreen(api2, myId) { id, name -> openChat = id to name }
                 tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name })

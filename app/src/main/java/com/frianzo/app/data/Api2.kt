@@ -22,6 +22,11 @@ data class Reel(
 data class ReelFeedData(val reels: List<Reel>, val hasMore: Boolean = false, val nextOffset: Int = 0)
 data class ReelsConfigData(val enabled: Boolean = true, val maxDurationSec: Int = 180, val dailyLimit: Int = 0)
 data class ReelUploadData(val reel: Reel?)
+// v3.5 (R3/R14/R23/R28): reel endpoints native now calls.
+data class ReelByIdData(val reel: Reel?)
+data class ReelViewData(val viewed: Boolean = false, val viewCount: Int = 0)
+data class ReelStatusData(val postedToday: Int = 0, val remaining: Int = 0)
+data class ReelFavoritesData(val reels: List<Reel>? = null)
 data class ReelFavoriteData(val favorited: Boolean = false)
 data class ReelLikeData(val liked: Boolean = false, val likeCount: Int = 0)
 data class ReelComment(val id: String, val content: String?, val author: Author?, val createdAt: String?, val reactionCount: Int = 0, val myReaction: String? = null, val replies: List<ReelComment> = emptyList())
@@ -275,6 +280,8 @@ interface FrianzoApi2 {
         @Part("textOverlay") textOverlay: RequestBody? = null,
         @Part("trimStartSec") trimStartSec: RequestBody? = null,
         @Part("trimEndSec") trimEndSec: RequestBody? = null,
+        // v3.5 (R15): server filter enum normal/warm/cool/bw/vintage/vivid/beauty.
+        @Part("filter") filter: RequestBody? = null,
     ): Envelope<ReelUploadData>
     @POST("api/reels/{id}/like")
     suspend fun toggleReelLike(@Path("id") id: String): Envelope<ReelLikeData>
@@ -285,7 +292,19 @@ interface FrianzoApi2 {
     @DELETE("api/reels/{id}")
     suspend fun deleteReel(@Path("id") id: String): Envelope<Any>
     @POST("api/reels/{id}/view")
-    suspend fun recordReelView(@Path("id") id: String, @Body body: Map<String, Int>): Envelope<Any>
+    suspend fun recordReelView(@Path("id") id: String, @Body body: Map<String, Int>): Envelope<ReelViewData>
+    // v3.5 (R3): fetch one reel directly for deep-links / after upload.
+    @GET("api/reels/{id}")
+    suspend fun reelById(@Path("id") id: String): Envelope<ReelByIdData>
+    // v3.5 (R14): saved reels list.
+    @GET("api/reels/me/favorites")
+    suspend fun myFavoriteReels(): Envelope<ReelFavoritesData>
+    // v3.5 (R28): how many reels the user posted today / has left.
+    @GET("api/reels/me/status")
+    suspend fun myReelStatus(): Envelope<ReelStatusData>
+    // v3.5 (R13): server returns a watermarked mp4 (not an Envelope).
+    @GET("api/reels/{id}/download")
+    suspend fun downloadReel(@Path("id") id: String): okhttp3.ResponseBody
     @GET("api/reels/{id}/comments")
     suspend fun reelComments(@Path("id") id: String, @Query("cursor") cursor: String? = null, @Query("limit") limit: Int = 20): Envelope<ReelCommentsData>
     @POST("api/reels/{id}/comments")
