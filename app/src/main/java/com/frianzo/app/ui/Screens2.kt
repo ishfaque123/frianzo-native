@@ -26,8 +26,11 @@ import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.PathEffect
@@ -145,6 +148,30 @@ class ReelsSession(context: android.content.Context) {
         tabScroll = tabScroll + (feedKey to scrollIndex)
     }
 }
+// v4.7 (owner): ripple-free tap for the reels screen. Compose's default
+// clickable draws a grey ripple on press; on the dark video that reads as
+// a dirty shadow behind whatever was tapped. Every tap in the reels flow
+// uses this instead — same action, no visual press feedback. The
+// double-tap heart burst is a deliberate animation and is untouched.
+private fun Modifier.noRippleClickable(onClick: () -> Unit): Modifier = composed {
+    val interactionSource = remember { MutableInteractionSource() }
+    clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+}
+
+// v4.7 (owner): the reels loading indicator is a ROUND spinner like the
+// web (ReelItem: h-12 w-12 = 48px circle, 4px white/30 ring with a solid
+// white top arc, spinning). The old blue dots are gone from the reels
+// screen; same placement and same show/hide conditions, only the shape.
+@Composable
+private fun ReelLoadingSpinner() {
+    CircularProgressIndicator(
+        modifier = Modifier.size(48.dp),
+        color = Color.White,
+        strokeWidth = 4.dp,
+        trackColor = Color.White.copy(alpha = 0.3f),
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}) {
@@ -189,11 +216,29 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 val exclude = reels.joinToString(",") { it.id }.takeIf { it.isNotBlank() }
                 val res = api2.reelFeed(offset, feed, exclude)
                 if (res.success && res.data != null) {
+                    val firstPage = offset == 0
                     val seen = reels.map { it.id }.toSet()
                     reels = reels + res.data.reels.filter { it.id !in seen }
                     offset += res.data.reels.size
                     hasMore = res.data.hasMore
                     offline = false
+                    // v4.7 (owner): save the first 1-2 reels for offline
+                    // play, like the web (IndexedDB cache). The
+                    // scroll-away cache only saves a reel AFTER the user
+                    // leaves it, so a user who only ever watches reel 1
+                    // had nothing saved and got the error screen offline.
+                    // Background, WiFi-only (the v4.3 rule: never a
+                    // full-file download on a slow metered link while
+                    // the player is streaming) and never on Data Saver
+                    // (the web never caches on Data Saver).
+                    // saveOfflineReel skips files that already exist,
+                    // so re-runs on refresh are cheap.
+                    if (firstPage && !dataSaver) {
+                        val firstTwo = reels.take(2)
+                        scope.launch(Dispatchers.IO) {
+                            for (r in firstTwo) saveOfflineReelIfUnmetered(context, r)
+                        }
+                    }
                 } else {
                     val msg = friendlyReelsError(res.error?.message, "Couldn't load reels — try again")
                     if (reels.isEmpty()) {
@@ -400,7 +445,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 Button(onClick = { error = null; load() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
             }
         }
-        if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("Loading Frianzo reels", color = Color.White, fontSize = 15.sp); Spacer(Modifier.height(12.dp)); DotsLoading() } } }
+        if (loading && reels.isEmpty()) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("Loading Frianzo reels", color = Color.White, fontSize = 15.sp); Spacer(Modifier.height(12.dp)); ReelLoadingSpinner() } } }
         // v3.8 (F9): pull down past the top to refresh the feed.
         // v4.6: the video area is a Box so the header can overlay it.
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -440,7 +485,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 }
                 // R5: loading indicator while more reels load; R4: retry
                 // when a load-more fails instead of failing silently.
-                if (loading) item { Box(Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
+                if (loading) item { Box(Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) { ReelLoadingSpinner() } }
                 if (loadMoreError != null) item {
                     Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(loadMoreError!!, color = Color.White, fontSize = 13.sp)
@@ -460,10 +505,10 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             Row(Modifier.align(Alignment.TopCenter).padding(top = 17.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) {
                 listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
                     val sel = feed == v
-                    Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false, modifier = Modifier.clickable { switchFeed(v) })
+                    Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false, modifier = Modifier.noRippleClickable { switchFeed(v) })
                 }
             }
-            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).clickable { showUpload = true }, contentAlignment = Alignment.Center) {
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).noRippleClickable { showUpload = true }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(12.dp))
             }
         }
@@ -916,14 +961,14 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 }
             } else if (!prepared) {
                 reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() }
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { ReelLoadingSpinner() }
             } else if (buffering) {
                 // v4.3 (black screen): the prepared player is waiting for
                 // data — show a spinner + "Buffering…" over the black
                 // surface instead of silent black.
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        DotsLoading()
+                        ReelLoadingSpinner()
                         Spacer(Modifier.height(12.dp))
                         Text("Buffering…", color = Color.White, fontSize = 15.sp)
                     }
@@ -937,7 +982,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         if (dataSaver && !tapToPlay && prepared) {
             // B-B35: the tap that starts playback also reveals the
             // play/pause controls — the overlay used to swallow it.
-            Box(Modifier.fillMaxSize().clickable { tapToPlay = true; controlsVisible = true }, contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().noRippleClickable { tapToPlay = true; controlsVisible = true }, contentAlignment = Alignment.Center) {
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 16.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
@@ -950,8 +995,12 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // v3.8 (F14): centre play/pause button, shown while controls are up.
         if ((controlsVisible || paused) && prepared && (!dataSaver || tapToPlay)) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                // v4.7: no ripple on the video — the IconButton's grey
+                // press circle read as a dirty shadow, like clickable.
+                CompositionLocalProvider(LocalIndication provides null) {
                 IconButton(onClick = { paused = !paused; controlsVisible = true }, modifier = Modifier.size(84.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f))) {
                     Icon(if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause, contentDescription = if (paused) "Play" else "Pause", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
                 }
             }
         }
@@ -985,7 +1034,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // The 40dp transparent Box is only the tap target; the glyph
         // sits at its TOP (TopCenter) so it lands exactly at y148.
         if (isActive) {
-            Box(Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 15.dp).size(40.dp).clickable { onToggleMute() }, contentAlignment = Alignment.TopCenter) {
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 15.dp).size(40.dp).noRippleClickable { onToggleMute() }, contentAlignment = Alignment.TopCenter) {
                 Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(20.dp))
             }
         }
@@ -1008,19 +1057,19 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // (too high), 48dp wide with 21dp gaps and 13sp labels — it read
         // as a big, dirty block.
         Column(Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 24.dp + videoBottomOffset), horizontalAlignment = Alignment.CenterHorizontally) {
-            Column(Modifier.clickable { toggleLike() }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.noRippleClickable { toggleLike() }, horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (liked) Color(0xFFEF4444) else Color.White, modifier = Modifier.size(30.dp))
                 Spacer(Modifier.height(4.dp))
                 Text(reelCount(likes), color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
             Spacer(Modifier.height(16.dp))
-            Column(Modifier.clickable { onComment() }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.noRippleClickable { onComment() }, horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = Color.White, modifier = Modifier.size(28.dp))
                 Spacer(Modifier.height(4.dp))
                 Text(reelCount(commentCount), color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
             Spacer(Modifier.height(16.dp))
-            Column(Modifier.clickable { shareOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.noRippleClickable { shareOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
                 // R11/R6: the share sheet (DM + channels + copy). The count
                 // moves only when a channel is actually tapped, never when
                 // the sheet is opened or the chooser is cancelled.
@@ -1036,7 +1085,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Text("Views", color = Color.White, fontSize = 10.sp, lineHeight = 10.sp, maxLines = 1, softWrap = false)
             }
             Spacer(Modifier.height(16.dp))
-            Column(Modifier.clickable { moreOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.noRippleClickable { moreOpen = true }, horizontalAlignment = Alignment.CenterHorizontally) {
                 // v4.0 (audit #3): web More is three horizontal 4dp
                 // dots (20x4 total), NOT a vertical MoreVert icon.
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1141,7 +1190,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // starts 16dp from the left and ends 80dp from the right;
         // the comment pill sits 10dp above the VIDEO bottom.
         Column(Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 80.dp, bottom = 10.dp + videoBottomOffset)) {
-            Row(Modifier.fillMaxWidth().clickable { reel.author?.username?.let { onAuthor(it) } }, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().noRippleClickable { reel.author?.username?.let { onAuthor(it) } }, verticalAlignment = Alignment.CenterVertically) {
                 FrianzoAvatar(reel.author?.profilePictureUrl, 40.dp)
                 Spacer(Modifier.width(8.dp))
                 // v3.8 (F6): web shows the display name + "· 2d" time ago.
@@ -1164,7 +1213,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     // row (owner rule, final word: never below the
                     // name, never on a second line; the name truncates
                     // so the pill never wraps).
-                    Box(Modifier.height(34.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black).border(1.dp, Color.White, RoundedCornerShape(28.dp)).clickable {
+                    Box(Modifier.height(34.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black).border(1.dp, Color.White, RoundedCornerShape(28.dp)).noRippleClickable {
                         val prev = effectiveFollow
                         authorFollow = "following"
                         onFollowChange(authorId, "following")
@@ -1202,7 +1251,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.35f)).border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(28.dp)).clickable { onComment() }.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.35f)).border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(28.dp)).noRippleClickable { onComment() }.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
                 // v3.8 (F18): the pill has a 20px speech-bubble icon (web rule).
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
@@ -1221,7 +1270,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 text = {
                     Column {
                         listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "False information", "other" to "Something else").forEach { (v, label) ->
-                            Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.fillMaxWidth().noRippleClickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 RadioButton(selected = reportReason == v, onClick = { reportReason = v })
                                 Spacer(Modifier.width(8.dp))
                                 Text(label, fontSize = 15.sp)
@@ -1267,7 +1316,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
 // ~48dp pitch, like the web sheet (audit #1).
 @Composable
 private fun MoreSheetRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, red: Boolean = false, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().noRippleClickable { onClick() }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = if (red) Color.Red else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(12.dp))
         Text(label, fontSize = 15.sp, color = if (red) Color.Red else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
@@ -1351,7 +1400,7 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
 
 @Composable
 private fun ReelShareTile(label: String, color: Color, letter: String, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onClick() }.padding(4.dp)) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.noRippleClickable { onClick() }.padding(4.dp)) {
         Box(Modifier.size(56.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
             Text(letter, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
         }
@@ -1401,7 +1450,7 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
             else {
                 LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(reels, key = { it.id }) { reel ->
-                        Box(Modifier.aspectRatio(9f / 16f).clip(RoundedCornerShape(4.dp)).background(Color(0xFF1E293B)).clickable { onOpenReel(reel.id) }) {
+                        Box(Modifier.aspectRatio(9f / 16f).clip(RoundedCornerShape(4.dp)).background(Color(0xFF1E293B)).noRippleClickable { onOpenReel(reel.id) }) {
                             if (reel.thumbnailUrl != null) AsyncImage(model = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                             Icon(Icons.Filled.PlayArrow, contentDescription = "Reel", tint = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(20.dp))
                             Row(Modifier.align(Alignment.BottomStart).padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1726,7 +1775,7 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
             text = {
                 Column {
                     listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "False information", "other" to "Something else").forEach { (v, label) ->
-                        Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().noRippleClickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = reportReason == v, onClick = { reportReason = v })
                             Spacer(Modifier.width(8.dp))
                             Text(label, fontSize = 15.sp)
