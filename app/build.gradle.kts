@@ -103,13 +103,16 @@ dependencies {
     implementation("androidx.camera:camera-view:1.3.4")
 
     // Firebase Phase 1: Crashlytics + Analytics. Versions are managed by
-    // the BOM (35.1.0 pins firebase-analytics 24.0.0 and
-    // firebase-crashlytics 21.0.1; verified on Google's Maven repo).
-    // Crashlytics 21.0.1 AAR declares minCompileSdk=1, so compileSdk 35
-    // is fine; both libraries need minSdk 21 at most, project is 24.
-    // No code changes needed: both SDKs auto-initialise from
+    // the BOM. BOM 33.7.0 pins firebase-analytics 22.1.2 and
+    // firebase-crashlytics 19.3.0. BOM 35.1.0 was REVERTED (run #118):
+    // its analytics 24.0.0 pulls play-services-measurement-api 24.0.0 and
+    // measurement-impl 24.0.0 whose Kotlin metadata is binary version
+    // 2.4.0, which the Kotlin 2.0.21 compiler cannot read (it reads
+    // metadata <= 2.0.0). Every Kotlin-compiled jar in the 33.7.0 graph
+    // was verified on Google Maven to carry metadata <= 2.0.0 (see
+    // REPORT.md). No code changes needed: both SDKs auto-initialise from
     // google-services.json. No mapping-file config: minify is off.
-    implementation(platform("com.google.firebase:firebase-bom:35.1.0"))
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-analytics")
     implementation("com.google.firebase:firebase-crashlytics")
 }
