@@ -26,8 +26,6 @@ import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.LocalIndication
-import androidx.compose.foundation.NoIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -998,10 +996,17 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 // v4.7: no ripple on the video — the IconButton's grey
                 // press circle read as a dirty shadow, like clickable.
-                CompositionLocalProvider(LocalIndication provides NoIndication) {
-                IconButton(onClick = { paused = !paused; controlsVisible = true }, modifier = Modifier.size(84.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f))) {
+                // A plain Box + noRippleClickable keeps the same 84dp
+                // circle and action with no press feedback at all.
+                // (NoIndication does not exist in this Compose version —
+                // LocalIndication provides null / NoIndication both fail
+                // to compile, so the IconButton is gone instead.)
+                Box(
+                    Modifier.size(84.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f))
+                        .noRippleClickable { paused = !paused; controlsVisible = true },
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause, contentDescription = if (paused) "Play" else "Pause", tint = Color.White, modifier = Modifier.size(40.dp))
-                }
                 }
             }
         }
