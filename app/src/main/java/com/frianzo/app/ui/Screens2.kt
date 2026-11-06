@@ -793,9 +793,21 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     // existing 1.5s auto-retry then recreates the player once, with no
     // competing download running during the retry.
     var stallReported by remember(reel.id, videoRetryKey) { mutableStateOf(false) }
+    // v4.5 (no-frames): true once the player renders its first video
+    // frame (MEDIA_INFO_VIDEO_RENDERING_START). A yuv444p file prepares
+    // and plays its audio but renders zero frames and reports no error,
+    // so without this the screen stays black forever with no error.
+    // Both flags reset per player (videoRetryKey) and per reel.
+    var frameRendered by remember(reel.id, videoRetryKey) { mutableStateOf(false) }
+    var noFramesReported by remember(reel.id, videoRetryKey) { mutableStateOf(false) }
     LaunchedEffect(isActive, prepared) {
         var lastPos = -1
         var lastMoveMs = System.currentTimeMillis()
+        // v4.5 (no-frames): the clock for the no-frames detector — the
+        // moment this effect (re)starts with a prepared player. It
+        // restarts when prepared flips or the reel is re-activated, so
+        // the player always gets a fresh 5s window.
+        val preparedAtMs = System.currentTimeMillis()
         while (isActive && prepared) {
             delay(200)
             val pos = try { player?.currentPosition ?: positionMs } catch (_: Exception) { positionMs }
@@ -804,6 +816,21 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             if (pos != lastPos) { lastPos = pos; lastMoveMs = System.currentTimeMillis() }
             else if (playing && !stallReported && !paused && videoError == null && System.currentTimeMillis() - lastMoveMs >= 5000) {
                 stallReported = true
+                videoError = "Couldn't play this video"
+            }
+            // v4.5 (no-frames): a prepared, playing player that has
+            // rendered zero frames in 5s is a dead video track (a
+            // yuv444p file: audio plays, position moves, no onError,
+            // no buffering event — the stall watchdog above never
+            // fires because the position DOES move). This is a
+            // separate if, not chained to the movement check, because
+            // the position moves in exactly this failure. Gated on
+            // !buffering so a first frame still arriving on a slow
+            // connection is the stall watchdog's job, not this one's.
+            // Fires once per player; the existing 1.5s auto-retry then
+            // recreates the player once, exactly like the stall path.
+            if (playing && !frameRendered && !buffering && !noFramesReported && !paused && videoError == null && System.currentTimeMillis() - preparedAtMs >= 5000) {
+                noFramesReported = true
                 videoError = "Couldn't play this video"
             }
         }
@@ -834,6 +861,9 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                             when (what) {
                                 MediaPlayer.MEDIA_INFO_BUFFERING_START -> { buffering = true; true }
                                 MediaPlayer.MEDIA_INFO_BUFFERING_END -> { buffering = false; true }
+                                // v4.5 (no-frames): the first rendered video
+                                // frame. A yuv444p file never sends this.
+                                MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> { frameRendered = true; true }
                                 else -> false
                             }
                         }
