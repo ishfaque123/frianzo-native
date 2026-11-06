@@ -493,6 +493,10 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
         posts = posts.map { if (it.id == postId) it.copy(commentCount = newCount) else it }
     }
 
+    fun updateShareCount(postId: String, newCount: Int) {
+        posts = posts.map { if (it.id == postId) it.copy(shareCount = newCount) else it }
+    }
+
     // Web handleTap: tap sends the CURRENT reaction (which toggles it
     // off server-side) or "like" when there is no reaction yet.
     fun toggleLike(post: Post) { setReaction(post, reactionByPost[post.id] ?: "like") }
@@ -614,13 +618,13 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
     }
     commentPost?.let { post ->
-        PostCommentsDialog(vm.api2, post, myId,
+        PostCommentsDialog(vm.api2, post, myId, myAvatar = myAvatar,
             onClose = { commentPost = null },
             onCountChange = { newCount -> vm.updateCommentCount(post.id, newCount) })
     }
     sharePost?.let { post -> PostShareSheet(vm, post, onClose = { sharePost = null }, onOpenChat = onOpenChat) }
     detailPostId?.let { pid ->
-        PostDetailScreen(vm, pid, myId, onClose = { detailPostId = null }, onAuthor = onAuthor, onOpenChat = onOpenChat)
+        PostDetailScreen(vm, pid, myId, myAvatar = myAvatar, onClose = { detailPostId = null }, onAuthor = onAuthor, onOpenChat = onOpenChat)
     }
     storyViewer?.let { group ->
         StoryViewerDialog(vm.api2, group, myId, onClose = { storyViewer = null }, onDeleted = {
@@ -945,7 +949,7 @@ private fun ReactionEmojiText(type: String?, fontSize: androidx.compose.ui.unit.
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, onOpenChat: (String, String) -> Unit) {
+private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, onOpenChat: (String, String) -> Unit, onShared: () -> Unit = {}) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -964,7 +968,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
     }
     fun record(channel: String) { scope.launch { try { vm.api2.recordShareEvent(mapOf("type" to "post", "id" to post.id, "channel" to channel)) } catch (_: Exception) {} } }
     // Web openAndClose: external taps close the sheet after recording.
-    fun openUrl(url: String, channel: String) { record(channel); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {}; onClose() }
+    fun openUrl(url: String, channel: String) { record(channel); onShared(); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {}; onClose() }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
             Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
@@ -991,7 +995,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
                             try {
                                 val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId2))
                                 val convId = res.data?.id
-                                if (convId != null) { onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
+                                if (convId != null) { onShared(); onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
                             } catch (_: Exception) {}
                             dmBusy = false
                         }
@@ -1040,19 +1044,22 @@ private fun ShareTile(label: String, color: Color, letter: String, onClick: () -
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, myId: String? = null, onClose: () -> Unit, onCountChange: (Int) -> Unit) {
+private fun PostCommentsDialog(api2: FrianzoApi2, post: Post, myId: String? = null, myAvatar: String? = null, onClose: () -> Unit, onCountChange: (Int) -> Unit) {
+    // Shared header with the live count; kept in sync by CommentSection's
+    // onCountChange (add/delete). No Top/Newest pill — owner order: native
+    // post comments stay pill-less, same as the reel sheet.
+    var headerCount by remember { mutableStateOf(post.commentCount) }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
-            // FB-style header: just "Comments" centred + X. No Top/Newest pill.
             // Sorting is newest first, so a new comment lands at the top like FB.
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("$headerCount comments", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
-            CommentSection(api2, post.id, post.commentCount, myId, post.author?.id, fillHeight = true, onCountChange = onCountChange)
+            CommentSection(api2, post.id, post.commentCount, myId, post.author?.id, myAvatar = myAvatar, fillHeight = true, onCountChange = { nc -> headerCount = nc; onCountChange(nc) })
         }
     }
 }
@@ -1102,7 +1109,7 @@ private fun flattenReplies(replies: List<Comment>, parentAuthor: Author?): List<
 @Composable
 // v2.9: dead sortBy param removed (it was never read — the web has a
 // Top/Newest sort, but the owner ordered native to keep NO sort).
-private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
+private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initialCount: Int, myId: String? = null, postOwnerId: String? = null, myAvatar: String? = null, fillHeight: Boolean = false, onCountChange: (Int) -> Unit = {}) {
     val context = LocalContext.current
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
@@ -1111,6 +1118,9 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
     var error by remember { mutableStateOf<String?>(null) }
     var count by remember { mutableStateOf(initialCount) }
     var expandedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // Follow status per comment author (same GET /api/follows/{id}/status
+    // the feed uses) so the bubble can show a real "Follow Back" pill.
+    var followStates by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var mentionQuery by remember { mutableStateOf<String?>(null) }
     var mentionResults by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     val scope = rememberCoroutineScope()
@@ -1125,6 +1135,19 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         }
     }
     LaunchedEffect(postId) { load() }
+    LaunchedEffect(comments) {
+        val authorIds = (comments.map { it.author } + comments.flatMap { flattenReplies(it.replies, it.author).map { pair -> pair.first.author } })
+            .mapNotNull { it?.id }.toSet()
+        for (aid in authorIds) {
+            if (aid in followStates || aid == myId) continue
+            scope.launch {
+                try {
+                    val fs = api2.followStatus(aid)
+                    if (fs.success && fs.data != null) followStates = followStates + (aid to (fs.data.status ?: "none"))
+                } catch (_: Exception) {}
+            }
+        }
+    }
     // @mention search: web debounces 300ms, searches /api/users/search limit 5.
     LaunchedEffect(mentionQuery) {
         val q = mentionQuery
@@ -1141,7 +1164,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         LazyColumn(if (fillHeight) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(380.dp)) {
             if (sorted.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { Text("No comments yet. Be the first to comment.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             items(sorted, key = { it.id }) { c ->
-                CommentRow(api2, c, myId, postOwnerId, 0, null, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val nc = (count - 1).coerceAtLeast(0); count = nc; onCountChange(nc) })
+                CommentRow(api2, c, myId, postOwnerId, 0, null, followStatus = followStates[c.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val nc = (count - 1).coerceAtLeast(0); count = nc; onCountChange(nc) })
                 val flatReplies = flattenReplies(c.replies, c.author)
                 if (flatReplies.isNotEmpty()) {
                     val isExpanded = c.id in expandedIds
@@ -1150,7 +1173,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                             TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(0.dp)) { Text("View ${flatReplies.size} ${if (flatReplies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         } else {
                             flatReplies.forEach { (r, parentAuthor) ->
-                                CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val nc = (count - 1).coerceAtLeast(0); count = nc; onCountChange(nc) })
+                                CommentRow(api2, r, myId, postOwnerId, 1, parentAuthor, followStatus = followStates[r.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val nc = (count - 1).coerceAtLeast(0); count = nc; onCountChange(nc) })
                             }
                             TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(0.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
@@ -1166,7 +1189,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                         withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append("@${replyTo!!.author?.username ?: "User"}") }
                     },
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.weight(1f)
                 )
                 IconButton(onClick = { replyTo = null }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
@@ -1202,6 +1225,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         }
         if (error != null) { Text(error!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(4.dp)) }
         Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FrianzoAvatar(myAvatar, 32.dp)
+            Spacer(Modifier.width(8.dp))
             IconButton(onClick = { pickCommentPhoto() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             OutlinedTextField(
                 value = draft,
@@ -1214,7 +1239,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                 modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                 maxLines = 4,
                 singleLine = false,
-                shape = RoundedCornerShape(10.dp),
+                shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = Color.White,
                     unfocusedContainerColor = Color.White,
@@ -1225,10 +1250,10 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
             Spacer(Modifier.width(8.dp))
             Button(
                 enabled = draft.isNotBlank() || imageUri != null,
-                modifier = Modifier.height(48.dp),
+                modifier = Modifier.height(FrianzoUi.ButtonHeight),
                 contentPadding = PaddingValues(horizontal = 16.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF64748B), contentColor = Color.White),
+                shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
+                colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White),
                 onClick = {
                     val text = draft; val uri = imageUri; val parent = replyTo?.id; draft = ""; imageUri = null; replyTo = null; mentionQuery = null
                     scope.launch {
@@ -1258,7 +1283,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
 }
 
 @Composable
-private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId: String?, depth: Int, parentAuthor: Author?, onReply: (Comment) -> Unit, onChanged: () -> Unit, onDeleted: () -> Unit = {}) {
+private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId: String?, depth: Int, parentAuthor: Author?, followStatus: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, onReply: (Comment) -> Unit, onChanged: () -> Unit, onDeleted: () -> Unit = {}) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf(false) }
@@ -1283,6 +1308,29 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(c.author?.displayName ?: c.author?.username ?: "User", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
+                            // Web bubble "Follow Back" pill: shown only when the
+                            // backend says this author follows me (follow_back)
+                            // or I already follow them; tap toggles for real
+                            // (POST /api/follows/{id}), never a dead button.
+                            val authorId = c.author?.id
+                            if (authorId != null && authorId != myId && followStatus != null && followStatus != "none" && followStatus != "self") {
+                                Spacer(Modifier.width(6.dp))
+                                val isFollowBack = followStatus == "follow_back"
+                                Box(
+                                    Modifier.clip(RoundedCornerShape(12.dp))
+                                        .background(if (isFollowBack) FrianzoBlueTint else MaterialTheme.colorScheme.surfaceVariant)
+                                        .clickable {
+                                            scope.launch {
+                                                try {
+                                                    if (api2.toggleFollow(authorId).success) onFollowChange(authorId, if (isFollowBack) "following" else "none")
+                                                } catch (_: Exception) {}
+                                            }
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(if (isFollowBack) "Follow Back" else "Following", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (isFollowBack) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                }
+                            }
                         }
                         c.mediaUrl?.let { AsyncImage(model = it, contentDescription = "Comment image", modifier = Modifier.fillMaxWidth().heightIn(max = 192.dp).padding(top = 8.dp).clip(RoundedCornerShape(12.dp))) }
                         if (editing) {
@@ -1487,7 +1535,7 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: () -> Unit, onAuthor: (String) -> Unit, onOpenChat: (String, String) -> Unit) {
+fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar: String? = null, onClose: () -> Unit, onAuthor: (String) -> Unit, onOpenChat: (String, String) -> Unit) {
     var detail by remember { mutableStateOf<Post?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1495,6 +1543,11 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
     var liked by remember { mutableStateOf(false) }
     var detailReaction by remember { mutableStateOf<String?>(null) }
     var likeCount by remember { mutableStateOf(0) }
+    // Local mirrors of the fetched counts, updated by the comment section
+    // and the share sheet below so this screen never shows a stale number
+    // while the feed list already moved on.
+    var detailCommentCount by remember { mutableStateOf<Int?>(null) }
+    var detailShareCount by remember { mutableStateOf<Int?>(null) }
     var shareDetail by remember { mutableStateOf<Post?>(null) }
     var detailPicker by remember { mutableStateOf(false) }
     val detailScroll = rememberScrollState()
@@ -1502,7 +1555,7 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
         vm.recordPostView(postId)
         try {
             val r = vm.api2.postById(postId)
-            if (r.success && r.data?.post != null) { detail = r.data.post; likeCount = r.data.post.likeCount; liked = r.data.post.myReaction != null; detailReaction = r.data.post.myReaction }
+            if (r.success && r.data?.post != null) { detail = r.data.post; likeCount = r.data.post.likeCount; liked = r.data.post.myReaction != null; detailReaction = r.data.post.myReaction; detailCommentCount = r.data.post.commentCount; detailShareCount = r.data.post.shareCount }
             else error = r.error?.message ?: "Post not found"
         } catch (e: Exception) { error = e.message }
         loading = false
@@ -1541,8 +1594,10 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
                     Text("$likeCount", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.weight(1f))
-                if (post.commentCount > 0) Text("${post.commentCount} comments", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (post.shareCount > 0) { Spacer(Modifier.width(8.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 2.dp)) { Text("${post.shareCount} shares", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                val shownCommentCount = detailCommentCount ?: post.commentCount
+                val shownShareCount = detailShareCount ?: post.shareCount
+                if (shownCommentCount > 0) Text("$shownCommentCount comments", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (shownShareCount > 0) { Spacer(Modifier.width(8.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 2.dp)) { Text("$shownShareCount shares", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             }
             Spacer(Modifier.height(8.dp))
             HorizontalDivider(color = FrianzoBorder)
@@ -1613,8 +1668,8 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, onClose: 
             }
             HorizontalDivider(color = FrianzoBorder)
             Spacer(Modifier.height(12.dp))
-            CommentSection(vm.api2, post.id, post.commentCount, myId, post.author?.id) { vm.updateCommentCount(post.id, it) }
-            shareDetail?.let { sp -> PostShareSheet(vm, sp, onClose = { shareDetail = null }, onOpenChat = onOpenChat) }
+            CommentSection(vm.api2, post.id, detailCommentCount ?: post.commentCount, myId, post.author?.id, myAvatar = myAvatar) { detailCommentCount = it; vm.updateCommentCount(post.id, it) }
+            shareDetail?.let { sp -> PostShareSheet(vm, sp, onClose = { shareDetail = null }, onOpenChat = onOpenChat, onShared = { val nc = (detailShareCount ?: post.shareCount) + 1; detailShareCount = nc; vm.updateShareCount(post.id, nc) }) }
         }
     }
 }
