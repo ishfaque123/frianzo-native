@@ -687,6 +687,12 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2, private 
         posts = posts.map { if (it.id == postId) it.copy(commentAudience = audience) else it }
     }
 
+    // v5.14 (#5 Save post): keep the feed copy's isSaved in sync after
+    // a successful save/unsave, same pattern as updateCommentAudience.
+    fun updateSaved(postId: String, saved: Boolean) {
+        posts = posts.map { if (it.id == postId) it.copy(isSaved = saved) else it }
+    }
+
     // Web handleTap: tap sends the CURRENT reaction (which toggles it
     // off server-side) or "like" when there is no reaction yet.
     fun toggleLike(post: Post) { setReaction(post, reactionByPost[post.id] ?: "like") }
@@ -2017,6 +2023,12 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
             }, modifier = Modifier.fillMaxWidth()) { Text("Copy link", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onShare() }, modifier = Modifier.fillMaxWidth()) { Text("Share", modifier = Modifier.fillMaxWidth()) }
             TextButton(onClick = { onClose(); onComments() }, modifier = Modifier.fillMaxWidth()) { Text("Comments", modifier = Modifier.fillMaxWidth()) }
+            // v5.14 (#5 Save post): everyone, not owner-only. Optimistic
+            // flip (same pattern as the reel rail toggleFav), reverted on
+            // server failure; the notice shows only on server success
+            // (act), with the reel-side wording ("Saved" /
+            // "Removed from saved").
+            TextButton(onClick = { val prevSaved = post.isSaved; vm.updateSaved(post.id, !prevSaved); act(if (!prevSaved) "Saved" else "Removed from saved") { try { val r = vm.api2.togglePostFavorite(post.id); if (r.success && r.data != null) { vm.updateSaved(post.id, r.data.favorited); null } else { vm.updateSaved(post.id, prevSaved); r.error?.message ?: "Couldn't save — try again" } } catch (e: Exception) { vm.updateSaved(post.id, prevSaved); e.message ?: "Couldn't save — try again" } } }, modifier = Modifier.fillMaxWidth()) { Text(if (post.isSaved) "Unsave" else "Save", modifier = Modifier.fillMaxWidth()) }
             // A-B5 (menu): hide locally only on server success.
             TextButton(onClick = { act("Hidden") { val r = vm.api2.hidePost(post.id); if (r.success) { vm.hidePost(post.id); onClose(); null } else r.error?.message ?: "Could not hide post" } }, modifier = Modifier.fillMaxWidth()) { Text("Hide post", modifier = Modifier.fillMaxWidth()) }
             // v2.9: "Not interested" records creator feedback

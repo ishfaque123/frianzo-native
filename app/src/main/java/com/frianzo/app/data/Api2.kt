@@ -87,6 +87,11 @@ data class StatusViewersData(val viewers: List<StatusViewer> = emptyList())
 data class PostCreateData(val post: Post?)
 /** Backend GET /api/posts/{id} returns { post }, not a bare post. (Currently unused in UI.) */
 data class PostResponse(val post: Post?)
+// v5.14 (#5 Save post): POST /api/posts/{id}/favorite returns
+// { favorited }, GET /api/posts/me/favorites returns { posts }.
+// Mirrors ReelFavoriteData / ReelFavoritesData.
+data class PostFavoriteData(val favorited: Boolean = false)
+data class PostFavoritesData(val posts: List<Post>? = null)
 
 // ---------- Chat ----------
 data class ConversationUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val lastActiveAt: String? = null, val isOnline: Boolean = false, val showOnlineStatus: Boolean? = null)
@@ -417,6 +422,11 @@ interface FrianzoApi2 {
     suspend fun recordPostView(@Path("id") id: String, @Body body: Map<String, Int>): Envelope<Any>
     @POST("api/posts/{id}/pin")
     suspend fun togglePin(@Path("id") id: String): Envelope<Any>
+    // v5.14 (#5 Save post): mirrors toggleReelFavorite / myFavoriteReels.
+    @POST("api/posts/{id}/favorite")
+    suspend fun togglePostFavorite(@Path("id") id: String): Envelope<PostFavoriteData>
+    @GET("api/posts/me/favorites")
+    suspend fun myFavoritePosts(): Envelope<PostFavoritesData>
     @PATCH("api/posts/{id}")
     suspend fun updatePost(@Path("id") id: String, @Body body: Map<String, String>): Envelope<Any>
     @DELETE("api/posts/{id}")

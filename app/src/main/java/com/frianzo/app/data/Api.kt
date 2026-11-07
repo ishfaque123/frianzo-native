@@ -50,6 +50,10 @@ data class Post(
     val backgroundStyle: String? = null,
     val location: String? = null,
     val isPinned: Boolean = false,
+    // v5.14 (#5 Save post): backend toPostDTO now returns isSaved
+    // (POST /api/posts/{id}/favorite flips it); Gson default keeps
+    // old payloads working.
+    val isSaved: Boolean = false,
     val reactionCounts: Map<String, Int>? = null,
     val myReaction: String? = null,
     val shareCode: String? = null,

@@ -4418,6 +4418,12 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var postLikeCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     // v3.2: web-profile parity — tabs, user reels, share/copy, block menu.
     var activeTab by remember { mutableStateOf("all") }
+    // v5.14 (#5 Save post): own-profile Saved tab state. Loaded via
+    // GET /api/posts/me/favorites when the tab is selected; there is no
+    // per-user saved-posts endpoint, so the tab is own-profile-only.
+    var savedPosts by remember { mutableStateOf<List<Post>>(emptyList()) }
+    var savedPostsLoading by remember { mutableStateOf(false) }
+    var savedPostsError by remember { mutableStateOf<String?>(null) }
     var userReels by remember { mutableStateOf<List<Reel>>(emptyList()) }
     var reelsLoading by remember { mutableStateOf(false) }
     var linkMsg by remember { mutableStateOf<String?>(null) }
@@ -4442,6 +4448,22 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
         clipboard.setText(AnnotatedString(profileUrl(u)))
         linkMsg = "Link copied"
         scope.launch { delay(2000); linkMsg = null }
+    }
+    // v5.14 (#5 Save post): load the own-profile Saved tab. In-flight
+    // guard so rapid tab taps cannot stack duplicate loads; error is
+    // kept for the Retry button (mirror of SavedReelsScreen.load).
+    fun loadSavedPosts() {
+        if (savedPostsLoading) return
+        savedPostsLoading = true
+        savedPostsError = null
+        scope.launch {
+            try {
+                val r = api2.myFavoritePosts()
+                if (r.success && r.data != null) savedPosts = r.data.posts ?: emptyList()
+                else savedPostsError = r.error?.message ?: "Couldn't load saved posts"
+            } catch (e: Exception) { savedPostsError = e.message ?: "Couldn't load saved posts" }
+            finally { savedPostsLoading = false }
+        }
     }
     // B-B27: after a successful upload the profile is reloaded so the
     // new photo/cover shows at once (was: "reopen profile to see it").
@@ -4527,6 +4549,12 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 } else error = res.error?.message
             } catch (e: Exception) { error = e.message }
         }
+    }
+    // v5.14 (#5 Save post): reload saved posts every time the Saved tab
+    // is selected, so a post saved from the feed since the last visit
+    // shows up; never fires for other profiles (no such endpoint).
+    LaunchedEffect(activeTab) {
+        if (activeTab == "saved" && username == null) loadSavedPosts()
     }
     LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (username != null && onBack != null) {
@@ -4817,7 +4845,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 // v3.2 web parity: All / Reels / Photos tabs, selected tab
                 // underlined in slate-900, like the web.
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                    listOf("all" to "All", "reels" to "Reels", "photos" to "Photos").forEach { (v, label) ->
+                    // v5.14 (#5 Save post): "Saved" is the 4th tab, own
+                    // profile only — /me/favorites has no per-user form.
+                    (listOf("all" to "All", "reels" to "Reels", "photos" to "Photos") + if (username == null) listOf("saved" to "Saved") else emptyList()).forEach { (v, label) ->
                         val sel = activeTab == v
                         Box(Modifier.weight(1f).clickable { activeTab = v }.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
                             Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
@@ -4834,6 +4864,20 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     else if (userReels.isEmpty()) Text("No reels yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
                 } else if (activeTab == "photos") {
                     if (posts.filter { !it.imageUrl.isNullOrBlank() }.isEmpty()) Text("No photos yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
+                } else if (activeTab == "saved") {
+                    // v5.14 (#5 Save post): mirror of SavedReelsScreen —
+                    // skeleton cards while loading, error + Retry, empty
+                    // state; the cards themselves render below via the
+                    // All-tab items block.
+                    if (savedPostsLoading) Column { repeat(3) { SkeletonPostCard() } }
+                    else if (savedPostsError != null) {
+                        Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(savedPostsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed)
+                            Spacer(Modifier.height(12.dp))
+                            Button(onClick = { savedPostsError = null; loadSavedPosts() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
+                        }
+                    }
+                    else if (savedPosts.isEmpty()) Text("No saved posts yet. Save a post from its menu to see it here.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
                 } else {
                     // v5.12: skeleton post cards while the posts tab loads.
                     if (postsLoading) Column { repeat(3) { SkeletonPostCard() } }
@@ -4882,7 +4926,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
         }
         // v3.3: All tab is pinned-first, then newest — like web, client-side only.
         val allPosts = posts.sortedWith(compareByDescending<Post> { it.isPinned }.thenByDescending { it.createdAt ?: "" })
-        items(if (activeTab != "all") emptyList() else if (profile?.isPrivate == true && username != null && !following) emptyList() else allPosts, key = { it.id }) { post ->
+        // v5.14 (#5 Save post): the Saved tab reuses this same All-tab
+        // card rendering (like/comment/detail) against savedPosts.
+        items(if (activeTab == "saved") savedPosts else if (activeTab != "all") emptyList() else if (profile?.isPrivate == true && username != null && !following) emptyList() else allPosts, key = { it.id }) { post ->
             Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable { if (feedVm != null) detailPostId = post.id }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
