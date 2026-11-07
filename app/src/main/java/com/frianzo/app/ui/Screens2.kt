@@ -5628,7 +5628,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var postsError by remember { mutableStateOf<String?>(null) }
     var following by remember { mutableStateOf(false) }
     var followStatus by remember { mutableStateOf<String?>(null) }
-    var showEdit by remember { mutableStateOf(false) }
+    var showEdit by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var followList by remember { mutableStateOf<String?>(null) }
     var detailPostId by remember { mutableStateOf<String?>(null) }
@@ -5741,11 +5741,6 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     }
     if (detailPostId != null && feedVm != null) {
         PostDetailScreen(feedVm, detailPostId!!, myId, onClose = { detailPostId = null }, onAuthor = { u -> detailPostId = null; onUser?.invoke(u) }, onOpenChat = { id, name -> detailPostId = null; onOpenChat?.invoke(id, name) })
-    }
-    // v5.16 (Edit Profile): full page, not a dialog — same entry point
-    // (the Edit Profile button) now opens the web-matching page.
-    if (showEdit && profile != null) {
-        EditProfileScreen(api2, profile!!, onClose = { showEdit = false }, onSaved = { updated -> profile = updated; showEdit = false }, onProfileChanged = { updated -> profile = updated })
     }
     LaunchedEffect(username, retryKey) {
         scope.launch {
@@ -6252,6 +6247,14 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 }
             }
         }
+    }
+    // v5.18.3 (B-H1 fix): the edit page MUST be emitted AFTER the
+    // LazyColumn — both are direct children of MainActivity's Box, so the
+    // later child draws on top. Before v5.18.3 it was emitted first and the
+    // opaque full-size list painted over it, so the Edit Profile button
+    // appeared to do nothing (broken since v5.16).
+    if (showEdit && profile != null) {
+        EditProfileScreen(api2, profile!!, onClose = { showEdit = false }, onSaved = { updated -> profile = updated; showEdit = false }, onProfileChanged = { updated -> profile = updated })
     }
 }
 
