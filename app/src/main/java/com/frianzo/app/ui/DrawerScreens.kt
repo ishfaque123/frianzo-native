@@ -49,7 +49,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import coil.compose.AsyncImage
 import com.frianzo.app.data.*
 import java.text.SimpleDateFormat
@@ -1427,7 +1428,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     // 8. Content views LINE chart (replaces the bar chart).
                     DashboardCard {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Baseline) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Text("Content views", fontSize = 14.sp, fontWeight = FontWeight.Medium)
                                 Text("Last $range days", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
