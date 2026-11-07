@@ -995,6 +995,15 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     } },
                     modifier = Modifier.fillMaxSize(),
                     update = { view ->
+                        // v5.5 (owner, 2026-11-07): hide this reel's surface
+                        // when it is not the active page. A paused VideoView
+                        // keeps showing its last frame, and its SurfaceView
+                        // sits above the camera's preview — so the frozen
+                        // frame flashed in the camera for ~1s after tapping
+                        // + until the live feed started. INVISIBLE hides the
+                        // frame; the player stays prepared and resumes when
+                        // this reel is active again.
+                        view.visibility = if (isActive) android.view.View.VISIBLE else android.view.View.INVISIBLE
                         val em = muted || autoMuted
                         // v4.2: setVolume() throws on a dead/errored
                         // player — update runs on every recomposition.
