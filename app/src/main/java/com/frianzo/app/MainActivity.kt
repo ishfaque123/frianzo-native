@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
@@ -30,6 +31,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -57,6 +59,14 @@ class MainActivity : ComponentActivity() {
         val cookieJar = PersistentCookieJar(applicationContext)
         val api = createApi(applicationContext, cookieJar)
         val api2 = createApi2(applicationContext, cookieJar)
+        // v5.12: global connectivity listener (registered once) + flush
+        // the offline outbox whenever the connection returns.
+        NetworkMonitor.start(applicationContext)
+        NetworkMonitor.onBackOnline = {
+            lifecycleScope.launch {
+                try { OutboxFlusher.flush(applicationContext, api2) } catch (_: Exception) {}
+            }
+        }
         // v3.4: Theme + Data Saver are local prefs — load before the first
         // frame so Settings' choice applies from startup.
         FrianzoThemeState.mode = readThemeMode(applicationContext)
@@ -68,8 +78,10 @@ class MainActivity : ComponentActivity() {
                 // not inside the Feed tab, so (a) its first page starts
                 // loading IN PARALLEL with Session /me instead of after it,
                 // and (b) it survives tab switches (see FeedViewModel).
-                val feedVm: FeedViewModel = viewModel(factory = feedViewModelFactory(api, api2))
-                LaunchedEffect(Unit) { feedVm.loadMore() }
+                val feedVm: FeedViewModel = viewModel(factory = feedViewModelFactory(api, api2, applicationContext))
+                // v5.12: cache-first — show the last saved feed instantly,
+                // then refresh it from the network in the background.
+                LaunchedEffect(Unit) { feedVm.restoreCache(); feedVm.loadMore() }
                 val state by session.state.collectAsState()
                 when (state) {
                     is AuthState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -379,7 +391,24 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        Box(Modifier.padding(padding)) {
+        Column(Modifier.padding(padding)) {
+            // v5.12: "You're offline" banner (global connectivity state).
+            if (!NetworkMonitor.isOnline) {
+                Box(
+                    Modifier.fillMaxWidth().background(Color(0xFFB91C1C)).padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "You're offline — actions will send when you're back online",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS })
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
@@ -438,6 +467,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             )
         }
 
+        }
         }
     }
 }

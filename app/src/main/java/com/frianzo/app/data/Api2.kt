@@ -604,6 +604,11 @@ fun createApi2(context: android.content.Context, cookieJar: PersistentCookieJar)
     val client = okhttp3.OkHttpClient.Builder()
         .cookieJar(cookieJar)
         .addInterceptor(originInterceptor())
+        // v5.12: explicit timeouts so a stalled request fails fast instead
+        // of hanging the UI on the OkHttp 10s defaults (offline support).
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
     return retrofit2.Retrofit.Builder()
         .baseUrl(BASE_URL)

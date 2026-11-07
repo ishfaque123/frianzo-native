@@ -890,7 +890,14 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 val r = api2.toggleReelLike(reel.id)
                 if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount; onLikeChange(reel.id, liked, likes) }
                 else { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't like — try again") }
-            } catch (_: Exception) { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't like — try again") }
+            } catch (e: Exception) {
+                if (Outbox.isNetworkError(e)) {
+                    // v5.12: offline — keep the optimistic like and queue
+                    // the toggle; the flush replays it when back online.
+                    Outbox.enqueueJson(context, "LIKE_REEL", reel.id, mapOf("reaction" to "like"))
+                    showMsg("Waiting for connection…")
+                } else { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't like — try again") }
+            }
             finally { likeBusy = false }
         }
     }
@@ -905,7 +912,14 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 val r = api2.toggleReelLike(reel.id)
                 if (r.success && r.data != null) { liked = r.data.liked; likes = r.data.likeCount; onLikeChange(reel.id, liked, likes) }
                 else { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't unlike — try again") }
-            } catch (_: Exception) { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't unlike — try again") }
+            } catch (e: Exception) {
+                if (Outbox.isNetworkError(e)) {
+                    // v5.12: offline — keep the optimistic unlike and queue
+                    // the toggle; the flush replays it when back online.
+                    Outbox.enqueueJson(context, "LIKE_REEL", reel.id, mapOf("reaction" to "like"))
+                    showMsg("Waiting for connection…")
+                } else { liked = prevLiked; likes = prevLikes; onLikeChange(reel.id, prevLiked, prevLikes); showMsg("Couldn't unlike — try again") }
+            }
             finally { likeBusy = false }
         }
     }
@@ -1555,7 +1569,8 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
-            if (loading) { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
+            // v5.12: skeleton rows on first load; error already has Retry.
+            if (loading) { Column { repeat(4) { SkeletonRow() } } }
             else if (error != null) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(error!!, fontSize = 14.sp, color = Color.Red)
@@ -1595,6 +1610,7 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = null, myAvatar: String? = null, initialTotal: Int = -1, onClose: () -> Unit, onCommentAdded: () -> Unit = {}, onCommentDeleted: (Int) -> Unit = {}) {
+    val context = LocalContext.current
     var comments by remember { mutableStateOf<List<ReelComment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1790,7 +1806,16 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                                     try { val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60); tg.startTone(ToneGenerator.TONE_PROP_BEEP, 120); scope.launch { delay(300); try { tg.release() } catch (_: Exception) {} } } catch (_: Exception) {}
                                     total += 1; onCommentAdded(); justSent = true; if (parent != null) expandedIds = expandedIds + parent; load()
                                 } else { sendError = friendlyReelsError(res.error?.message, "Could not send comment"); draft = text; replyTo = savedReply }
-                            } catch (e: Exception) { sendError = friendlyReelsError(e, "Could not send comment"); draft = text; replyTo = savedReply }
+                            } catch (e: Exception) {
+                                if (Outbox.isNetworkError(e)) {
+                                    // v5.12: offline — queue the comment; the
+                                    // flush replays it when back online. The
+                                    // draft stays cleared so it cannot be
+                                    // sent twice.
+                                    Outbox.enqueueJson(context, "COMMENT_REEL", reel.id, mapOf("text" to text, "parent" to (parent ?: "")))
+                                    sendError = "Waiting for connection…"
+                                } else { sendError = friendlyReelsError(e, "Could not send comment"); draft = text; replyTo = savedReply }
+                            }
                             sending = false
                         }
                     },
@@ -3407,13 +3432,22 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
             HorizontalDivider()
         }
         if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-        if (loading) item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
+        if (loading) item {
+            // v5.12: skeleton rows on a bare first load; dots footer stays
+            // for a load-more wait.
+            if (shown.isEmpty()) {
+                Column { repeat(5) { SkeletonRow() } }
+            } else {
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+            }
+        }
         if (!loading && shown.isEmpty() && error == null) item { Text(if (list.isEmpty()) "No chats yet" else "No conversations match", Modifier.padding(16.dp)) }
     }
 }
 
 @Composable
 fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, myId: String?, onBack: () -> Unit = {}, onOpenProfile: ((String) -> Unit)? = null) {
+    val context = LocalContext.current
     var messages by remember { mutableStateOf<List<ConversationMessage>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -3666,7 +3700,14 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                         try {
                             val r = api2.sendMessage(conversationId, SendMessageRequest(text))
                             if (r.success) load() else { draft = text; sendError = r.error?.message ?: "Couldn't send message" }
-                        } catch (e: Exception) { draft = text; sendError = e.message }
+                            } catch (e: Exception) {
+                                if (Outbox.isNetworkError(e)) {
+                                    // v5.12: offline — queue the message; the
+                                    // flush replays it when back online.
+                                    Outbox.enqueueJson(context, "MESSAGE", conversationId, mapOf("text" to text))
+                                    sendError = "Waiting for connection…"
+                                } else { draft = text; sendError = e.message }
+                            }
                     }
                 }) { Text("Send", maxLines = 1, softWrap = false) }
             }
@@ -3801,7 +3842,15 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
         }
         actionError?.let { Text(it, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         LazyColumn(Modifier.weight(1f)) {
-            if (loading) item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
+            if (loading) item {
+                // v5.12: skeleton rows on a bare first load (web parity);
+                // the dots footer stays for a load-more wait.
+                if (filtered.isEmpty()) {
+                    Column { repeat(5) { SkeletonRow() } }
+                } else {
+                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                }
+            }
             items(filtered, key = { it.id }) { n ->
                 ListItem(
                     headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -3889,7 +3938,14 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
             shape = RoundedCornerShape(12.dp),
             trailingIcon = { IconButton(onClick = { runSearch(q, saveRecent = true) }) { Icon(Icons.Filled.Search, contentDescription = "Search") } },
         )
-        if (searching) Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+        // v5.12: skeleton rows while searching with no results yet.
+        if (searching) {
+            if (results.isEmpty()) {
+                Column { repeat(5) { SkeletonRow() } }
+            } else {
+                Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+            }
+        }
         if (q.isBlank() && recents.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Recent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -4392,17 +4448,22 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                 if (activeTab == "reels") {
                     if (isPrivateView) { /* private banner above already explains it */ }
-                    else if (reelsLoading) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                    else if (reelsLoading) {
+                        // v5.12: skeleton rows while the reels tab loads.
+                        Column { repeat(3) { SkeletonRow() } }
+                    }
                     else if (userReels.isEmpty()) Text("No reels yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
                 } else if (activeTab == "photos") {
                     if (posts.filter { !it.imageUrl.isNullOrBlank() }.isEmpty()) Text("No photos yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
                 } else {
-                    if (postsLoading) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                    // v5.12: skeleton post cards while the posts tab loads.
+                    if (postsLoading) Column { repeat(3) { SkeletonPostCard() } }
                     if (postsError != null) Text(postsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp))
                     if (!postsLoading && postsError == null && posts.isEmpty()) Text("No posts yet", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
                 }
             } ?: run {
-                if (error != null) Text(error!!, Modifier.padding(16.dp)) else Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                // v5.12: skeleton profile header while the user loads.
+                if (error != null) Text(error!!, Modifier.padding(16.dp)) else SkeletonProfileHeader()
             }
         }
         // v3.2: Reels tab = 3-column grid of the user's real reels;
@@ -4670,7 +4731,15 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
                 HorizontalDivider()
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
-            if (loading) item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
+            if (loading) item {
+                // v5.12: skeleton rows on a bare first load; dots footer
+                // stays for a load-more wait.
+                if (shown.isEmpty()) {
+                    Column { repeat(5) { SkeletonRow() } }
+                } else {
+                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                }
+            }
             if (shown.isEmpty() && error == null && !loading) item { Text(if (users.isEmpty()) "Nobody here yet" else "No matches", Modifier.padding(16.dp)) }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {

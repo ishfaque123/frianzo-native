@@ -517,7 +517,7 @@ private fun feedTime(createdAt: String?): String {
  * same instance is created at app start so the first feed page loads in
  * PARALLEL with Session /me instead of after it (see MainActivity).
  */
-class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewModel() {
+class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2, private val appContext: android.content.Context) : ViewModel() {
     var posts by mutableStateOf<List<Post>>(emptyList()); private set
     var offset by mutableStateOf(0); private set
     var hasMore by mutableStateOf(true); private set
@@ -529,6 +529,42 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
     // already-liked post shows as liked instead of snapping back on tap.
     var reactionByPost by mutableStateOf<Map<String, String>>(emptyMap()); private set
     var refreshing by mutableStateOf(false); private set
+    // v5.12: cache-first. True while the list on screen came from the disk
+    // cache and the background refresh has not replaced it yet.
+    private var cacheSeeded = false
+    // v5.12: one automatic retry after a first-load failure (never loops).
+    private var autoRetried = false
+
+    /** v5.12: seeds the list from the disk cache (if any). Call once at
+     *  startup before the first loadMore(); returns true when a cache
+     *  was shown, so the feed appears instantly instead of blank dots. */
+    fun restoreCache(): Boolean {
+        if (posts.isNotEmpty()) return false
+        val cached = FeedCache.load(appContext) ?: return false
+        posts = cached.posts
+        hasMore = cached.hasMore
+        offset = cached.nextOffset
+        cacheSeeded = true
+        return true
+    }
+
+    /** v5.12: manual retry after a first-load failure (Retry button). */
+    fun retry() {
+        error = null
+        autoRetried = false
+        loadMore()
+    }
+
+    /** v5.12: one automatic retry a few seconds after a first-load
+     *  failure with nothing on screen (no cache). Never loops. */
+    private fun scheduleAutoRetry() {
+        if (autoRetried) return
+        autoRetried = true
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(3000)
+            if (posts.isEmpty() && error != null && !loading) loadMore()
+        }
+    }
 
     fun hidePost(postId: String) { posts = posts.filterNot { it.id == postId } }
 
@@ -542,43 +578,88 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
     }
 
     fun loadMore() {
-        if (loading || !hasMore) return
+        if (loading) return
+        // v5.12: a cache-seeded first load must still refresh even when
+        // the cached page said hasMore=false (the refresh replaces it).
+        if (!hasMore && !cacheSeeded) return
         loading = true
+        // v5.12: a cache-seeded first load is a background refresh — it
+        // fetches page 1 (offset 0) and REPLACES the cached posts instead
+        // of appending. Later pages append as before.
+        val refreshAfterCache = cacheSeeded
+        val fetchOffset = if (refreshAfterCache) 0 else offset
         viewModelScope.launch {
             try {
-                val res = api.feed(offset)
+                val res = api.feed(fetchOffset)
                 if (res.success && res.data != null) {
                     // A-B2: a later successful load clears any earlier error.
                     error = null
+                    autoRetried = false
                     val newPosts = res.data.posts ?: emptyList()
-                    // A-B23: defensive dedup by id. The backend always
-                    // returns nextOffset = offset + posts.length
-                    // (verified in vynzo-backend postController
-                    // getFeedHandler), so a repeated page should not
-                    // happen — but if it ever does, appending it again
-                    // would duplicate keys and can crash the LazyColumn
-                    // (itemsIndexed key = post.id). A page that adds no
-                    // new ids also ends pagination instead of looping.
-                    val fresh = newPosts.filter { np -> posts.none { it.id == np.id } }
-                    posts = posts + fresh
-                    if (newPosts.isNotEmpty() && fresh.isEmpty()) {
-                        hasMore = false
-                        return@launch
-                    }
-                    // Seed already-liked state from the server, but never
-                    // overwrite a reaction the user just set in this session.
-                    newPosts.forEach { post ->
-                        post.myReaction?.let { mr ->
-                            if (post.id !in reactionByPost) {
-                                reactionByPost = reactionByPost + (post.id to mr)
-                                likedIds = likedIds + post.id
+                    if (refreshAfterCache) {
+                        // Replace the cached page with the fresh first page.
+                        posts = newPosts
+                        newPosts.forEach { post ->
+                            post.myReaction?.let { mr ->
+                                if (post.id !in reactionByPost) {
+                                    reactionByPost = reactionByPost + (post.id to mr)
+                                    likedIds = likedIds + post.id
+                                }
                             }
                         }
+                        offset = res.data.nextOffset
+                        hasMore = res.data.hasMore
+                        cacheSeeded = false
+                        FeedCache.save(appContext, newPosts, res.data.hasMore, res.data.nextOffset)
+                    } else {
+                        // A-B23: defensive dedup by id. The backend always
+                        // returns nextOffset = offset + posts.length
+                        // (verified in vynzo-backend postController
+                        // getFeedHandler), so a repeated page should not
+                        // happen — but if it ever does, appending it again
+                        // would duplicate keys and can crash the LazyColumn
+                        // (itemsIndexed key = post.id). A page that adds no
+                        // new ids also ends pagination instead of looping.
+                        val fresh = newPosts.filter { np -> posts.none { it.id == np.id } }
+                        posts = posts + fresh
+                        if (newPosts.isNotEmpty() && fresh.isEmpty()) {
+                            hasMore = false
+                            return@launch
+                        }
+                        // Seed already-liked state from the server, but never
+                        // overwrite a reaction the user just set in this session.
+                        newPosts.forEach { post ->
+                            post.myReaction?.let { mr ->
+                                if (post.id !in reactionByPost) {
+                                    reactionByPost = reactionByPost + (post.id to mr)
+                                    likedIds = likedIds + post.id
+                                }
+                            }
+                        }
+                        offset = res.data.nextOffset
+                        hasMore = res.data.hasMore
+                        // v5.12: cache the first page for the next cold start.
+                        if (fetchOffset == 0) {
+                            FeedCache.save(appContext, newPosts, res.data.hasMore, res.data.nextOffset)
+                        }
                     }
-                    offset = res.data.nextOffset
-                    hasMore = res.data.hasMore
-                } else error = res.error?.message ?: "Feed failed"
-            } catch (e: Exception) { error = e.message ?: "Feed failed" }
+                } else {
+                    // v5.12: only surface the error when there is nothing
+                    // to show. A failed background refresh keeps the cached
+                    // posts on screen instead of blanking the feed.
+                    if (posts.isEmpty()) {
+                        error = res.error?.message ?: "Feed failed"
+                        scheduleAutoRetry()
+                    }
+                    cacheSeeded = false
+                }
+            } catch (e: Exception) {
+                if (posts.isEmpty()) {
+                    error = e.message ?: "Feed failed"
+                    scheduleAutoRetry()
+                }
+                cacheSeeded = false
+            }
             finally { loading = false; refreshing = false }
         }
     }
@@ -587,6 +668,7 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
         if (loading) return
         posts = emptyList(); offset = 0; hasMore = true; error = null
         reactionByPost = emptyMap(); likedIds = emptySet()
+        cacheSeeded = false; autoRetried = false
         refreshing = true
         loadMore()
     }
@@ -653,16 +735,22 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2) : ViewMo
                 } else {
                     likedIds = prevLiked; reactionByPost = prevReactions; posts = prevPosts
                 }
-            } catch (_: Exception) {
-                likedIds = prevLiked; reactionByPost = prevReactions; posts = prevPosts
+            } catch (e: Exception) {
+                if (Outbox.isNetworkError(e)) {
+                    // v5.12: offline — keep the optimistic like and queue
+                    // it; the flush replays it when the connection returns.
+                    Outbox.enqueueJson(appContext, "LIKE_POST", post.id, mapOf("reaction" to type))
+                } else {
+                    likedIds = prevLiked; reactionByPost = prevReactions; posts = prevPosts
+                }
             } finally { reactionInFlight -= post.id }
         }
     }
 }
 
-fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2) = object : ViewModelProvider.Factory {
+fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2, appContext: android.content.Context) = object : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
-    override fun <T : ViewModel> create(modelClass: Class<T>): T = FeedViewModel(api, api2) as T
+    override fun <T : ViewModel> create(modelClass: Class<T>): T = FeedViewModel(api, api2, appContext) as T
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -1091,7 +1179,21 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             if (followError != null) Text(followError!!, color = Color.Red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             if (error != null) Text(error!!, modifier = Modifier.padding(16.dp))
             if (loading) {
-                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                if (posts.isEmpty()) {
+                    // v5.12: skeleton post cards on a bare first load (no
+                    // cache) instead of a blank screen with dots. When posts
+                    // are already on screen this stays the dots footer
+                    // (a load-more wait, not a first load).
+                    Column {
+                        repeat(3) { SkeletonPostCard() }
+                    }
+                } else {
+                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                }
+            } else if (posts.isEmpty() && error != null) {
+                // v5.12: explicit Retry on a first-load failure (the old
+                // "Load more" button below was not an obvious retry).
+                Button(onClick = { vm.retry() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
             } else if (hasMore) {
                 OutlinedButton(onClick = { vm.loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) { Text("Load more") }
             } else if (posts.isEmpty()) {
@@ -1667,7 +1769,16 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                             }
                             if (ok) { draft = ""; imageUri = null; replyTo = null; mentionQuery = null; load(); count += 1; onCountChange(count) }
                             else if (error == null) error = "Could not send comment"
-                        } catch (e: Exception) { error = e.message ?: "Could not send comment" }
+                        } catch (e: Exception) {
+                            if (Outbox.isNetworkError(e) && uri == null) {
+                                // v5.12: offline text comment — queue it
+                                // (image comments are not queued) and clear
+                                // the composer so it cannot be sent twice.
+                                Outbox.enqueueJson(context, "COMMENT_POST", postId, mapOf("text" to text, "parent" to (parent ?: "")))
+                                draft = ""; replyTo = null; mentionQuery = null
+                                error = "Waiting for connection…"
+                            } else error = e.message ?: "Could not send comment"
+                        }
                         finally { sending = false }
                     }
                 },
