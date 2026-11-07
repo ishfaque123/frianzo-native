@@ -254,8 +254,16 @@ fun ReelCameraScreen(
     // needs only the camera; only video recording needs the mic. A
     // permanently-denied permission offers app Settings (re-launching the
     // system request is silently ignored by Android once denied forever).
-    var cameraGranted by remember { mutableStateOf(false) }
-    var micGranted by remember { mutableStateOf(false) }
+    var cameraGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var micGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
     var permAsked by remember { mutableStateOf(false) }
     val activity = context as? android.app.Activity
     fun permanentlyDenied(perm: String): Boolean {
@@ -273,7 +281,14 @@ fun ReelCameraScreen(
         micGranted = res[Manifest.permission.RECORD_AUDIO] == true
     }
     LaunchedEffect(Unit) {
-        permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        // v5.10: only ask when a permission is actually missing. Before,
+        // the requester ran on EVERY open and cameraGranted started false,
+        // so the "Allow camera" screen flashed for <1s even though the
+        // permission was already granted (owner's recording). Now an
+        // already-granted permission opens straight to the preview.
+        if (!cameraGranted || !micGranted) {
+            permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        }
     }
 
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
