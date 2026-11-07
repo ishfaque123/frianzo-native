@@ -174,6 +174,12 @@ data class PublicProfile(
     val followersCount: Int? = null,
     val followingCount: Int? = null,
     val followingsCount: Int? = null,
+    // v5.16 (Edit Profile): the backend's toPrivateProfile already returns
+    // these on GET /api/users/me (no backend change) — gender for the Gender
+    // select, and the 30-day name-change timestamps for the lock.
+    val gender: String? = null,
+    val usernameChangedAt: String? = null,
+    val displayNameChangedAt: String? = null,
 )
 // v3.3: backend getMutualFollowers returns { username, displayName }.
 data class MutualFollower(val username: String?, val displayName: String? = null)

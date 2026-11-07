@@ -11,6 +11,7 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.widget.VideoView
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +26,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -85,6 +87,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -4734,6 +4738,131 @@ fun countryDisplayName(raw: String?): String? {
     return trimmed
 }
 
+// v5.16 (Edit Profile): country + province/city lists copied from the web
+// Edit Profile page (vynzo-frontend src/app/settings/page.tsx —
+// COUNTRIES from src/lib/countries.ts, PROVINCES_BY_COUNTRY local to the
+// page). No backend needed: these are frontend constants.
+private val EDIT_PROFILE_COUNTRIES = listOf(
+    "Pakistan", "India", "Bangladesh", "Afghanistan", "Saudi Arabia",
+    "United Arab Emirates", "Qatar", "Kuwait", "Oman", "Bahrain", "Turkey",
+    "United Kingdom", "United States", "Canada", "Australia", "Germany",
+    "France", "Italy", "Spain", "Netherlands", "China", "Japan",
+    "South Korea", "Malaysia", "Indonesia", "Thailand", "Philippines",
+    "Singapore", "Sri Lanka", "Nepal", "Iran", "Iraq", "Egypt",
+    "South Africa", "Nigeria", "Kenya", "Brazil", "Mexico", "Russia",
+)
+
+private val PROVINCES_BY_COUNTRY: Map<String, Map<String, List<String>>> = mapOf(
+    "Pakistan" to mapOf(
+        "Sindh" to listOf("Karachi", "Hyderabad", "Sukkur", "Larkana", "Nawabshah", "Khairpur", "Mirpurkhas"),
+        "Punjab" to listOf("Lahore", "Faisalabad", "Rawalpindi", "Multan", "Gujranwala", "Sialkot", "Bahawalpur"),
+        "Khyber Pakhtunkhwa" to listOf("Peshawar", "Abbottabad", "Mardan", "Swat", "Kohat"),
+        "Balochistan" to listOf("Quetta", "Gwadar", "Turbat", "Khuzdar"),
+        "Islamabad" to listOf("Islamabad"),
+        "Gilgit-Baltistan" to listOf("Gilgit", "Skardu"),
+        "Azad Kashmir" to listOf("Muzaffarabad", "Mirpur"),
+    ),
+    "India" to mapOf(
+        "Maharashtra" to listOf("Mumbai", "Pune", "Nagpur", "Nashik"),
+        "Delhi" to listOf("New Delhi"),
+        "Karnataka" to listOf("Bangalore", "Mysore", "Hubli"),
+        "Tamil Nadu" to listOf("Chennai", "Coimbatore", "Madurai"),
+        "Uttar Pradesh" to listOf("Lucknow", "Kanpur", "Agra", "Varanasi"),
+        "Punjab" to listOf("Amritsar", "Ludhiana", "Jalandhar"),
+        "Gujarat" to listOf("Ahmedabad", "Surat", "Vadodara"),
+        "West Bengal" to listOf("Kolkata", "Howrah"),
+        "Telangana" to listOf("Hyderabad"),
+        "Rajasthan" to listOf("Jaipur", "Jodhpur", "Udaipur"),
+    ),
+    "United States" to mapOf(
+        "California" to listOf("Los Angeles", "San Francisco", "San Diego", "Sacramento"),
+        "New York" to listOf("New York City", "Buffalo", "Albany"),
+        "Texas" to listOf("Houston", "Dallas", "Austin", "San Antonio"),
+        "Florida" to listOf("Miami", "Orlando", "Tampa"),
+        "Illinois" to listOf("Chicago", "Springfield"),
+        "Washington" to listOf("Seattle", "Spokane"),
+        "Georgia" to listOf("Atlanta", "Savannah"),
+        "Arizona" to listOf("Phoenix", "Tucson"),
+        "New Jersey" to listOf("Newark", "Jersey City"),
+        "Virginia" to listOf("Richmond", "Virginia Beach"),
+    ),
+    "Iran" to mapOf(
+        "Tehran" to listOf("Tehran", "Rey"),
+        "Isfahan" to listOf("Isfahan", "Kashan"),
+        "Fars" to listOf("Shiraz"),
+        "Khorasan" to listOf("Mashhad"),
+        "Khuzestan" to listOf("Ahvaz"),
+        "Tabriz" to listOf("Tabriz"),
+    ),
+    "Saudi Arabia" to mapOf(
+        "Riyadh" to listOf("Riyadh", "Al Kharj"),
+        "Makkah" to listOf("Mecca", "Jeddah", "Taif"),
+        "Madinah" to listOf("Medina"),
+        "Eastern Province" to listOf("Dammam", "Khobar", "Dhahran"),
+        "Asir" to listOf("Abha"),
+    ),
+    "United Arab Emirates" to mapOf(
+        "Dubai" to listOf("Dubai"),
+        "Abu Dhabi" to listOf("Abu Dhabi", "Al Ain"),
+        "Sharjah" to listOf("Sharjah"),
+        "Ajman" to listOf("Ajman"),
+        "Ras Al Khaimah" to listOf("Ras Al Khaimah"),
+        "Fujairah" to listOf("Fujairah"),
+        "Umm Al Quwain" to listOf("Umm Al Quwain"),
+    ),
+    "Afghanistan" to mapOf(
+        "Kabul" to listOf("Kabul"),
+        "Herat" to listOf("Herat"),
+        "Kandahar" to listOf("Kandahar"),
+        "Balkh" to listOf("Mazar-i-Sharif"),
+        "Nangarhar" to listOf("Jalalabad"),
+    ),
+    "United Kingdom" to mapOf(
+        "England" to listOf("London", "Manchester", "Birmingham", "Liverpool"),
+        "Scotland" to listOf("Edinburgh", "Glasgow", "Aberdeen"),
+        "Wales" to listOf("Cardiff", "Swansea"),
+        "Northern Ireland" to listOf("Belfast"),
+    ),
+    "Canada" to mapOf(
+        "Ontario" to listOf("Toronto", "Ottawa", "Mississauga"),
+        "Quebec" to listOf("Montreal", "Quebec City"),
+        "British Columbia" to listOf("Vancouver", "Victoria"),
+        "Alberta" to listOf("Calgary", "Edmonton"),
+        "Manitoba" to listOf("Winnipeg"),
+    ),
+)
+
+// v5.16 (Edit Profile): 30-day name lock — the same rule as the web
+// settings page (cooldownInfo, COOLDOWN_DAYS = 30) and the backend
+// checkCooldown (vynzo-backend userService.ts). Returns the days left
+// until the name can be changed again, or 0 when it is editable (never
+// changed, 30+ days ago, or an unparseable timestamp — never lock the
+// user out on bad data).
+private fun cooldownDaysLeft(changedAt: String?): Int {
+    if (changedAt.isNullOrBlank()) return 0
+    val formats = listOf(
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US),
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US),
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US),
+    )
+    var millis: Long? = null
+    for (f in formats) {
+        f.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        try { millis = f.parse(changedAt)?.time; if (millis != null) break } catch (_: Exception) {}
+    }
+    if (millis == null) return 0
+    val daysSince = (System.currentTimeMillis() - millis) / 86400000.0
+    if (daysSince >= 30) return 0
+    return kotlin.math.ceil(30.0 - daysSince).toInt().coerceIn(1, 30)
+}
+
+// v5.16 (Edit Profile): "now" in the ISO form the backend returns, so a
+// just-saved name change locks immediately without waiting for a reload.
+private fun isoNow(): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
+        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        .format(java.util.Date())
+
 @Composable
 fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null, feedVm: FeedViewModel? = null, onUser: ((String) -> Unit)? = null, onDashboard: (() -> Unit)? = null, onOpenReel: ((String) -> Unit)? = null) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
@@ -4743,7 +4872,6 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var following by remember { mutableStateOf(false) }
     var followStatus by remember { mutableStateOf<String?>(null) }
     var showEdit by remember { mutableStateOf(false) }
-    var editError by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var followList by remember { mutableStateOf<String?>(null) }
     var detailPostId by remember { mutableStateOf<String?>(null) }
@@ -4842,6 +4970,11 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     }
     if (detailPostId != null && feedVm != null) {
         PostDetailScreen(feedVm, detailPostId!!, myId, onClose = { detailPostId = null }, onAuthor = { u -> detailPostId = null; onUser?.invoke(u) }, onOpenChat = { id, name -> detailPostId = null; onOpenChat?.invoke(id, name) })
+    }
+    // v5.16 (Edit Profile): full page, not a dialog — same entry point
+    // (the Edit Profile button) now opens the web-matching page.
+    if (showEdit && profile != null) {
+        EditProfileScreen(api2, profile!!, onClose = { showEdit = false }, onSaved = { updated -> profile = updated; showEdit = false }, onProfileChanged = { updated -> profile = updated })
     }
     LaunchedEffect(username) {
         scope.launch {
@@ -5075,61 +5208,6 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         Spacer(Modifier.width(8.dp))
                         OutlinedButton(onClick = { onDashboard?.invoke() }, modifier = Modifier.weight(1f).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Dashboard", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                     }
-                    if (editError != null) Text(editError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-                }
-                if (showEdit && profile != null) {
-                    val cur = profile!!
-                    var edName by remember { mutableStateOf(cur.displayName ?: "") }
-                    var edBio by remember { mutableStateOf(cur.bio ?: "") }
-                    var edCity by remember { mutableStateOf(cur.city ?: "") }
-                    var edProvince by remember { mutableStateOf(cur.province ?: "") }
-                    var edCountry by remember { mutableStateOf(cur.country ?: "") }
-                    var edWeb by remember { mutableStateOf(cur.website ?: "") }
-                    var edSaving by remember { mutableStateOf(false) }
-                    AlertDialog(
-                        onDismissRequest = { showEdit = false },
-                        title = { Text("Edit profile") },
-                        text = {
-                            Column {
-                                OutlinedTextField(value = edName, onValueChange = { edName = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                                Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(value = edBio, onValueChange = { if (it.length <= 300) edBio = it }, label = { Text("Bio") }, modifier = Modifier.fillMaxWidth())
-                                Text("${edBio.length}/300", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
-                                Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(value = edCity, onValueChange = { edCity = it }, label = { Text("City") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                                Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(value = edProvince, onValueChange = { edProvince = it }, label = { Text("Province") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                                Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(value = edCountry, onValueChange = { edCountry = it }, label = { Text("Country") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                                Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, label = { Text("Website") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                                Spacer(Modifier.height(8.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(onClick = { pickAvatar() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change photo", maxLines = 1, softWrap = false) }
-                                    OutlinedButton(onClick = { pickCover() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Change cover", maxLines = 1, softWrap = false) }
-                                }
-                                photoMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue) }
-                            }
-                        },
-                        confirmButton = {
-                            Button(enabled = !edSaving, onClick = {
-                                // B-B26: a blank name must not blank the
-                                // display name, and Save cannot double-fire.
-                                if (edName.isBlank()) { editError = "Name can't be empty"; return@Button }
-                                edSaving = true
-                                scope.launch {
-                                    try {
-                                        val body = mapOf<String, Any>("displayName" to edName, "bio" to edBio, "city" to edCity, "province" to edProvince, "country" to edCountry, "website" to edWeb)
-                                        val r = api2.updateMe(body)
-                                        if (r.success) { profile = cur.copy(displayName = edName, bio = edBio, city = edCity, province = edProvince, country = edCountry, website = edWeb); showEdit = false; editError = null }
-                                        else editError = r.error?.message ?: "Could not save profile"
-                                    } catch (e: Exception) { editError = e.message }
-                                    finally { edSaving = false }
-                                }
-                            }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text(if (edSaving) "Saving..." else "Save Changes", maxLines = 1, softWrap = false) }
-                        },
-                        dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
-                    )
                 }
                 // v3.2 web parity: others get ONE full-width Follow button
                 // (Message moved to the icon row, like the web). Unfollow
@@ -5450,6 +5528,230 @@ private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusIte
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
     )
+}
+
+// ---------- EDIT PROFILE (v5.16, web /settings match) ----------
+// Full page, not a dialog: tappable cover + avatar on top, then the web
+// form in web order — Username, Full Name, Bio (300 counter), Gender,
+// Country -> Province -> City cascading selects, Website, Contact Number.
+// Username / Full Name lock for 30 days after a change (same rule as the
+// web + the backend checkCooldown); the lock timestamps come from
+// GET /api/users/me (toPrivateProfile) via PublicProfile, no new endpoint.
+// Save uses the existing PATCH /api/users/me (updateMe); avatar/cover use
+// the existing upload calls. Save errors surface as Toasts — the old
+// dialog wrote the error under the profile buttons, behind the dialog,
+// so a failed save looked like nothing happened.
+@Composable
+private fun EditProfileScreen(
+    api2: FrianzoApi2,
+    profile: PublicProfile,
+    onClose: () -> Unit,
+    onSaved: (PublicProfile) -> Unit,
+    onProfileChanged: (PublicProfile) -> Unit = {},
+) {
+    BackHandler { onClose() }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Form state (rememberSaveable so a rotation does not wipe the form).
+    // Country is normalised to its web display name: the backend stores a
+    // 2-letter code (IP auto-detect) or a full name (Settings) — the app
+    // already maps codes to names for display (countryDisplayName).
+    var edUsername by rememberSaveable { mutableStateOf(profile.username ?: "") }
+    var edName by rememberSaveable { mutableStateOf(profile.displayName ?: "") }
+    var edBio by rememberSaveable { mutableStateOf(profile.bio ?: "") }
+    var edGender by rememberSaveable {
+        mutableStateOf(when ((profile.gender ?: "").lowercase()) { "male", "female", "custom" -> (profile.gender ?: "").lowercase(); else -> "" })
+    }
+    var edCountry by rememberSaveable { mutableStateOf(countryDisplayName(profile.country) ?: "") }
+    var edProvince by rememberSaveable { mutableStateOf(profile.province ?: "") }
+    var edCity by rememberSaveable { mutableStateOf(profile.city ?: "") }
+    var edWeb by rememberSaveable { mutableStateOf(profile.website ?: "") }
+    var edPhone by rememberSaveable { mutableStateOf(profile.phone ?: "") }
+    var avatarUrl by remember { mutableStateOf(profile.profilePictureUrl) }
+    var coverUrl by remember { mutableStateOf(profile.coverPhotoUrl) }
+    var edSaving by remember { mutableStateOf(false) }
+    var uploading by remember { mutableStateOf(false) }
+    // 30-day lock (web cooldownInfo): 0 = editable.
+    val usernameDaysLeft = cooldownDaysLeft(profile.usernameChangedAt)
+    val nameDaysLeft = cooldownDaysLeft(profile.displayNameChangedAt)
+    // Cascading options: the stored value is always offered too, so a
+    // value the web lists do not contain is never silently dropped.
+    val countryOptions = EDIT_PROFILE_COUNTRIES
+        .let { if (edCountry.isNotBlank() && edCountry !in it) it + edCountry else it }
+    val provinceOptions = (PROVINCES_BY_COUNTRY[edCountry]?.keys?.toList() ?: emptyList())
+        .let { if (edProvince.isNotBlank() && edProvince !in it) it + edProvince else it }
+    val cityOptions = (PROVINCES_BY_COUNTRY[edCountry]?.get(edProvince) ?: emptyList())
+        .let { if (edCity.isNotBlank() && edCity !in it) it + edCity else it }
+    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    // Avatar / cover upload (same calls + reload as the profile header
+    // pickers); the parent profile is updated too, so the photo behind
+    // this page is fresh when the user goes back.
+    val avatarPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            uploading = true
+            try {
+                val part = uriToImagePart(context, uri, "avatar_upload")
+                if (api2.uploadAvatar(part).success) {
+                    try { val rp = api2.myProfile(); if (rp.success && rp.data?.user != null) { avatarUrl = rp.data.user.profilePictureUrl ?: avatarUrl; onProfileChanged(rp.data.user) } } catch (_: Exception) {}
+                    Toast.makeText(context, "Photo updated", Toast.LENGTH_SHORT).show()
+                } else Toast.makeText(context, "Photo upload failed", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) { Toast.makeText(context, e.message ?: "Photo upload failed", Toast.LENGTH_SHORT).show() }
+            finally { uploading = false }
+        }
+    }
+    val coverPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            uploading = true
+            try {
+                val part = uriToImagePart(context, uri, "cover_upload")
+                if (api2.uploadCover(part).success) {
+                    try { val rp = api2.myProfile(); if (rp.success && rp.data?.user != null) { coverUrl = rp.data.user.coverPhotoUrl ?: coverUrl; onProfileChanged(rp.data.user) } } catch (_: Exception) {}
+                    Toast.makeText(context, "Cover updated", Toast.LENGTH_SHORT).show()
+                } else Toast.makeText(context, "Cover upload failed", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) { Toast.makeText(context, e.message ?: "Cover upload failed", Toast.LENGTH_SHORT).show() }
+            finally { uploading = false }
+        }
+    }
+    val pickAvatar = rememberPermissionGate(galleryPermissions(), onGranted = { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
+    val pickCover = rememberPermissionGate(galleryPermissions(), onGranted = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState())) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onClose) { Text("Back", maxLines = 1, softWrap = false) }
+        }
+        // Cover banner (web: h-32) + avatar overlapping it by 40dp.
+        Box(Modifier.fillMaxWidth().height(168.dp)) {
+            Box(
+                Modifier.fillMaxWidth().height(128.dp)
+                    .then(if (coverUrl == null) Modifier.background(Brush.linearGradient(listOf(Color(0xFF60A5FA), Color(0xFF2563EB), Color(0xFF1E40AF)))) else Modifier)
+                    .clickable(enabled = !uploading) { pickCover() },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (coverUrl != null) AsyncImage(model = coverUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) {
+                    Text(if (uploading) "Uploading..." else "Tap to change cover photo", fontSize = 14.sp, color = Color.White, maxLines = 1, softWrap = false)
+                }
+            }
+            // Avatar: photo if present, else the initial letter (web Avatar).
+            Box(Modifier.align(Alignment.BottomCenter).size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant).border(4.dp, MaterialTheme.colorScheme.surface, CircleShape).clickable(enabled = !uploading) { pickAvatar() }, contentAlignment = Alignment.Center) {
+                if (avatarUrl != null) AsyncImage(model = avatarUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                else Text(edName.trim().take(1).uppercase().ifEmpty { "?" }, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 16.dp, bottom = 24.dp)) {
+            Text("Edit Profile", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+            Spacer(Modifier.height(16.dp))
+            // Username (30-day lock).
+            Text("Username", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(value = edUsername, onValueChange = { edUsername = it }, modifier = Modifier.fillMaxWidth().height(40.dp), enabled = usernameDaysLeft == 0, singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
+            if (usernameDaysLeft > 0) { Spacer(Modifier.height(4.dp)); Text("You can change this again in $usernameDaysLeft day(s).", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Spacer(Modifier.height(16.dp))
+            // Full Name (30-day lock).
+            Text("Full Name", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(value = edName, onValueChange = { edName = it }, modifier = Modifier.fillMaxWidth().height(40.dp), enabled = nameDaysLeft == 0, singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
+            if (nameDaysLeft > 0) { Spacer(Modifier.height(4.dp)); Text("You can change this again in $nameDaysLeft day(s).", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Spacer(Modifier.height(16.dp))
+            // Bio + counter.
+            Text("Bio", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(value = edBio, onValueChange = { if (it.length <= 300) edBio = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
+            Text("${edBio.length}/300", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+            Spacer(Modifier.height(16.dp))
+            // Gender select.
+            EditProfileSelectField(label = "Gender", value = when (edGender) { "male" -> "Male"; "female" -> "Female"; "custom" -> "Custom"; else -> "" }, placeholder = "Select", options = listOf("Male", "Female", "Custom"), onPick = { edGender = it.lowercase() })
+            Spacer(Modifier.height(16.dp))
+            // Country -> Province -> City cascading selects.
+            EditProfileSelectField(label = "Country", value = edCountry, placeholder = "Select your country", options = countryOptions, onPick = { edCountry = it; edProvince = ""; edCity = "" })
+            Spacer(Modifier.height(16.dp))
+            EditProfileSelectField(label = "Province", value = edProvince, placeholder = "Select", options = provinceOptions, onPick = { edProvince = it; edCity = "" })
+            if (edProvince.isNotBlank()) {
+                Spacer(Modifier.height(16.dp))
+                EditProfileSelectField(label = "City", value = edCity, placeholder = "Select", options = cityOptions, onPick = { edCity = it })
+            }
+            Spacer(Modifier.height(16.dp))
+            // Website.
+            Text("Website", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, placeholder = { Text("https://", fontSize = 15.sp) }, modifier = Modifier.fillMaxWidth().height(40.dp), singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next))
+            Spacer(Modifier.height(16.dp))
+            // Contact Number.
+            Text("Contact Number", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(value = edPhone, onValueChange = { if (it.length <= 30) edPhone = it }, modifier = Modifier.fillMaxWidth().height(40.dp), singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done))
+            Spacer(Modifier.height(16.dp))
+            Button(enabled = !edSaving, onClick = {
+                // Client guards mirror the backend profileUpdateSchema
+                // (zod): username 3-30 [a-zA-Z0-9_.], displayName non-blank.
+                // Anything else the backend rejects comes back as a Toast.
+                val uname = edUsername.trim()
+                val dname = edName.trim()
+                if (!Regex("^[a-zA-Z0-9_.]{3,30}$").matches(uname)) { toast("Username must be 3-30 characters: letters, numbers, underscore, or period."); return@Button }
+                if (dname.isBlank()) { toast("Name can't be empty"); return@Button }
+                edSaving = true
+                scope.launch {
+                    try {
+                        val body = mutableMapOf<String, Any>(
+                            "username" to uname, "displayName" to dname, "bio" to edBio,
+                            "website" to edWeb, "phone" to edPhone, "province" to edProvince,
+                            "city" to edCity, "country" to edCountry,
+                        )
+                        // The backend zod enum rejects an empty gender
+                        // string — omit it when nothing is picked (same
+                        // rule as profile setup).
+                        if (edGender.isNotBlank()) body["gender"] = edGender
+                        val r = api2.updateMe(body)
+                        if (r.success) {
+                            val nowIso = isoNow()
+                            val updated = profile.copy(
+                                username = uname, displayName = dname, bio = edBio,
+                                gender = edGender.ifBlank { profile.gender },
+                                website = edWeb, phone = edPhone, province = edProvince,
+                                city = edCity, country = edCountry,
+                                usernameChangedAt = if (uname != profile.username) nowIso else profile.usernameChangedAt,
+                                displayNameChangedAt = if (dname != profile.displayName) nowIso else profile.displayNameChangedAt,
+                            )
+                            Toast.makeText(context, "Profile updated successfully.", Toast.LENGTH_SHORT).show()
+                            onSaved(updated)
+                        } else Toast.makeText(context, r.error?.message ?: "Could not save profile", Toast.LENGTH_LONG).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(context, e.message ?: "Could not save profile", Toast.LENGTH_LONG).show()
+                    } finally { edSaving = false }
+                }
+            }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text(if (edSaving) "Saving..." else "Save Changes", maxLines = 1, softWrap = false) }
+        }
+    }
+}
+
+// Select field (web <select> equivalent): read-only field + DropdownMenu,
+// the same pattern ProfileSetupScreen uses for Gender.
+@Composable
+private fun EditProfileSelectField(label: String, value: String, placeholder: String, options: List<String>, onPick: (String) -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Spacer(Modifier.height(4.dp))
+    Box {
+        OutlinedTextField(
+            value = value,
+            onValueChange = {},
+            placeholder = { Text(placeholder, fontSize = 15.sp) },
+            modifier = Modifier.fillMaxWidth().height(40.dp).clickable { menuOpen = true },
+            readOnly = true,
+            singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            textStyle = TextStyle(fontSize = 15.sp),
+            trailingIcon = {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            options.forEach { opt ->
+                DropdownMenuItem(text = { Text(opt) }, onClick = { onPick(opt); menuOpen = false })
+            }
+        }
+    }
 }
 
 // ---------- FOLLOWERS / FOLLOWING LIST (GET /api/follows/{id}/{direction}) ----------

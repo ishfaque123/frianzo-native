@@ -2,6 +2,7 @@ package com.frianzo.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -12,12 +13,15 @@ import kotlinx.coroutines.withContext
 import java.net.URL
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -32,14 +36,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.onSizeChanged
 import coil.compose.AsyncImage
 import com.frianzo.app.data.*
 import java.text.SimpleDateFormat
@@ -1159,19 +1169,24 @@ fun ActivityScreen(api2: FrianzoApi2, onBack: () -> Unit) {
 }
 
 // ---------- Professional Dashboard (web: /settings-menu/dashboard) ----------
+// v5.16: professional redesign matching the web dashboard A to Z —
+// white bordered cards (8dp radius, 16dp padding, 12dp gap), slate-100
+// stat cards, segmented range pills, line chart with tappable dots,
+// shimmer skeleton loading, centred error + dark "Try again" button.
 // Main stats, earnings, monetization and daily views come from
 // GET /api/users/me/dashboard; Achievements and Strikes come from
 // GET /api/users/me/achievements and /api/users/me/strikes.
+// The models and the /api/users/me/dashboard call are untouched.
 
 @Composable
 fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var range by remember { mutableStateOf(30) }
     var data by remember { mutableStateOf<DashboardData?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    var copied by remember { mutableStateOf(false) }
     var achievements by remember { mutableStateOf<List<Achievement>>(emptyList()) }
     var strikes by remember { mutableStateOf<StrikesData?>(null) }
     // C-B6: separate failure flags — without them a failed load left
@@ -1179,8 +1194,10 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     // "No achievements yet." and a green "Account health: Good" badge.
     var achievementsFailed by remember { mutableStateOf(false) }
     var strikesFailed by remember { mutableStateOf(false) }
+    var extrasLoading by remember { mutableStateOf(true) }
+    var selectedDay by remember { mutableStateOf<Int?>(null) }
     fun load(days: Int) {
-        loading = true; error = null
+        loading = true; error = null; selectedDay = null
         // C-B21: drop the old range's stats at once, so a failed reload
         // never shows stale numbers under the new range's error.
         data = null
@@ -1193,7 +1210,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         }
     }
     fun loadExtras() {
-        achievementsFailed = false; strikesFailed = false
+        achievementsFailed = false; strikesFailed = false; extrasLoading = true
         scope.launch {
             try {
                 val r = api2.myAchievements()
@@ -1203,123 +1220,246 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                 val r = api2.myStrikes()
                 if (r.success && r.data != null) strikes = r.data else strikesFailed = true
             } catch (_: Exception) { strikesFailed = true }
+            extrasLoading = false
         }
     }
     LaunchedEffect(range) { load(range) }
     LaunchedEffect(Unit) { loadExtras() }
-    DrawerScaffold("Professional Dashboard", onBack) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(7, 30, 90).forEach { d ->
-                val selected = d == range
-                Button(onClick = { range = d }, colors = ButtonDefaults.buttonColors(containerColor = if (selected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (selected) Color.White else MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("${d}d", maxLines = 1, softWrap = false) }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        if (loading) {
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
-        } else {
-            ErrorText(error)
-            if (error != null) { TextButton(onClick = { load(range); loadExtras() }) { Text("Retry") } }
-            val stats = data?.stats
-            if (data != null) {
-                Text("Earnings", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("$${"%.2f".format(data!!.earnings)}", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(12.dp))
-                data!!.monetization?.let { m ->
-                    Text("Monetization: ${if (m.status == "eligible") "Eligible" else "Locked"}", fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                    Text("${m.referrals} / ${m.requiredReferrals} referrals - ${m.progress}%", fontSize = 13.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(4.dp))
-                    if (m.referralLink.isNotBlank()) {
-                        TextButton(onClick = { clipboard.setText(AnnotatedString(m.referralLink)); copied = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (copied) "Referral link copied" else "Copy referral link", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+    DrawerScaffold("Dashboard", onBack) {
+        // v5.16: ONE scrollable column for the whole screen.
+        // DrawerScaffold's content Column does not scroll, and the old
+        // screen only scrolled the chart's LazyColumn, so the top half
+        // could be cut off on short phones. DrawerScaffold itself is
+        // left alone: other drawer screens host LazyColumns inside it,
+        // which would break under a scrolling parent.
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Segmented range pills (web: slate-100 bar, white active pill).
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Row(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    listOf(7, 30, 90).forEach { d ->
+                        val selected = d == range
+                        Box(Modifier.clip(RoundedCornerShape(6.dp)).background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent).clickable { range = d }.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                            Text("${d}d", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        }
                     }
-                    Spacer(Modifier.height(12.dp))
                 }
-                // v3.4: Weekly goals rings (GET /api/users/me/dashboard goals).
-                data!!.goals?.let { g ->
-                    Spacer(Modifier.height(12.dp))
-                    Text("Weekly goals", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    if (data!!.allGoalsMet) Text("All weekly goals met!", fontSize = 13.sp, color = FrianzoSuccess)
-                    data!!.newAchievement?.let { a ->
-                        Text("New achievement: ${a.name ?: a.key ?: "Achievement"}", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            }
+            if (loading) {
+                DashboardSkeleton()
+            } else if (error != null || data == null) {
+                Column(Modifier.fillMaxWidth().padding(vertical = 64.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Could not load dashboard. Please try again.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(onClick = { load(range); loadExtras() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White), shape = RoundedCornerShape(8.dp)) { Text("Try again", fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+                }
+            } else {
+                val stats = data!!.stats
+                // 1. Account health (strikes) — web StrikesSection.
+                // Total counts strikes + removals, like the web.
+                DashboardCard(borderColor = if (!extrasLoading && !strikesFailed && (strikes?.strikes?.size ?: 0) + (strikes?.removals?.size ?: 0) > 0) Color(0xFFFDE68A) else MaterialTheme.colorScheme.outline) {
+                    if (extrasLoading) {
+                        SkeletonBox(Modifier.fillMaxWidth().height(20.dp))
+                    } else if (strikesFailed) {
+                        Text("Account health could not be checked.", fontSize = 13.sp, color = Color.Red)
+                    } else {
+                        val totalStrikes = (strikes?.strikes?.size ?: 0) + (strikes?.removals?.size ?: 0)
+                        if (totalStrikes == 0) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("Account health", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                                DashboardPill("Good", emerald = true)
+                            }
+                        } else {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("Account health", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                                DashboardPill("Warning", emerald = false)
+                            }
+                            if (totalStrikes >= 3) {
+                                Text("Your profile is at risk of being suspended because it repeatedly didn't follow the rules.", fontSize = 12.sp, color = Color(0xFFB45309))
+                            }
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                strikes?.strikes?.forEach { s ->
+                                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(s.reason ?: s.action ?: "Strike", fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                            Text(dashboardTimeAgo(s.createdAt), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        s.severity?.let { Text(it.replaceFirstChar { c -> c.uppercase() }, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
+                                    }
+                                }
+                                strikes?.removals?.forEach { r ->
+                                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(removalLabel(r.type), fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                            Text(dashboardTimeAgo(r.createdAt), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        GoalRing("Posts", g.posts?.current ?: 0, g.posts?.target ?: 7)
-                        GoalRing("Reels", g.reels?.current ?: 0, g.reels?.target ?: 7)
-                        GoalRing("Stories", g.stories?.current ?: 0, g.stories?.target ?: 14)
+                }
+                // 2. Weekly goals — web WeeklyGoals.
+                data!!.goals?.let { g ->
+                    DashboardCard {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Weekly goals", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            if (data!!.allGoalsMet) DashboardPill("Complete", emerald = true)
+                        }
+                        data!!.newAchievement?.let { a ->
+                            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFFFFFBEB)).padding(12.dp), contentAlignment = Alignment.Center) {
+                                Text("New achievement: ${a.name ?: a.key ?: "Achievement"}", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF92400E), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                            GoalRing("Posts", g.posts?.current ?: 0, g.posts?.target ?: 7, Icons.Filled.Image)
+                            GoalRing("Reels", g.reels?.current ?: 0, g.reels?.target ?: 7, Icons.Filled.PlayArrow)
+                            GoalRing("Stories", g.stories?.current ?: 0, g.stories?.target ?: 14, Icons.Filled.History)
+                        }
+                        if (data!!.allGoalsMet) {
+                            Text("Fresh goals start Monday", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        }
+                    }
+                }
+                // 3. Achievements — web AchievementsSection: an empty list
+                // renders NOTHING (no "No achievements yet." line).
+                if (extrasLoading) {
+                    DashboardCard { SkeletonBox(Modifier.fillMaxWidth().height(96.dp)) }
+                } else if (achievementsFailed) {
+                    DashboardCard { Text("Could not load achievements.", fontSize = 13.sp, color = Color.Red) }
+                } else if (achievements.isNotEmpty()) {
+                    DashboardCard {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Achievements", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text("${achievements.size} earned", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            achievements.forEach { a ->
+                                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF0F172A)), contentAlignment = Alignment.Center) {
+                                        Icon(achievementIcon(a.icon), contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                                    }
+                                    Column(Modifier.weight(1f)) {
+                                        Text(a.name ?: a.key ?: "Achievement", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                        a.description?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // 4. Earnings.
+                DashboardCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Earnings", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("$${"%.2f".format(data!!.earnings)}", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                // 5. Monetization.
+                data!!.monetization?.let { m ->
+                    DashboardCard {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Monetization", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            DashboardPill(if (m.status == "eligible") "Eligible" else "Locked", emerald = m.status == "eligible")
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("${m.referrals} / ${m.requiredReferrals} referrals", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${m.progress}%", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                                Box(Modifier.fillMaxWidth((m.progress / 100f).coerceIn(0f, 1f)).fillMaxHeight().clip(RoundedCornerShape(999.dp)).background(Color(0xFF0F172A)))
+                            }
+                        }
+                        if (m.referralLink.isNotBlank()) {
+                            OutlinedButton(onClick = {
+                                clipboard.setText(AnnotatedString(m.referralLink))
+                                Toast.makeText(context, "Referral link copied", Toast.LENGTH_SHORT).show()
+                            }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(vertical = 8.dp)) {
+                                Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Copy referral link", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
                     }
                 }
                 if (stats != null) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Column(Modifier.weight(1f)) { Text("Views", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${stats.views}", fontSize = 20.sp, fontWeight = FontWeight.Bold); stats.viewsTrendPct?.let { Text("${if (it >= 0) "+" else ""}${it}%", fontSize = 12.sp) } }
-                        Column(Modifier.weight(1f)) { Text("Engagement", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${stats.engagement}", fontSize = 20.sp, fontWeight = FontWeight.Bold); stats.engagementBreakdown?.let { Text("Likes ${it.likes} - Comments ${it.comments} - Shares ${it.shares}", fontSize = 11.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) } }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Column(Modifier.weight(1f)) { Text("New followers", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${stats.newFollowers}", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
-                        Column(Modifier.weight(1f)) { Text("Content", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${stats.content}", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    stats.topPerforming?.let { top ->
-                        Text("Top performing content", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("${top.type} - ${top.views} views", fontSize = 13.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                        Text(top.title ?: "", fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(12.dp))
-                    }
-                    Text("Achievements (${achievements.size} earned)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    // C-B6: on a failed load say so — "No achievements
-                    // yet." would be a guess, not a fact.
-                    if (achievementsFailed) { Text("Could not load achievements.", fontSize = 13.sp, color = Color.Red) }
-                    else if (achievements.isEmpty()) { Text("No achievements yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    achievements.forEach { a ->
-                        Text(a.name ?: a.key ?: "Achievement", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                        a.description?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-                        Spacer(Modifier.height(4.dp))
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Text("Strikes", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    val totalStrikes = strikes?.total ?: 0
-                    // C-B6: a failed strikes load must not render the
-                    // green "Good" badge — no data means no verdict.
-                    if (strikesFailed) {
-                        Text("Account health could not be checked.", fontSize = 13.sp, color = Color.Red)
-                    } else if (totalStrikes == 0) {
-                        Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color(0xFFDCFCE7)).padding(horizontal = 12.dp, vertical = 6.dp)) {
-                            Text("Account health: Good", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF15803D), maxLines = 1, softWrap = false)
+                    // 6. Stats grid 2x2 — web StatCards (slate-100 cards).
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            StatCard("Views", stats.views, stats.viewsTrendPct, Modifier.weight(1f).fillMaxHeight())
+                            StatCard("Engagement", stats.engagement, stats.engagementTrendPct, Modifier.weight(1f).fillMaxHeight(), breakdown = stats.engagementBreakdown)
                         }
-                    } else {
-                        Text("$totalStrikes strike${if (totalStrikes == 1) "" else "s"}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    strikes?.strikes?.forEach { s ->
-                        Text(listOfNotNull(s.reason, s.action, s.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    strikes?.removals?.forEach { r ->
-                        Text(listOfNotNull(r.type, r.detail, r.createdAt?.take(10)).joinToString(" · "), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
-        }
-        // v3.4: daily views as a bar chart (was a plain list).
-        val daily = data?.stats?.dailyViews ?: emptyList()
-        LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-            if (daily.isNotEmpty()) {
-                item {
-                    Spacer(Modifier.height(16.dp))
-                    Text("Content views - Last $range days", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text("Total: ${daily.sumOf { it.views }}", fontSize = 13.sp)
-                    Spacer(Modifier.height(8.dp))
-                    val maxViews = (daily.maxOfOrNull { it.views } ?: 0).coerceAtLeast(1)
-                    Row(Modifier.fillMaxWidth().height(120.dp), verticalAlignment = Alignment.Bottom) {
-                        daily.forEach { d ->
-                            val h = ((d.views * 112) / maxViews).coerceAtLeast(if (d.views > 0) 2 else 0)
-                            Box(Modifier.weight(1f).padding(horizontal = 1.dp).height(h.dp).background(FrianzoBlue))
+                        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            StatCard("New followers", stats.newFollowers, stats.followersTrendPct, Modifier.weight(1f).fillMaxHeight())
+                            StatCard("Content", stats.content, stats.contentTrendPct, Modifier.weight(1f).fillMaxHeight())
                         }
                     }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(daily.first().date, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                        Text(daily[daily.size / 2].date, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                        Text(daily.last().date, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    // 7. Top performing content.
+                    DashboardCard {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Top performing content", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("This month, by views", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            stats.topPerforming?.let { top ->
+                                Text("${formatThousands(top.views)} views", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                            }
+                        }
+                        val top = stats.topPerforming
+                        if (top != null && !top.id.isNullOrBlank()) {
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { openTopContent(context, top) }.padding(4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                if (!top.mediaUrl.isNullOrBlank()) {
+                                    AsyncImage(model = top.mediaUrl, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)))
+                                } else {
+                                    Box(Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                                        Text(if (top.type == "reel") "Reel" else "Post", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                    }
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text((top.type ?: "").uppercase(Locale.US), fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                    Text(top.title ?: "", fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                }
+                                Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        } else {
+                            Text("No content views this month yet.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    // 8. Content views LINE chart (replaces the bar chart).
+                    DashboardCard {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Baseline) {
+                                Text("Content views", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Text("Last $range days", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text(formatThousands(stats.dailyViews.sumOf { it.views }), fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        val daily = stats.dailyViews
+                        if (daily.size > 1) {
+                            ViewsLineChart(daily, selectedDay) { selectedDay = it }
+                            Box(Modifier.fillMaxWidth().height(32.dp), contentAlignment = Alignment.Center) {
+                                val sel = selectedDay?.let { daily.getOrNull(it) }
+                                if (sel != null) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(formatThousands(sel.views), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(" views on ", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(sel.date, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                } else {
+                                    Text("Tap a point for daily breakdown", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        } else {
+                            Box(Modifier.fillMaxWidth().height(90.dp), contentAlignment = Alignment.Center) {
+                                Text("Not enough data yet", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("${range}d ago".uppercase(Locale.US), fontSize = 10.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Today".uppercase(Locale.US), fontSize = 10.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 }
             }
@@ -1327,18 +1467,188 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     }
 }
 
-// v3.4: one weekly-goal ring (Posts x/7, Reels x/7, Stories x/14).
+// v5.16: white bordered card — 8dp radius, 16dp padding, 12dp gap between
+// children. The border turns amber for the account-health warning state.
 @Composable
-private fun GoalRing(label: String, current: Int, target: Int) {
+private fun DashboardCard(borderColor: Color = MaterialTheme.colorScheme.outline, content: @Composable ColumnScope.() -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(8.dp), border = BorderStroke(1.dp, borderColor), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    }
+}
+
+// v5.16: status pill — emerald (Good / Eligible / Complete) or amber (Warning / Locked).
+@Composable
+private fun DashboardPill(text: String, emerald: Boolean) {
+    Box(Modifier.clip(RoundedCornerShape(999.dp)).background(if (emerald) Color(0xFFD1FAE5) else Color(0xFFFEF3C7)).padding(horizontal = 10.dp, vertical = 2.dp)) {
+        Text(text, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (emerald) Color(0xFF047857) else Color(0xFFB45309), maxLines = 1, softWrap = false)
+    }
+}
+
+// v5.16: shimmer skeleton matching the dashboard layout (web DashboardSkeleton).
+@Composable
+private fun DashboardSkeleton() {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SkeletonBox(Modifier.width(128.dp).height(28.dp))
+        SkeletonBox(Modifier.fillMaxWidth().height(96.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            SkeletonBox(Modifier.weight(1f).height(80.dp))
+            SkeletonBox(Modifier.weight(1f).height(80.dp))
+        }
+        SkeletonBox(Modifier.fillMaxWidth().height(128.dp))
+        SkeletonBox(Modifier.fillMaxWidth().height(176.dp))
+    }
+}
+
+// v5.16: one weekly-goal ring (Posts x/7, Reels x/7, Stories x/14).
+// Web WeeklyGoals Ring: 80px, 18px icon + x/y inside, green #10B981 when
+// done, blue #3B82F6 while in progress, slate-100 track.
+@Composable
+private fun GoalRing(label: String, current: Int, target: Int, icon: androidx.compose.ui.graphics.vector.ImageVector) {
     val progress = if (target > 0) (current.toFloat() / target).coerceIn(0f, 1f) else 0f
+    val done = target > 0 && current >= target
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(progress = progress, modifier = Modifier.size(64.dp), color = FrianzoBlue, trackColor = MaterialTheme.colorScheme.surfaceVariant, strokeWidth = 6.dp)
-            Text("$current/$target", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+            CircularProgressIndicator(progress = progress, modifier = Modifier.size(80.dp), color = if (done) Color(0xFF10B981) else Color(0xFF3B82F6), trackColor = MaterialTheme.colorScheme.surfaceVariant, strokeWidth = 7.dp)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface)
+                Text("$current/$target", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+            }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(label, fontSize = 13.sp, maxLines = 1, softWrap = false)
+        Spacer(Modifier.height(6.dp))
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
     }
+}
+
+// v5.16: one slate-100 stat card. Trends are coloured: + blue #2563EB,
+// − red #EF4444 (web trendClass). The engagement breakdown is 3 separate
+// rows with dividers, like the web.
+@Composable
+private fun StatCard(label: String, value: Int, trendPct: Double?, modifier: Modifier = Modifier, breakdown: EngagementBreakdown? = null) {
+    Column(modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(formatThousands(value), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        trendPct?.let { Text(formatTrend(it), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (it >= 0) Color(0xFF2563EB) else Color(0xFFEF4444), maxLines = 1, softWrap = false) }
+        breakdown?.let { b ->
+            Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                EngagementBreakdownRow("Likes", b.likes)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                EngagementBreakdownRow("Comments", b.comments)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                EngagementBreakdownRow("Shares", b.shares)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EngagementBreakdownRow(label: String, value: Int) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(formatThousands(value), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+// v5.16: line chart — same geometry as the web SVG (viewBox 0 0 320 90,
+// y = 85 − (views/max)×75, 2.5px blue #2563EB line, tappable dots;
+// selected dot is bigger and filled blue). Same dailyViews data source;
+// only the rendering changed.
+@Composable
+private fun ViewsLineChart(daily: List<DailyView>, selectedDay: Int?, onSelect: (Int?) -> Unit) {
+    val density = LocalDensity.current
+    val lineWidthPx = with(density) { 2.5.dp.toPx() }
+    val dotRadiusPx = with(density) { 4.dp.toPx() }
+    val selectedRadiusPx = with(density) { 6.dp.toPx() }
+    val ringWidthPx = with(density) { 2.dp.toPx() }
+    val maxViews = (daily.maxOfOrNull { it.views } ?: 0).coerceAtLeast(1)
+    var canvasWidth by remember { mutableStateOf(0f) }
+    Canvas(
+        Modifier.fillMaxWidth().height(90.dp)
+            .onSizeChanged { canvasWidth = it.width.toFloat() }
+            .pointerInput(daily) {
+                detectTapGestures { offset ->
+                    if (daily.size < 2 || canvasWidth <= 0f) return@detectTapGestures
+                    val step = canvasWidth / (daily.size - 1)
+                    val idx = kotlin.math.roundToInt(offset.x / step).coerceIn(0, daily.size - 1)
+                    onSelect(if (selectedDay == idx) null else idx)
+                }
+            }
+    ) {
+        val w = size.width
+        val h = size.height
+        fun x(i: Int): Float = if (daily.size > 1) (i.toFloat() / (daily.size - 1)) * w else 0f
+        fun y(v: Int): Float = ((85f - (v.toFloat() / maxViews) * 75f) / 90f) * h
+        val path = Path()
+        daily.forEachIndexed { i, d ->
+            if (i == 0) path.moveTo(x(i), y(d.views)) else path.lineTo(x(i), y(d.views))
+        }
+        drawPath(path, color = FrianzoBlue, style = Stroke(width = lineWidthPx, cap = StrokeCap.Round))
+        daily.forEachIndexed { i, d ->
+            val selected = selectedDay == i
+            val radius = if (selected) selectedRadiusPx else dotRadiusPx
+            val center = Offset(x(i), y(d.views))
+            drawCircle(color = if (selected) FrianzoBlue else Color.White, radius = radius, center = center)
+            drawCircle(color = FrianzoBlue, radius = radius, center = center, style = Stroke(width = ringWidthPx))
+        }
+    }
+}
+
+// v5.16: web timeAgo — Today / Yesterday / Nd ago (StrikesSection).
+private fun dashboardTimeAgo(iso: String?): String {
+    if (iso.isNullOrBlank()) return ""
+    val parsed = try {
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.parse(iso)
+    } catch (_: Exception) {
+        try { SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(iso.take(10)) } catch (_: Exception) { null }
+    } ?: return iso.take(10)
+    val days = ((System.currentTimeMillis() - parsed.time) / 86400000L).toInt()
+    return when {
+        days <= 0 -> "Today"
+        days == 1 -> "Yesterday"
+        else -> "${days}d ago"
+    }
+}
+
+// v5.16: web removal label — comment_removed / post_removed / else Reel removed.
+private fun removalLabel(type: String?): String = when (type) {
+    "comment_removed" -> "Comment removed"
+    "post_removed" -> "Post removed"
+    else -> "Reel removed"
+}
+
+// v5.16: web AchievementIcon keys (fire/star/heart/verified/followers/
+// reel/post, default story) mapped to the nearest Material icon already
+// used in this repo. "fire" has no Material twin here, so it falls back
+// to Star like the web's default.
+private fun achievementIcon(icon: String?): androidx.compose.ui.graphics.vector.ImageVector {
+    return when (icon?.lowercase(Locale.US)) {
+        "heart" -> Icons.Filled.Favorite
+        "verified" -> Icons.Filled.Verified
+        "followers" -> Icons.Filled.PersonAdd
+        "reel" -> Icons.Filled.PlayArrow
+        "post" -> Icons.Filled.Image
+        else -> Icons.Filled.Star
+    }
+}
+
+// v5.16: thousands separators (web toLocaleString).
+private fun formatThousands(value: Int): String = String.format(Locale.US, "%,d", value)
+
+// v5.16: web trend text — "+12%" / "-3%" (integer when whole, else 1 decimal).
+private fun formatTrend(pct: Double): String {
+    val sign = if (pct > 0) "+" else ""
+    val num = if (pct % 1.0 == 0.0) pct.toInt().toString() else String.format(Locale.US, "%.1f", pct)
+    return "$sign$num%"
+}
+
+// v5.16: top-performing row opens the post/reel through the app's own
+// deep links (AndroidManifest C-B1: /post/<id> opens the post,
+// /reels?id=<id> focuses the reel in-app; a browser is only the fallback
+// if the system does not route the frianzo.online link back to the app).
+private fun openTopContent(context: android.content.Context, top: TopPerforming) {
+    val id = top.id ?: return
+    val url = if (top.type == "reel") "https://frianzo.online/reels?id=$id" else "https://frianzo.online/post/$id"
+    try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: Exception) {}
 }
 
 // ---------- Close Friends (web: /settings-menu/close-friends) ----------
