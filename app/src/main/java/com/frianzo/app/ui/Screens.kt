@@ -1401,7 +1401,7 @@ private fun ShareTile(label: String, color: Color, letter: String, enabled: Bool
 // caption 14sp, counts 13sp, Like 28x24, Comment/Share 26x22, NO time
 // label, NO eye icon, NO star.
 @Composable
-private fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit) {
+fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var liked by remember(reel.id) { mutableStateOf(reel.liked) }

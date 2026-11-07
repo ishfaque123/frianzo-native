@@ -131,25 +131,37 @@ fun SkeletonRow(modifier: Modifier = Modifier) {
 }
 
 /**
- * A profile-header skeleton: big avatar circle, name bar, and three
- * counter bars. Shown while the profile user is loading.
+ * A profile-header skeleton: cover bar, overlapping avatar circle,
+ * name/username bars and four counter bars — the same shape as the real
+ * profile header (was: a centered circle + three bars, no cover).
+ * Shown while the profile user is loading.
  */
 @Composable
 fun SkeletonProfileHeader(modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier.fillMaxWidth().padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        SkeletonCircle(88)
-        Spacer(Modifier.height(12.dp))
-        SkeletonBox(Modifier.width(140.dp).height(18.dp))
-        Spacer(Modifier.height(8.dp))
-        SkeletonBox(Modifier.width(100.dp).height(12.dp))
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            SkeletonBox(Modifier.width(48.dp).height(16.dp))
-            SkeletonBox(Modifier.width(48.dp).height(16.dp))
-            SkeletonBox(Modifier.width(48.dp).height(16.dp))
+    Column(modifier = modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(168.dp)) {
+            SkeletonBox(Modifier.fillMaxWidth().height(128.dp))
+            Box(Modifier.align(Alignment.BottomStart).padding(start = 16.dp)) {
+                SkeletonCircle(80)
+            }
+        }
+        Column(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                SkeletonCircle(36)
+                Spacer(Modifier.width(8.dp))
+                SkeletonCircle(36)
+            }
+            Spacer(Modifier.height(12.dp))
+            SkeletonBox(Modifier.width(140.dp).height(18.dp))
+            Spacer(Modifier.height(8.dp))
+            SkeletonBox(Modifier.width(100.dp).height(12.dp))
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                SkeletonBox(Modifier.width(48.dp).height(16.dp))
+                SkeletonBox(Modifier.width(48.dp).height(16.dp))
+                SkeletonBox(Modifier.width(48.dp).height(16.dp))
+                SkeletonBox(Modifier.width(48.dp).height(16.dp))
+            }
         }
     }
 }

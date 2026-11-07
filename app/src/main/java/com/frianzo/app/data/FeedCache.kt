@@ -59,3 +59,34 @@ object FeedCache {
         }
     }
 }
+
+/**
+ * v5.17 — profile cache (like the web's getOfflineProfile). Persists the
+ * last successfully loaded profile per username ("me" for the own
+ * profile) so the profile still opens offline; the web shows the cached
+ * profile silently with no banner, and the app does the same.
+ */
+object ProfileCache {
+    private const val PREFS = "frianzo_profile"
+
+    private fun key(username: String) = "cached_profile_json_" + username
+
+    fun load(context: Context, username: String): PublicProfile? {
+        return try {
+            val json = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(key(username), null) ?: return null
+            com.google.gson.Gson().fromJson(json, PublicProfile::class.java)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun save(context: Context, username: String, profile: PublicProfile) {
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(key(username), com.google.gson.Gson().toJson(profile))
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+}

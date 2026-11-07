@@ -4863,6 +4863,10 @@ private fun isoNow(): String =
         .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
         .format(java.util.Date())
 
+// v5.17: one All-tab entry — a post or a reel — so the All tab can merge
+// both lists, pinned-first then newest, like the web profile.
+private data class ProfileAllItem(val key: String, val pinned: Boolean, val createdAt: String?, val post: Post?, val reel: Reel?)
+
 @Composable
 fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null, feedVm: FeedViewModel? = null, onUser: ((String) -> Unit)? = null, onDashboard: (() -> Unit)? = null, onOpenReel: ((String) -> Unit)? = null) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
@@ -4901,6 +4905,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var moreOpen by remember { mutableStateOf(false) }
     var showBlockConfirm by remember { mutableStateOf(false) }
     var showUnfollowConfirm by remember { mutableStateOf(false) }
+    // v5.17: profile-load retry (web has a "Try again" button).
+    var retryKey by remember { mutableStateOf(0) }
     // v3.3: strikes banner on own profile (GET /api/users/me/strikes,
     // same endpoint the Dashboard screen already uses).
     var strikes by remember { mutableStateOf<StrikesData?>(null) }
@@ -4913,11 +4919,23 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     // ProfileClient.tsx renders the Highlights row without any
     // isPrivateView check, while its reels grid is gated.)
     val isPrivateView = profile?.isPrivate == true && username != null && !following
+    // v5.17: blocked view (web hides tabs + content behind a panel).
+    val isBlockedView = blockedByMe || blockedByOther
     fun profileUrl(u: String?) = "https://frianzo.online/u/${u ?: ""}"
     fun copyProfileLink(u: String?) {
         clipboard.setText(AnnotatedString(profileUrl(u)))
         linkMsg = "Link copied"
         scope.launch { delay(2000); linkMsg = null }
+    }
+    // v5.17: keep the follower count live after follow/unfollow (web bumps
+    // it immediately); the counts endpoint is only re-read on reload.
+    fun bumpFollowers(delta: Int) {
+        val fc = followCounts
+        if (fc != null) followCounts = fc.copy(followers = (fc.followers + delta).coerceAtLeast(0))
+        else if (profile != null) {
+            val cur = profile!!.followerCount ?: profile!!.followersCount
+            if (cur != null) profile = profile!!.copy(followerCount = (cur + delta).coerceAtLeast(0))
+        }
     }
     // v5.14 (#5 Save post): load the own-profile Saved tab. In-flight
     // guard so rapid tab taps cannot stack duplicate loads; error is
@@ -4976,53 +4994,62 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     if (showEdit && profile != null) {
         EditProfileScreen(api2, profile!!, onClose = { showEdit = false }, onSaved = { updated -> profile = updated; showEdit = false }, onProfileChanged = { updated -> profile = updated })
     }
-    LaunchedEffect(username) {
+    LaunchedEffect(username, retryKey) {
         scope.launch {
-            try {
+            error = null
+            postsError = null
+            // v5.17: network first, cached profile as the offline fallback
+            // (web: getOfflineProfile). A cached profile still loads its
+            // posts/reels below; those fail silently on their own, as before.
+            var netError: String? = null
+            val netUser: PublicProfile? = try {
                 val res = if (username == null) api2.myProfile() else api2.publicProfile(username)
-                if (res.success && res.data?.user != null) {
-                    profile = res.data.user
-                    val uname = res.data.user.username
-                    if (uname != null) {
-                        // B-B5: try/finally — a throwing userPosts() used
-                        // to leave postsLoading true and the tab spinning
-                        // forever with no error or retry.
-                        postsLoading = true
-                        try {
-                            val pr = api2.userPosts(uname)
-                            if (pr.success && pr.data != null) posts = pr.data.posts ?: emptyList()
-                            else postsError = pr.error?.message
-                        } finally { postsLoading = false }
-                    }
-                    if (res.data.user.id != null) {
-                        try { val fc = api2.followCounts(res.data.user.id); if (fc.success && fc.data != null) followCounts = fc.data } catch (_: Exception) {}
-                    }
-                    if (uname != null) {
-                        try { val hr = api2.highlights(uname); if (hr.success && hr.data != null) highlights = hr.data.highlights ?: emptyList() } catch (e: Exception) { highlightError = e.message }
-                    }
-                    if (uname != null) {
-                        reelsLoading = true
-                        try { val rr = api2.userReels(uname); if (rr.success && rr.data != null) userReels = rr.data.reels } catch (_: Exception) {}
-                        reelsLoading = false
-                    }
-                    if (username == null) {
-                        try { val sr = api2.myStrikes(); if (sr.success && sr.data != null) strikes = sr.data } catch (_: Exception) {}
-                        try {
-                            val sf = api2.statusFeed()
-                            val own = sf.data?.feed?.firstOrNull { it.userId == myId || it.user?.id == myId }
-                            ownStatusItems = own?.items ?: emptyList()
-                        } catch (_: Exception) {}
-                    }
-                    if (res.data.user.id != null && res.data.user.id != myId) {
-                        try { val bs = api2.blockStatus(res.data.user.id); if (bs.success && bs.data != null) { blockedByMe = bs.data.blockedByMe; blockedByOther = bs.data.blockedByOther } } catch (_: Exception) {}
-                        val fs = api2.followStatus(res.data.user.id)
-                        if (fs.success && fs.data != null) {
-                            followStatus = fs.data.status
-                            following = fs.data.status == "following" || fs.data.status == "friends"
-                        }
-                    }
-                } else error = res.error?.message
-            } catch (e: Exception) { error = e.message }
+                if (res.success && res.data?.user != null) res.data.user
+                else { netError = res.error?.message; null }
+            } catch (e: Exception) { netError = e.message; null }
+            val user = netUser ?: ProfileCache.load(context, username ?: "me")
+            if (user == null) { error = netError ?: "Couldn't load this profile"; return@launch }
+            if (netUser != null) ProfileCache.save(context, username ?: "me", netUser)
+            profile = user
+            val uname = user.username
+            if (uname != null) {
+                // B-B5: try/finally — a throwing userPosts() used
+                // to leave postsLoading true and the tab spinning
+                // forever with no error or retry.
+                postsLoading = true
+                try {
+                    val pr = api2.userPosts(uname)
+                    if (pr.success && pr.data != null) posts = pr.data.posts ?: emptyList()
+                    else postsError = pr.error?.message
+                } finally { postsLoading = false }
+            }
+            if (user.id != null) {
+                try { val fc = api2.followCounts(user.id); if (fc.success && fc.data != null) followCounts = fc.data } catch (_: Exception) {}
+            }
+            if (uname != null) {
+                try { val hr = api2.highlights(uname); if (hr.success && hr.data != null) highlights = hr.data.highlights ?: emptyList() } catch (e: Exception) { highlightError = e.message }
+            }
+            if (uname != null) {
+                reelsLoading = true
+                try { val rr = api2.userReels(uname); if (rr.success && rr.data != null) userReels = rr.data.reels } catch (_: Exception) {}
+                reelsLoading = false
+            }
+            if (username == null) {
+                try { val sr = api2.myStrikes(); if (sr.success && sr.data != null) strikes = sr.data } catch (_: Exception) {}
+                try {
+                    val sf = api2.statusFeed()
+                    val own = sf.data?.feed?.firstOrNull { it.userId == myId || it.user?.id == myId }
+                    ownStatusItems = own?.items ?: emptyList()
+                } catch (_: Exception) {}
+            }
+            if (user.id != null && user.id != myId) {
+                try { val bs = api2.blockStatus(user.id); if (bs.success && bs.data != null) { blockedByMe = bs.data.blockedByMe; blockedByOther = bs.data.blockedByOther } } catch (_: Exception) {}
+                val fs = api2.followStatus(user.id)
+                if (fs.success && fs.data != null) {
+                    followStatus = fs.data.status
+                    following = fs.data.status == "following" || fs.data.status == "friends"
+                }
+            }
         }
     }
     // v5.14 (#5 Save post): reload saved posts every time the Saved tab
@@ -5031,6 +5058,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     LaunchedEffect(activeTab) {
         if (activeTab == "saved" && username == null) loadSavedPosts()
     }
+    // v5.17: clear the avatar/cover upload message after a while.
+    LaunchedEffect(photoMsg) { if (photoMsg != null) { delay(2500); photoMsg = null } }
     LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (username != null && onBack != null) {
             item { TextButton(onClick = onBack, modifier = Modifier.padding(horizontal = 8.dp)) { Text("Back") } }
@@ -5041,23 +5070,30 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 // overlapping the cover's bottom edge with a white ring,
                 // name/bio/counts full-width below (was: 80dp avatar in a
                 // side-by-side Row, counts squeezed into the narrow column).
-                Box(Modifier.fillMaxWidth().height(248.dp)) {
-                    if (p.coverPhotoUrl != null) AsyncImage(model = p.coverPhotoUrl, contentDescription = null, modifier = Modifier.fillMaxWidth().height(200.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                    else Box(Modifier.fillMaxWidth().height(200.dp).background(FrianzoBlueTint))
+                // v5.17: web sizes — 128dp cover, 80dp avatar, 40dp
+                // overlap (web: h-32 cover, h-20 w-20 avatar, -mt-10).
+                Box(Modifier.fillMaxWidth().height(168.dp)) {
+                    if (p.coverPhotoUrl != null) AsyncImage(model = p.coverPhotoUrl, contentDescription = null, modifier = Modifier.fillMaxWidth().height(128.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    else Box(Modifier.fillMaxWidth().height(128.dp).background(Color(0xFFE2E8F0)))
                     // v3.2 web parity: "Edit cover" pill on the cover (own profile).
                     if (username == null) {
-                        Button(onClick = { pickCover() }, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(alpha = 0.55f), contentColor = Color.White), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp), shape = RoundedCornerShape(28.dp)) { Text("Edit cover", fontSize = 12.sp, maxLines = 1, softWrap = false) }
+                        Button(onClick = { pickCover() }, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 48.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(alpha = 0.55f), contentColor = Color.White), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp), shape = RoundedCornerShape(28.dp)) { Text("Edit cover", fontSize = 12.sp, maxLines = 1, softWrap = false) }
                     }
-                    Box(Modifier.align(Alignment.BottomStart).padding(start = 16.dp).size(96.dp).clip(CircleShape).background(Color.White), contentAlignment = Alignment.Center) {
-                        FrianzoAvatar(p.profilePictureUrl, 88.dp)
+                    Box(Modifier.align(Alignment.BottomStart).padding(start = 16.dp).size(80.dp).clip(CircleShape).background(Color.White), contentAlignment = Alignment.Center) {
+                        FrianzoAvatar(p.profilePictureUrl, 72.dp)
+                        // v5.17: no photo = initial letter, like the web
+                        // (web shows the initial on slate-200).
+                        if (p.profilePictureUrl.isNullOrBlank()) {
+                            Text((p.displayName?.firstOrNull()?.toString() ?: "?").uppercase(), color = Color(0xFF475569), fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                        }
                         // v3.2 web parity: own avatar gets a + badge (change photo);
                         // other users get a green online dot, like the web.
                         if (username == null) {
-                            Box(Modifier.align(Alignment.BottomEnd).size(28.dp).clip(CircleShape).background(Color(0xFF0F172A)).border(2.dp, Color.White, CircleShape).clickable { pickAvatar() }, contentAlignment = Alignment.Center) {
-                                Icon(Icons.Filled.Add, contentDescription = "Change profile photo", tint = Color.White, modifier = Modifier.size(16.dp))
+                            Box(Modifier.align(Alignment.BottomEnd).size(32.dp).clip(CircleShape).background(Color(0xFF0F172A)).border(2.dp, Color.White, CircleShape).clickable { pickAvatar() }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Filled.Add, contentDescription = "Change profile photo", tint = Color.White, modifier = Modifier.size(12.dp))
                             }
                         } else if (p.isOnline) {
-                            Box(Modifier.align(Alignment.BottomEnd).size(18.dp).clip(CircleShape).background(FrianzoSuccess).border(2.dp, Color.White, CircleShape))
+                            Box(Modifier.align(Alignment.BottomEnd).size(16.dp).clip(CircleShape).background(FrianzoSuccess).border(2.dp, Color.White, CircleShape))
                         }
                     }
                 }
@@ -5100,7 +5136,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                     )
                                 }
                                 if (onOpenChat != null && !blockedByOther) {
-                                    IconButton(onClick = {
+                                    // v5.17: disabled when you blocked them, like the web
+                                    // (was: tappable, and the tap silently did nothing).
+                                    IconButton(enabled = !blockedByMe, onClick = {
                                         scope.launch {
                                             try {
                                                 val r = api2.createConversation(CreateConversationRequest(p.id ?: ""))
@@ -5128,18 +5166,25 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             IconButton(onClick = { copyProfileLink(p.username) }) { Icon(Icons.Filled.Link, contentDescription = "Copy profile link", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                         if (linkMsg != null) Text(linkMsg!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                        // v5.17: avatar/cover upload feedback (was set but never shown).
+                        if (photoMsg != null) Text(photoMsg!!, style = MaterialTheme.typography.bodySmall, color = if (photoMsg!!.contains("fail", ignoreCase = true)) FrianzoBadgeRed else FrianzoBlue, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (p.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
                         }
                         // v3.3: @username is tappable — copies it, like web.
-                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable {
+                        // v5.17: grey like the web (was FrianzoBlue).
+                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable {
                             clipboard.setText(AnnotatedString("@${p.username ?: ""}"))
                             linkMsg = "Username copied"
                             scope.launch { delay(2000); linkMsg = null }
                         })
-                        // v3.3: "Active now" for online other users, like web.
-                        if (username != null && p.isOnline) Text("Active now", style = MaterialTheme.typography.bodySmall, color = FrianzoSuccess, maxLines = 1, softWrap = false)
+                        // v5.17: green dot + text, like the web (was text only).
+                        if (username != null && p.isOnline) Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(FrianzoSuccess))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Active now", style = MaterialTheme.typography.bodySmall, color = FrianzoSuccess, maxLines = 1, softWrap = false)
+                        }
                         // v3.3: "Followed by X, Y and N others" — backend already
                         // returns mutualFollowers/mutualCount; names are tappable.
                         if (username != null && (p.mutualCount ?: 0) > 0) {
@@ -5154,11 +5199,12 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 if (rest > 0) Text(" and $rest others", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                             }
                         }
-                        p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis) }
+                        // v5.17: full bio, like the web (was clamped to 4 lines).
+                        p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                         // v2.9: website is a real link (was plain blue Text).
                         p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.clickable { openWebUrl(context, it) }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        // v3.3: web shows city + province; country is only the fallback.
-                        val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, p.province?.takeIf { it.isNotBlank() } ?: countryDisplayName(p.country)).joinToString(", ")
+                        // v5.17: web shows city + province only, never the country.
+                        val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, p.province?.takeIf { it.isNotBlank() }).joinToString(", ")
                         if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(8.dp))
                         // v3.1: counts as a full-width row — three equal
@@ -5169,7 +5215,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         // v3.2 web parity: FOUR columns with divider lines —
                         // Posts / Reels / Followers / Following. Reels count is
                         // real: GET /api/reels/user/{username} (web uses it too).
-                        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        // v5.17: web counts row — border-y, no dividers.
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
+                        Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             val fc = followCounts?.followers ?: (p.followerCount ?: p.followersCount)
                             val fg = followCounts?.following ?: (p.followingCount ?: p.followingsCount)
                             @Composable fun countCol(num: String, label: String, onClick: (() -> Unit)? = null) {
@@ -5183,13 +5231,11 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             // lists (no paging, no total field), so the
                             // loaded sizes ARE the true totals.
                             countCol("${posts.size}", "Posts")
-                            Box(Modifier.width(1.dp).height(32.dp).background(MaterialTheme.colorScheme.outline))
                             countCol("${userReels.size}", "Reels") { activeTab = "reels" }
-                            Box(Modifier.width(1.dp).height(32.dp).background(MaterialTheme.colorScheme.outline))
                             if (fc != null) countCol("$fc", "Followers") { if (p.id != null) followList = "followers" }
-                            Box(Modifier.width(1.dp).height(32.dp).background(MaterialTheme.colorScheme.outline))
                             if (fg != null) countCol("$fg", "Following") { if (p.id != null) followList = "following" }
                         }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                     }
                     // v3.3: amber strikes warning banner on own profile, like web.
                     val strikeList = strikes?.strikes ?: emptyList()
@@ -5219,7 +5265,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             scope.launch {
                                 try {
                                     val r = api2.toggleFollow(p.id ?: "")
-                                    if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none" }
+                                    if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none"; bumpFollowers(if (following) 1 else -1) }
                                 } catch (_: Exception) {}
                             }
                         }) { Text("Unfollow") } },
@@ -5227,7 +5273,10 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 }
                 if (username != null && p.id != null && p.id != myId) {
                     if (blockedByOther) {
-                        Text("This user is unavailable.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        // v5.17: grey pill, like the web (was plain text).
+                        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+                            Text("This user is unavailable.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        }
                     } else if (blockedByMe) {
                         OutlinedButton(onClick = {
                             scope.launch { try { if (api2.unblockUser(p.id).success) blockedByMe = false } catch (_: Exception) {} }
@@ -5238,37 +5287,24 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             scope.launch {
                                 try {
                                     val r = api2.toggleFollow(p.id)
-                                    if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none" }
+                                    if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none"; bumpFollowers(if (following) 1 else -1) }
                                 } catch (_: Exception) {}
                             }
-                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = if (following) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF0F172A), contentColor = if (following) MaterialTheme.colorScheme.onSurface else Color.White)) { Text(if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow", maxLines = 1, softWrap = false) }
+                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = if (following) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF0F172A), contentColor = if (following) MaterialTheme.colorScheme.onSurface else Color.White)) { Text(if (followStatus == "friends") "Friends" else if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow", maxLines = 1, softWrap = false) }
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                if (p.isPrivate && username != null && !following) {
-                    Text("This account is private", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
-                }
                 // v2.9: Highlights row (GET /api/highlights/user/{username}).
-                if (highlights.isNotEmpty() || username == null) {
+                // v5.17: hidden on blocked views, like the web; "New" first.
+                if (!isBlockedView && (highlights.isNotEmpty() || username == null)) {
                     Text("Highlights", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
                     Spacer(Modifier.height(8.dp))
                     LazyRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        items(highlights, key = { it.id }) { h ->
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { highlightViewer = h }) {
-                                Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
-                                    val cover = h.coverUrl ?: h.items.firstOrNull { !it.mediaUrl.isNullOrBlank() }?.mediaUrl
-                                    if (cover != null) AsyncImage(model = cover, contentDescription = null, modifier = Modifier.size(60.dp).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                                    else Text((h.title ?: "H").take(1).uppercase(), color = FrianzoBlue, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                Text(h.title ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                            }
-                        }
                         if (username == null) {
                             item {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { showHighlightCreate = true }) {
                                     // v3.2 web parity: dashed-circle "New" button.
-                                    Box(Modifier.size(60.dp).drawBehind {
+                                    Box(Modifier.size(64.dp).drawBehind {
                                         drawCircle(color = androidx.compose.ui.graphics.Color(0xFF94A3B8), style = Stroke(width = 4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f), 0f)))
                                     }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = "New highlight", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     Spacer(Modifier.height(4.dp))
@@ -5276,65 +5312,109 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 }
                             }
                         }
+                        items(highlights, key = { it.id }) { h ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { highlightViewer = h }) {
+                                Box(Modifier.size(64.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
+                                    val cover = h.coverUrl ?: h.items.firstOrNull { !it.mediaUrl.isNullOrBlank() }?.mediaUrl
+                                    if (cover != null) AsyncImage(model = cover, contentDescription = null, modifier = Modifier.size(64.dp).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                    else Text((h.title ?: "H").take(1).uppercase(), color = FrianzoBlue, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(h.title ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
                     }
                     highlightError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
                     Spacer(Modifier.height(12.dp))
                 }
-                // v3.2 web parity: All / Reels / Photos tabs, selected tab
-                // underlined in slate-900, like the web.
-                Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                    // v5.14 (#5 Save post): "Saved" is the 4th tab, own
-                    // profile only — /me/favorites has no per-user form.
-                    (listOf("all" to "All", "reels" to "Reels", "photos" to "Photos") + if (username == null) listOf("saved" to "Saved") else emptyList()).forEach { (v, label) ->
-                        val sel = activeTab == v
-                        Box(Modifier.weight(1f).clickable { activeTab = v }.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
-                            Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
+                // v5.17: blocked / private views show the web's icon panel
+                // instead of tabs + content.
+                if (isBlockedView) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.size(56.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.onSurfaceVariant, CircleShape), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Filled.Block, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(26.dp))
                         }
+                        Spacer(Modifier.height(8.dp))
+                        Text(if (blockedByMe) "You blocked this user" else "This user is unavailable", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        if (blockedByMe) Text("Unblock them to see their posts and videos.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
-                }
-                Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
-                if (activeTab == "reels") {
-                    if (isPrivateView) { /* private banner above already explains it */ }
-                    else if (reelsLoading) {
-                        // v5.12: skeleton rows while the reels tab loads.
-                        Column { repeat(3) { SkeletonRow() } }
-                    }
-                    else if (userReels.isEmpty()) Text("No reels yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
-                } else if (activeTab == "photos") {
-                    if (posts.filter { !it.imageUrl.isNullOrBlank() }.isEmpty()) Text("No photos yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
-                } else if (activeTab == "saved") {
-                    // v5.14 (#5 Save post): mirror of SavedReelsScreen —
-                    // skeleton cards while loading, error + Retry, empty
-                    // state; the cards themselves render below via the
-                    // All-tab items block.
-                    if (savedPostsLoading) Column { repeat(3) { SkeletonPostCard() } }
-                    else if (savedPostsError != null) {
-                        Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(savedPostsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed)
-                            Spacer(Modifier.height(12.dp))
-                            Button(onClick = { savedPostsError = null; loadSavedPosts() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
+                } else if (isPrivateView) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.size(56.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.onSurfaceVariant, CircleShape), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Filled.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(26.dp))
                         }
+                        Spacer(Modifier.height(8.dp))
+                        Text("This account is private", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        Text("Follow to see their photos and videos.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
-                    else if (savedPosts.isEmpty()) Text("No saved posts yet. Save a post from its menu to see it here.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
                 } else {
-                    // v5.12: skeleton post cards while the posts tab loads.
-                    if (postsLoading) Column { repeat(3) { SkeletonPostCard() } }
-                    if (postsError != null) Text(postsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp))
-                    if (!postsLoading && postsError == null && posts.isEmpty()) Text("No posts yet", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+                    // v3.2 web parity: All / Reels / Photos tabs, selected tab
+                    // underlined in slate-900, like the web.
+                    Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                        // v5.14 (#5 Save post): "Saved" is the 4th tab, own
+                        // profile only — /me/favorites has no per-user form.
+                        (listOf("all" to "All", "reels" to "Reels", "photos" to "Photos") + if (username == null) listOf("saved" to "Saved") else emptyList()).forEach { (v, label) ->
+                            val sel = activeTab == v
+                            Box(Modifier.weight(1f).clickable { activeTab = v }.padding(top = 10.dp), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
+                                    Spacer(Modifier.height(8.dp))
+                                    Box(Modifier.fillMaxWidth().height(2.dp).background(if (sel) Color(0xFF0F172A) else Color.Transparent))
+                                }
+                            }
+                        }
+                    }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
+                    if (activeTab == "reels") {
+                        if (reelsLoading) {
+                            // v5.12: skeleton rows while the reels tab loads.
+                            Column { repeat(3) { SkeletonRow() } }
+                        }
+                        else if (userReels.isEmpty()) Text("No reels yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
+                    } else if (activeTab == "photos") {
+                        if (posts.filter { !it.imageUrl.isNullOrBlank() }.isEmpty()) Text("No photos yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
+                    } else if (activeTab == "saved") {
+                        // v5.14 (#5 Save post): mirror of SavedReelsScreen —
+                        // skeleton cards while loading, error + Retry, empty
+                        // state; the cards themselves render below via the
+                        // All-tab items block.
+                        if (savedPostsLoading) Column { repeat(3) { SkeletonPostCard() } }
+                        else if (savedPostsError != null) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(savedPostsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed)
+                                Spacer(Modifier.height(12.dp))
+                                Button(onClick = { savedPostsError = null; loadSavedPosts() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
+                            }
+                        }
+                        else if (savedPosts.isEmpty()) Text("No saved posts yet. Save a post from its menu to see it here.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+                    } else {
+                        // v5.12: skeleton post cards while the posts tab loads.
+                        if (postsLoading) Column { repeat(3) { SkeletonPostCard() } }
+                        if (postsError != null) Text(postsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp))
+                        if (!postsLoading && !reelsLoading && postsError == null && posts.isEmpty() && userReels.isEmpty()) Text("No posts yet", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+                    }
                 }
             } ?: run {
                 // v5.12: skeleton profile header while the user loads.
-                if (error != null) Text(error!!, Modifier.padding(16.dp)) else SkeletonProfileHeader()
+                // v5.17: error + Retry, like the web (was: error text only).
+                if (error != null) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(error!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Spacer(Modifier.height(12.dp))
+                        Button(onClick = { error = null; retryKey++ }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Try again", maxLines = 1, softWrap = false) }
+                    }
+                } else SkeletonProfileHeader()
             }
         }
         // v3.2: Reels tab = 3-column grid of the user's real reels;
         // Photos tab = 3-column grid of posts with photos; All = post cards.
-        if (activeTab == "reels") {
+        // v5.17: grids hidden on blocked/private views (panels show instead).
+        if (!isBlockedView && !isPrivateView && activeTab == "reels") {
             // B-B4: same private gate as the Photos/All tabs.
             items(if (isPrivateView) emptyList() else userReels.chunked(3), key = { row -> row.firstOrNull()?.id ?: "empty" }) { row ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     row.forEach { reel ->
-                        Box(Modifier.weight(1f).aspectRatio(9f / 16f).clip(RoundedCornerShape(4.dp)).background(Color(0xFF1E293B)).clickable { onOpenReel?.invoke(reel.id) }) {
+                        Box(Modifier.weight(1f).aspectRatio(9f / 16f).background(Color(0xFF1E293B)).clickable { onOpenReel?.invoke(reel.id) }) {
                             if (reel.thumbnailUrl != null) AsyncImage(model = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                             Icon(Icons.Filled.PlayArrow, contentDescription = "Reel", tint = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(20.dp))
                             reel.caption?.takeIf { it.isNotBlank() }?.let { Text(it, color = Color.White, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.align(Alignment.BottomStart).padding(6.dp)) }
@@ -5349,12 +5429,12 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
-        } else if (activeTab == "photos") {
+        } else if (!isBlockedView && !isPrivateView && activeTab == "photos") {
             val photoPosts = if (profile?.isPrivate == true && username != null && !following) emptyList() else posts.filter { !it.imageUrl.isNullOrBlank() }
             items(photoPosts.chunked(3), key = { row -> row.firstOrNull()?.id ?: "empty" }) { row ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     row.forEach { post ->
-                        Box(Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(4.dp)).clickable { if (feedVm != null) detailPostId = post.id }) {
+                        Box(Modifier.weight(1f).aspectRatio(1f).clickable { if (feedVm != null) detailPostId = post.id }) {
                             AsyncImage(model = post.imageUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                         }
                     }
@@ -5362,11 +5442,19 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 }
             }
         }
-        // v3.3: All tab is pinned-first, then newest — like web, client-side only.
-        val allPosts = posts.sortedWith(compareByDescending<Post> { it.isPinned }.thenByDescending { it.createdAt ?: "" })
-        // v5.14 (#5 Save post): the Saved tab reuses this same All-tab
-        // card rendering (like/comment/detail) against savedPosts.
-        items(if (activeTab == "saved") savedPosts else if (activeTab != "all") emptyList() else if (profile?.isPrivate == true && username != null && !following) emptyList() else allPosts, key = { it.id }) { post ->
+        // v5.17: All tab merges posts + reels, pinned-first then newest —
+        // like the web profile (ProfileClient merges both lists). The Saved
+        // tab reuses the same card rendering against savedPosts.
+        val allEntries = if (activeTab == "saved") savedPosts.map { ProfileAllItem("post-" + it.id, it.isPinned, it.createdAt, it, null) }
+            else if (activeTab != "all" || isBlockedView || isPrivateView) emptyList()
+            else (posts.map { ProfileAllItem("post-" + it.id, it.isPinned, it.createdAt, it, null) } + userReels.map { ProfileAllItem("reel-" + it.id, false, it.createdAt, null, it) })
+                .sortedWith(compareByDescending<ProfileAllItem> { it.pinned }.thenByDescending { it.createdAt ?: "" })
+        items(allEntries, key = { it.key }) { entry ->
+            if (entry.reel != null) {
+                FeedReelCard(api2, entry.reel) { id -> onOpenReel?.invoke(id) }
+                return@items
+            }
+            val post = entry.post ?: return@items
             Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable { if (feedVm != null) detailPostId = post.id }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     post.content?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
@@ -5843,5 +5931,8 @@ private fun uriToImagePart(context: android.content.Context, uri: Uri, baseName:
     val ext = when (mime.substringAfter("/")) { "png" -> "png"; "webp" -> "webp"; "gif" -> "gif"; else -> "jpg" }
     val tmp = File(context.cacheDir, "$baseName.$ext")
     input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
+    // v5.17: web enforces a 5MB photo limit — same rule here, so a big
+    // phone photo fails fast with a clear message instead of a raw error.
+    if (tmp.length() > 5 * 1024 * 1024) { try { tmp.delete() } catch (_: Exception) {}; throw Exception("Photo is too large. Maximum size is 5MB.") }
     return MultipartBody.Part.createFormData("image", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
 }
