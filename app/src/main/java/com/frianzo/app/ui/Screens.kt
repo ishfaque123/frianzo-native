@@ -130,10 +130,14 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     // A-B22: after a login response says success, verify the session
     // actually works (/api/auth/me reads the cookie back) before leaving
     // the login screen. Returns true only when the session is verified.
-    suspend fun verifySessionAndEnter(user: MeData?): Boolean {
+    // Gate fix (v5.1): carry the login response's isNewUser through to the
+    // session — it is the ONLY true new-vs-existing signal (the backend
+    // returns it on Google native login and email verify). Without it the
+    // MainActivity gate cannot tell a new account from an existing one.
+    suspend fun verifySessionAndEnter(user: MeData?, isNewUser: Boolean = false): Boolean {
         return try {
             val me = api.me()
-            if (me.success) { session.markLoggedIn(me.data?.user ?: user); true }
+            if (me.success) { session.markLoggedIn(me.data?.user ?: user, isNewUser); true }
             else { message = me.error?.message ?: "Login succeeded but the session check failed. Please try again."; false }
         } catch (e: Exception) {
             message = e.message ?: "Login succeeded but the session check failed. Please try again."
@@ -231,7 +235,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                         login.data?.token?.let { cookieJar?.saveAuthToken(it) }
                         // A-B22: navigate only if /api/auth/me proves the
                         // session (cookie) actually works.
-                        if (verifySessionAndEnter(login.data?.user)) onLoggedIn()
+                        if (verifySessionAndEnter(login.data?.user, login.data?.isNewUser == true)) onLoggedIn()
                     } catch (e: GetCredentialCancellationException) {
                         // User backed out of the picker: distinct from a failure.
                         fail(Exception("Google sign-in cancelled. Tap again to try."), "Google sign-in failed")
@@ -341,7 +345,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                             if (!res.success) throw Exception(res.error?.message ?: "Wrong code")
                             // A-B22: navigate only if /api/auth/me proves the
                             // session (cookie) actually works.
-                            if (verifySessionAndEnter(res.data?.user)) onLoggedIn()
+                            if (verifySessionAndEnter(res.data?.user, res.data?.isNewUser == true)) onLoggedIn()
                         }
                     } catch (e: Exception) { fail(e, "Email login failed") }
                     finally { busy = false }

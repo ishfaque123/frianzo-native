@@ -11,7 +11,7 @@ import retrofit2.HttpException
 sealed class AuthState {
     data object Loading : AuthState()
     data object LoggedOut : AuthState()
-    data class LoggedIn(val user: MeData?) : AuthState()
+    data class LoggedIn(val user: MeData?, val isNewUser: Boolean = false) : AuthState()
     data class Error(val message: String) : AuthState()
 }
 
@@ -21,6 +21,19 @@ sealed class AuthState {
 class SessionViewModel(private val api: FrianzoApi) : ViewModel() {
     private val _state = MutableStateFlow<AuthState>(AuthState.Loading)
     val state: StateFlow<AuthState> = _state
+
+    // Gate fix (v5.1): remembers whether the CURRENT session began with a
+    // fresh login that created the account (isNewUser=true from the login
+    // response). Set ONLY by markLoggedIn (a fresh login); a cold start
+    // begins at Loading, so a restored session never carries it and goes
+    // straight to the feed. It lives outside the state object so that a
+    // refresh() — including the login-success refresh (MainActivity
+    // onLoggedIn) and Error -> Retry — never wipes it; otherwise the
+    // setup screen would flash and vanish before a new user could
+    // complete it. It becomes inert once /me says profileCompleted=true
+    // (the gate needs both isNewUser AND profileCompleted != true).
+    // Cleared on logout (markLoggedOut); the next login sets it fresh.
+    private var freshLoginIsNewUser: Boolean = false
 
     init { refresh() }
 
@@ -34,7 +47,7 @@ class SessionViewModel(private val api: FrianzoApi) : ViewModel() {
                 // failures go through sendError + ApiError status), so a
                 // 2xx success:false here is transient. Show Error + Retry
                 // instead of bouncing a valid session to the login screen.
-                _state.value = if (res.success) AuthState.LoggedIn(res.data?.user)
+                _state.value = if (res.success) AuthState.LoggedIn(res.data?.user, freshLoginIsNewUser)
                     else AuthState.Error(res.error?.message ?: "Session check failed. Try again.")
             } catch (e: HttpException) {
                 // 401-on-start fix: a clean unauthenticated /me (HTTP 401)
@@ -54,8 +67,11 @@ class SessionViewModel(private val api: FrianzoApi) : ViewModel() {
         }
     }
 
-    fun markLoggedIn(user: MeData?) { _state.value = AuthState.LoggedIn(user) }
-    fun markLoggedOut() { _state.value = AuthState.LoggedOut }
+    fun markLoggedIn(user: MeData?, isNewUser: Boolean = false) {
+        freshLoginIsNewUser = isNewUser
+        _state.value = AuthState.LoggedIn(user, isNewUser)
+    }
+    fun markLoggedOut() { freshLoginIsNewUser = false; _state.value = AuthState.LoggedOut }
     fun markError(message: String) { _state.value = AuthState.Error(message) }
 }
 

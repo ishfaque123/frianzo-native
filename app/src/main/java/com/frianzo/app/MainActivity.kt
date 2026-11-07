@@ -76,21 +76,28 @@ class MainActivity : ComponentActivity() {
                         DotsLoading()
                     }
                     is AuthState.LoggedIn -> {
-                        val user = (state as AuthState.LoggedIn).user
-                        // G1 (owner order): profile setup is MANDATORY.
-                        // A logged-in user whose profile is not complete
-                        // never reaches the feed — the only way forward is
-                        // completing and saving the profile (the setup
-                        // screen itself consumes Back). On save, the
-                        // session refreshes (/me then says
-                        // profileCompleted=true) and the feed opens.
-                        // The web only routes *new* users to /profile-setup
-                        // (isNewUser) and never blocks the feed for an
-                        // incomplete profile; this native gate is
-                        // deliberately harder, on the owner's explicit
-                        // order. Deep links still wait safely: they only
+                        val loggedIn = state as AuthState.LoggedIn
+                        val user = loggedIn.user
+                        // Gate fix (v5.1, owner complaint 2026-11-07 ~09:50
+                        // PKT): setup shows ONLY for a fresh login that
+                        // created the account (isNewUser=true from the
+                        // login response) AND profileCompleted != true.
+                        // profileCompleted ALONE is the wrong signal: it
+                        // defaults to false in the Prisma schema and is set
+                        // true only by completeProfile, so EVERY
+                        // pre-existing account (including the owner's) has
+                        // false — v5.0 trapped them all on setup. The
+                        // backend auto-assigns a username at signup, so a
+                        // blank-username gate would never show setup
+                        // either. isNewUser is the one true signal; a
+                        // restored session (/me only, no fresh login) never
+                        // carries it and goes straight to the feed.
+                        // WITHIN the new-user flow the hard gate stands:
+                        // setup consumes Back and the feed opens only after
+                        // a successful save (session refresh -> /me says
+                        // complete). Deep links still wait safely: they only
                         // route once AppShell mounts, i.e. after setup.
-                        if (user?.profileCompleted != true) {
+                        if (loggedIn.isNewUser && user?.profileCompleted != true) {
                             ProfileSetupScreen(api2) { session.refresh() }
                         } else {
                             AppShell(api, api2, user?.id, cookieJar, session, feedVm, deepLink = pendingDeepLink, onDeepLinkConsumed = { pendingDeepLink = null })
