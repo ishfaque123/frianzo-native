@@ -37,7 +37,7 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Image as FoundationImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -69,6 +69,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlipCameraAndroid
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
@@ -76,7 +77,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.composed
+import androidx.compose.ui.composed
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -514,7 +515,7 @@ fun ReelCameraScreen(
                 LazyRow(
                     Modifier.align(Alignment.BottomCenter).padding(bottom = 152.dp).fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, bottom = 4.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 4.dp),
                 ) {
                     items(CAM_EFFECTS) { ef ->
                         val sel = effectId == ef.id
@@ -524,7 +525,7 @@ fun ReelCameraScreen(
                                     .border(if (sel) 3.dp else 1.dp, if (sel) Color.White else Color.White.copy(alpha = 0.3f), CircleShape)
                                     .noRippleClickable { selectEffect(ef) },
                             ) {
-                                Image(
+                                FoundationImage(
                                     painter = painterResource(R.drawable.effect_preview_face),
                                     contentDescription = ef.name,
                                     modifier = Modifier.fillMaxSize(),
@@ -733,7 +734,7 @@ fun ReelCameraScreen(
                                         Modifier.size(64.dp).clip(RoundedCornerShape(16.dp))
                                             .border(if (sel) 3.dp else 0.dp, Color.White, RoundedCornerShape(16.dp)),
                                     ) {
-                                        Image(
+                                        FoundationImage(
                                             painter = painterResource(R.drawable.effect_preview_face),
                                             contentDescription = ef.name,
                                             modifier = Modifier.fillMaxSize(),

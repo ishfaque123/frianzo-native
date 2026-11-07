@@ -84,6 +84,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
@@ -2256,6 +2257,7 @@ private fun darkEditorFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedPlaceholderColor = Color.White.copy(alpha = 0.5f),
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, onDone: (String?) -> Unit, onClose: () -> Unit, initialCoverUri: Uri? = null, initialFilter: String? = null, initialSpeed: String? = null, onOpenCamera: () -> Unit = {}) {
     val context = LocalContext.current
@@ -2857,9 +2859,9 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                         BoxWithConstraints(Modifier.fillMaxWidth().height(64.dp)) {
                             val wDp = maxWidth
                             val wPx = with(density) { wDp.toPx() }
-                            val startX = if (durationF > 0f) trimStartF / durationF * wDp else 0.dp
-                            val endX = if (durationF > 0f) trimEndF / durationF * wDp else wDp
-                            val playX = if (durationF > 0f) currentTime.coerceIn(trimStartF, trimEndF) / durationF * wDp else 0.dp
+                            val startX = if (durationF > 0f) wDp * (trimStartF / durationF) else 0.dp
+                            val endX = if (durationF > 0f) wDp * (trimEndF / durationF) else wDp
+                            val playX = if (durationF > 0f) wDp * (currentTime.coerceIn(trimStartF, trimEndF) / durationF) else 0.dp
                             Box(Modifier.fillMaxWidth().padding(top = 24.dp).height(32.dp).clip(RoundedCornerShape(8.dp)).border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.05f)).pointerInput(Unit) {
                                 detectTapGestures(onTap = { offset ->
                                     if (durationF <= 0f || wPx <= 0f) return@detectTapGestures
