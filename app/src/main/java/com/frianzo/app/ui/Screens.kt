@@ -153,9 +153,19 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     val loginBorder = Color(0xFFE2E8F0)
     val loginGrey = Color(0xFF64748B)
     val loginDark = Color(0xFF0F172A)
-    // Logged-out: no user country is known yet, so the live site's
-    // country word defaults to Pakistan via the existing mapping.
-    val loginCountry = countryDisplayName(null) ?: "Pakistan"
+    // Country word (v5.6): the Web detects it from IP via
+    // GET /api/location/country. The app used to hardcode Pakistan here
+    // (countryDisplayName(null)), so every country showed Pakistan.
+    // Now it fetches the same endpoint; the device locale is the
+    // fallback, then Pakistan.
+    var loginCountry by remember { mutableStateOf(deviceCountryName() ?: "Pakistan") }
+    LaunchedEffect(Unit) {
+        try {
+            val res = api.locationCountry()
+            val code = res.data?.country?.trim()?.uppercase()
+            countryNameFor(code)?.let { loginCountry = it }
+        } catch (_: Exception) { /* keep the locale/Pakistan fallback */ }
+    }
 
     fun fail(e: Exception, fallback: String) {
         // Never show Retrofit's bare "HTTP 403": map an HttpException to the
@@ -357,7 +367,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                 containerColor = Color(0xFF0F172A),
                 contentColor = androidx.compose.ui.graphics.Color.White,
             ),
-        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         if (codeSent) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
@@ -468,6 +478,26 @@ internal fun openWebUrl(context: Context, url: String): Boolean {
 // A-B26: simple email shape check (client-side only; the server still
 // validates). Kept permissive on purpose — no MX/DNS check.
 private val EMAIL_REGEX = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+
+// v5.6: ISO country code -> display name, matching the Web's
+// Intl.DisplayNames mapping (US/GB have special names). Returns null
+// for a missing/invalid code so callers fall back.
+private fun countryNameFor(code: String?): String? {
+    val c = code?.trim()?.uppercase() ?: return null
+    if (!c.matches(Regex("^[A-Z]{2}$"))) return null
+    return when (c) {
+        "US" -> "the United States"
+        "GB" -> "the United Kingdom"
+        else -> try { Locale("en", c).displayCountry.takeIf { it.isNotBlank() } } catch (_: Exception) { null }
+    }
+}
+
+// v5.6: the device locale's country as a display name (login fallback
+// when the IP-based country fetch is unavailable).
+private fun deviceCountryName(): String? {
+    val iso = Locale.getDefault().country?.trim()?.uppercase()
+    return countryNameFor(iso)
+}
 
 private fun feedTime(createdAt: String?): String {
     if (createdAt.isNullOrBlank()) return ""

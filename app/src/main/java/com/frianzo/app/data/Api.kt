@@ -80,10 +80,15 @@ data class EmailCodeRequest(val email: String)
 data class EmailVerifyRequest(val email: String, val code: String, val deviceToken: String? = null)
 data class EmailVerifyData(val user: MeData?, val isNewUser: Boolean = false, val deviceToken: String?)
 data class SentData(val sent: Boolean = false)
+/** v5.6: GET /api/location/country returns { country: "PK" } (IP-based, same endpoint the Web login uses). */
+data class LocationCountryData(val country: String? = null)
 
 interface FrianzoApi {
     @GET("api/auth/google/native-config")
     suspend fun nativeConfig(): Envelope<NativeConfigData>
+
+    @GET("api/location/country")
+    suspend fun locationCountry(): Envelope<LocationCountryData>
 
     @POST("api/auth/google/native")
     suspend fun googleNative(@Body req: GoogleNativeRequest): Envelope<GoogleNativeData>
