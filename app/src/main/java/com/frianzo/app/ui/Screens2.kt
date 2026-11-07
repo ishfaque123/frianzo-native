@@ -327,6 +327,16 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
     // function — emitted before the main Column they were drawn UNDER its
     // opaque black background and invisible (the + button "did nothing").
     LaunchedEffect(uploadUri) { if (uploadUri != null) showUpload = true }
+    // v5.11: pre-warm the camera (owner: no spinner, TikTok-instant).
+    // ProcessCameraProvider.getInstance() is a singleton — calling it
+    // here starts CameraX initialisation in the background while the
+    // user is on the feed, so when + is tapped the provider is already
+    // ready and the preview binds at once. This only initialises the
+    // provider; the camera hardware starts when the camera screen binds
+    // (no battery cost while just watching reels).
+    LaunchedEffect(Unit) {
+        try { androidx.camera.lifecycle.ProcessCameraProvider.getInstance(context) } catch (_: Exception) {}
+    }
     // v5.1 (web-like reel editor): the editor + camera are full-screen
     // (web: no nav bar on /reels/new) — tell MainActivity when either
     // is open so the top bar hides; reset on unmount.

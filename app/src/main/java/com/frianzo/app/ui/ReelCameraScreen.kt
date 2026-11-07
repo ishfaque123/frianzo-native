@@ -72,7 +72,6 @@ import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -309,20 +308,6 @@ fun ReelCameraScreen(
 
     val preview = remember { Preview.Builder().build() }
     val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
-    // v5.9: the camera opens to a BLACK preview for ~0.7s while CameraX
-    // starts the stream (owner's screen recording, + tap) — the black
-    // reads as broken. Show a spinner until the preview is actually
-    // streaming, so it reads as loading. previewStreamState flips to
-    // STREAMING on the first frames (and back to IDLE on a lens switch,
-    // so the spinner returns there too).
-    var previewReady by remember { mutableStateOf(false) }
-    DisposableEffect(previewView) {
-        val observer = androidx.lifecycle.Observer<androidx.camera.view.PreviewView.StreamState> { state ->
-            previewReady = state == androidx.camera.view.PreviewView.StreamState.STREAMING
-        }
-        previewView.previewStreamState.observeForever(observer)
-        onDispose { previewView.previewStreamState.removeObserver(observer) }
-    }
     val recorder = remember { Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD)).build() }
     val videoCapture = remember { VideoCapture.withOutput(recorder) }
     val imageCapture = remember { ImageCapture.Builder().build() }
@@ -446,12 +431,6 @@ fun ReelCameraScreen(
                 modifier = Modifier.fillMaxSize(),
             )
             if (tint != Color.Transparent) Box(Modifier.fillMaxSize().background(tint))
-            // v5.9: spinner while the preview stream starts (black flash fix).
-            if (!previewReady) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Color.White)
-                }
-            }
         } else if (!cameraGranted) {
             Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Text(if (permanentlyDenied(Manifest.permission.CAMERA)) "Camera permission is off. Turn it on in Settings to use the camera." else "Camera is needed to record a reel or take a photo. (Microphone is only needed for video.)", color = Color.White, fontSize = 15.sp)
