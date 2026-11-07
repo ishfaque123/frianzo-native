@@ -40,6 +40,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -62,20 +64,26 @@ import android.media.ToneGenerator
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.frianzo.app.data.*
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -300,7 +308,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
             if (me.success && me.data?.user != null) myAvatar = me.data.user.profilePictureUrl
         } catch (_: Exception) {}
     }
-    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, myAvatar = myAvatar, initialTotal = reelCommentCounts[reel.id] ?: reel.commentCount, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }, onCommentDeleted = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) - 1).coerceAtLeast(0)) }) }
+    reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, myAvatar = myAvatar, initialTotal = reelCommentCounts[reel.id] ?: reel.commentCount, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }, onCommentDeleted = { d -> reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) - d).coerceAtLeast(0)) }) }
     // v4.8: the camera / upload / saved overlays moved to the end of this
     // function — emitted before the main Column they were drawn UNDER its
     // opaque black background and invisible (the + button "did nothing").
@@ -1521,7 +1529,7 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
 // replies: [...] }], pagination: { hasMore, nextCursor } }.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = null, myAvatar: String? = null, initialTotal: Int = -1, onClose: () -> Unit, onCommentAdded: () -> Unit = {}, onCommentDeleted: () -> Unit = {}) {
+private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = null, myAvatar: String? = null, initialTotal: Int = -1, onClose: () -> Unit, onCommentAdded: () -> Unit = {}, onCommentDeleted: (Int) -> Unit = {}) {
     var comments by remember { mutableStateOf<List<ReelComment>>(emptyList()) }
     var draft by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1537,12 +1545,20 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
     // R9: the sheet shows a spinner until the first load finishes, so
     // "0 comments" never flashes while comments are still loading.
     var loadingFirst by remember { mutableStateOf(true) }
+    // v4.8 comments fixes: sending state (U-B6), send error shown near the
+    // input (U-B9), delete confirmation feedback (U-B17), just-sent scroll
+    // target (C-A5), one-popup-at-a-time id (U-B15).
+    var sending by remember { mutableStateOf(false) }
+    var sendError by remember { mutableStateOf<String?>(null) }
+    var deleteFeedback by remember { mutableStateOf<String?>(null) }
+    var justSent by remember { mutableStateOf(false) }
+    var openPopupId by remember { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
+    val inputFocus = remember { FocusRequester() }
     var expandedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    // Follow status per comment author (GET /api/follows/{id}/status) so
-    // the bubble can show a real "Follow Back" pill, like post comments.
-    var followStates by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     val scope = rememberCoroutineScope()
     fun load(cursor: String? = null) {
+        error = null
         if (cursor != null) loadingMore = true else loadingFirst = true
         scope.launch {
             try {
@@ -1560,67 +1576,106 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
         }
     }
     LaunchedEffect(reel.id) { load() }
+    // C-A2 (web rule): focus the input 300ms after the sheet opens.
+    LaunchedEffect(Unit) { delay(300); inputFocus.requestFocus() }
+    // C-A5 (web rule): after a send, scroll to the bottom of the loaded
+    // list so the new comment is visible. (If the reel has more than one
+    // page of comments, the new comment may sit on a later page — the web
+    // appends it locally; here the list reloads from page 1.)
     LaunchedEffect(comments) {
-        val authorIds = (comments.map { it.author } + comments.flatMap { c -> c.replies.map { it.author } })
-            .mapNotNull { it?.id }.toSet()
-        for (aid in authorIds) {
-            if (aid in followStates || aid == myId) continue
-            scope.launch {
-                try {
-                    val fs = api2.followStatus(aid)
-                    if (fs.success && fs.data != null) followStates = followStates + (aid to (fs.data.status ?: "none"))
-                } catch (_: Exception) {}
-            }
+        if (justSent) {
+            justSent = false
+            val last = listState.layoutInfo.totalItemsCount - 1
+            if (last >= 0) listState.animateScrollToItem(last)
         }
     }
-    ModalBottomSheet(onDismissRequest = onClose) {
+    // S-4 (web rule): load the next page automatically when the user
+    // scrolls within 3 items of the end. The "Load more" button stays as
+    // a fallback below.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+            .collect { lastIdx ->
+                val totalItems = listState.layoutInfo.totalItemsCount
+                if (hasMore && !loadingMore && !loadingFirst && lastIdx != null && totalItems > 0 && lastIdx >= totalItems - 3) load(nextCursor)
+            }
+    }
+    ModalBottomSheet(onDismissRequest = onClose, shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)) {
         // Same 0.85f sheet height as the post comments sheet: one shared UI.
         // v4.8 (owner): the comment input went behind the keyboard —
         // nothing in this sheet handled IME insets (no imePadding
         // anywhere in the app, no windowSoftInputMode in the
         // manifest, activity is not edge-to-edge). imePadding lifts
         // the input above the keyboard while typing.
-        Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).imePadding().padding(horizontal = 16.dp)) {
+        // U-B18: cap the sheet content at 576dp wide on wide screens
+        // (web max-w-xl), centred; phones are unchanged (full width).
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(Modifier.fillMaxWidth().widthIn(max = 576.dp).fillMaxHeight(0.85f).imePadding().padding(horizontal = 16.dp)) {
             // v4.0 (audit #2): web header is "Comments" with the
             // count ("N comments" / "Join the conversation") below
             // it as a subtitle — not the count alone.
-            Box(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            Box(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Comments", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                    Text(if (total > 0) "$total comments" else "Join the conversation", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Text("Comments", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                    Text(if (total > 0) "$total comments" else "Join the conversation", fontSize = 11.sp, color = Color(0xFF94A3B8), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
                 IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd)) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider(color = FrianzoBorder)
-            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-                if (loadingFirst) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { DotsLoading() } }
-                else if (comments.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { Text("No comments yet. Be the first to comment.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+            if (deleteFeedback != null) Text(deleteFeedback!!, fontSize = 12.sp, color = Color(0xFF16A34A), modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textAlign = TextAlign.Center)
+            LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp)) {
+                if (loadingFirst) { items(4) { ReelCommentSkeletonRow() } }
+                else if (comments.isEmpty() && error == null) item {
+                    // C-A6 (web rule): icon + bold title + grey subtitle.
+                    Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFFF1F5F9)), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(22.dp), tint = Color(0xFF64748B))
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text("No comments yet", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E293B))
+                        Spacer(Modifier.height(4.dp))
+                        Text("Be the first to start the conversation.", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                    }
+                }
                 items(comments, key = { it.id }) { c ->
-                    ReelCommentRow(api2, c, reel, myId, followStatus = followStates[c.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0); onCommentDeleted() })
+                    ReelCommentRow(api2, c, reel, myId, popupOpenId = openPopupId, onPopupOpened = { openPopupId = it }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { val d = 1 + c.replies.size; total = (total - d).coerceAtLeast(0); onCommentDeleted(d); deleteFeedback = "Comment deleted."; scope.launch { delay(2000); deleteFeedback = null } })
                     val replies = c.replies
                     if (replies.isNotEmpty()) {
                         val isExpanded = c.id in expandedIds
-                        Column(Modifier.fillMaxWidth().padding(start = 40.dp, top = 2.dp)) {
+                        // U-B4 (web rule): thread line — 20dp indent + a 2dp
+                        // light left border, so a reply is visibly attached
+                        // to its parent (was: 40dp indent, no line).
+                        Row(Modifier.fillMaxWidth().padding(start = 20.dp, top = 4.dp).height(IntrinsicSize.Min)) {
+                            Box(Modifier.width(2.dp).fillMaxHeight().background(Color(0xFFE2E8F0).copy(alpha = 0.6f)))
+                            Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             if (!isExpanded) {
                                 TextButton(onClick = { expandedIds = expandedIds + c.id }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)) { Text("View ${replies.size} ${if (replies.size == 1) "reply" else "replies"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                             } else {
                                 replies.forEach { r ->
-                                    ReelCommentRow(api2, r, reel, myId, isReply = true, parentAuthor = c.author, followStatus = followStates[r.author?.id], onFollowChange = { aid, st -> followStates = followStates + (aid to st) }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0); onCommentDeleted() })
+                                    ReelCommentRow(api2, r, reel, myId, isReply = true, parentAuthor = c.author, popupOpenId = openPopupId, onPopupOpened = { openPopupId = it }, onReply = { replyTo = it }, onChanged = { load() }, onDeleted = { total = (total - 1).coerceAtLeast(0); onCommentDeleted(1); deleteFeedback = "Comment deleted."; scope.launch { delay(2000); deleteFeedback = null } })
                                 }
                                 TextButton(onClick = { expandedIds = expandedIds - c.id }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)) { Text("Hide replies", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
+                            }
                             }
                         }
                     }
                 }
-                if (hasMore) item {
-                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        if (loadingMore) DotsLoading() else OutlinedButton(onClick = { load(nextCursor) }, modifier = Modifier.height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(28.dp)) { Text("Load more comments", maxLines = 1, softWrap = false) }
+                if (hasMore) {
+                    if (loadingMore) { items(2) { ReelCommentSkeletonRow() } }
+                    else item {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                            OutlinedButton(onClick = { load(nextCursor) }, modifier = Modifier.height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(28.dp)) { Text("Load more comments", maxLines = 1, softWrap = false) }
+                        }
                     }
                 }
-                if (error != null) item { Text(error!!, fontSize = 13.sp, color = Color.Red, modifier = Modifier.padding(vertical = 8.dp)) }
+                if (error != null) item {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(error!!, fontSize = 13.sp, color = Color.Red, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { load() }) { Text("Retry", fontSize = 13.sp, color = FrianzoBlue) }
+                    }
+                }
             }
             if (replyTo != null) {
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(FrianzoBlueTint).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFFF8FAFC)).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = androidx.compose.ui.text.buildAnnotatedString {
                             append("Replying to ")
@@ -1629,28 +1684,29 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f)
                     )
                     // v3.9 (live-web audit #2): web uses a "Cancel" TEXT button, not an x.
-                    TextButton(onClick = { replyTo = null }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    TextButton(onClick = { replyTo = null; draft = "" }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 Spacer(Modifier.height(8.dp))
             }
-            // B-B30: the 550ms long-press-to-like is undiscoverable — say so.
-            Text("Tip: long-press Like to like a comment instantly", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp))
+            // U-B8: divider above the input so it does not blend into the list.
+            HorizontalDivider(color = FrianzoBorder)
             Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 FrianzoAvatar(myAvatar, 32.dp)
                 Spacer(Modifier.width(8.dp))
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { if (it.length <= 500) draft = it },
-                    placeholder = { Text("Write a comment...") },
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    placeholder = { Text(if (replyTo != null) "Write a reply..." else "Write a comment...", fontSize = 14.sp) },
+                    modifier = Modifier.weight(1f).heightIn(min = 40.dp).focusRequester(inputFocus),
                     maxLines = 4,
                     singleLine = false,
-                    shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
-                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.White, unfocusedContainerColor = Color.White, focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder),
+                    textStyle = TextStyle(fontSize = 14.sp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color(0xFFF8FAFC), unfocusedContainerColor = Color(0xFFF8FAFC), focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder),
                 )
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    enabled = draft.isNotBlank(),
+                    enabled = draft.isNotBlank() && !sending,
                     modifier = Modifier.height(FrianzoUi.ButtonHeight),
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
@@ -1660,26 +1716,51 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                         // restores the draft AS a reply, not as a new
                         // top-level comment.
                         val text = draft; val parent = replyTo?.id; val savedReply = replyTo; draft = ""; replyTo = null
+                        sending = true; sendError = null
                         scope.launch {
                             try {
                                 val res = api2.addReelComment(reel.id, CommentCreateRequest(text, parent))
                                 if (res.success) {
                                     // v3.8 (F16): short send sound (web rule).
                                     try { val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60); tg.startTone(ToneGenerator.TONE_PROP_BEEP, 120); scope.launch { delay(300); try { tg.release() } catch (_: Exception) {} } } catch (_: Exception) {}
-                                    total += 1; onCommentAdded(); load()
-                                } else { error = friendlyReelsError(res.error?.message, "Could not send comment"); draft = text; replyTo = savedReply }
-                            } catch (e: Exception) { error = friendlyReelsError(e, "Could not send comment"); draft = text; replyTo = savedReply }
+                                    total += 1; onCommentAdded(); justSent = true; if (parent != null) expandedIds = expandedIds + parent; load()
+                                } else { sendError = friendlyReelsError(res.error?.message, "Could not send comment"); draft = text; replyTo = savedReply }
+                            } catch (e: Exception) { sendError = friendlyReelsError(e, "Could not send comment"); draft = text; replyTo = savedReply }
+                            sending = false
                         }
                     },
-                ) { Text("Send", maxLines = 1, softWrap = false) }
+                ) { Text(if (sending) "..." else "Send", maxLines = 1, softWrap = false) }
             }
+            // U-B9: a failed send shows here, next to the input — not at
+            // the bottom of the list. C-A4: x/500 counter near the limit.
+            if (sendError != null) Text(sendError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
+            if (draft.length > 440) Text("${draft.length}/500", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+            Spacer(Modifier.height(8.dp).navigationBarsPadding())
+        }
+        }
+    }
+}
+
+// C-A7 (web rule): skeleton rows while comments load (web: CommentSkeleton
+// — 36px avatar + 3 grey bars, animate-pulse). Static here: this file
+// imports no infinite-transition API, so the bars do not pulse.
+@Composable
+private fun ReelCommentSkeletonRow() {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Box(Modifier.size(32.dp).clip(CircleShape).background(Color(0xFFE2E8F0)))
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Box(Modifier.width(120.dp).height(12.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFFE2E8F0)))
             Spacer(Modifier.height(8.dp))
+            Box(Modifier.fillMaxWidth().height(12.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFFF1F5F9)))
+            Spacer(Modifier.height(6.dp))
+            Box(Modifier.width(180.dp).height(12.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFFF1F5F9)))
         }
     }
 }
 
 @Composable
-private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: String?, isReply: Boolean = false, parentAuthor: Author? = null, followStatus: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, onReply: (ReelComment) -> Unit, onChanged: () -> Unit, onDeleted: () -> Unit = {}) {
+private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: String?, isReply: Boolean = false, parentAuthor: Author? = null, popupOpenId: String? = null, onPopupOpened: (String?) -> Unit = {}, onReply: (ReelComment) -> Unit, onChanged: () -> Unit, onDeleted: () -> Unit = {}) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf(false) }
@@ -1709,6 +1790,19 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
     var reactionBusy by remember { mutableStateOf(false) }
     // B-B30: "Copied" feedback for the Copy menu item (was: silent).
     var copied by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    val editFocus = remember { FocusRequester() }
+    // U-B15 (web rule: one popup at a time — the web dispatches
+    // 'reel-comment-popup-open' and every other row closes): the dialog
+    // owns the id of the row whose menu/picker is open.
+    val popupBlocked = popupOpenId != null && popupOpenId != c.id
+    fun claimPopup() { onPopupOpened(c.id) }
+    fun releasePopup() { onPopupOpened(null) }
+    fun openMenu() { claimPopup(); pickerOpen = false; menuOpen = true }
+    fun togglePicker() { if (pickerOpen) { pickerOpen = false; releasePopup() } else { claimPopup(); pickerOpen = true } }
+    LaunchedEffect(popupOpenId) { if (popupOpenId != null && popupOpenId != c.id) { menuOpen = false; pickerOpen = false } }
+    // U-B19 (web rule): the edit field takes focus when editing starts.
+    LaunchedEffect(editing) { if (editing) { delay(100); editFocus.requestFocus() } }
     fun applyReaction(type: String) {
         if (reactionBusy) return
         val prevReaction = localReaction; val prevCount = localCount
@@ -1725,40 +1819,30 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
     }
     val isOwner = myId != null && c.author?.id == myId
     val canDelete = isOwner || (myId != null && reel.author?.id == myId)
-    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) {
+    // S-5 + C-A8 (web rule): a 550ms long-press anywhere on the comment
+    // opens its menu (the web's startLongPress timer; moving cancels it).
+    // Over the Like/Reply/menu buttons the press is consumed by the
+    // button itself — the Like button's own long-press also opens the
+    // menu (see below), so the menu is reachable from the comment body.
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp).pointerInput(Unit) { detectTapGestures(onLongPress = { if (!editing && !popupBlocked) openMenu() }) }) {
         Row(verticalAlignment = Alignment.Top) {
-            FrianzoAvatar(c.author?.profilePictureUrl, if (isReply) 28.dp else 32.dp)
+            FrianzoAvatar(c.author?.profilePictureUrl, 32.dp)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                // Shared bubble with post comments: grey bubble, bold name +
-                // Follow Back pill, text inside. One timestamp only, in the
-                // action row below — never twice, same as post comments.
-                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else Color(0xFFF0F2F5)).padding(horizontal = 12.dp, vertical = 10.dp)) {
-                    Column {
+                // U-B1 (web rule): NO bubble — the comment is plain text
+                // on the sheet background (was: a grey rounded box).
+                Column(Modifier.fillMaxWidth()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(c.author?.displayName ?: c.author?.username ?: "User", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                            if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
-                            val authorId = c.author?.id
-                            if (authorId != null && authorId != myId && followStatus != null && followStatus != "none" && followStatus != "self") {
-                                Spacer(Modifier.width(6.dp))
-                                val isFollowBack = followStatus == "follow_back"
-                                // B-B9: status display ONLY. The web
-                                // reel-comments modal has no follow pill at
-                                // all and never toggles follow from a
-                                // comment — tapping this used to silently
-                                // unfollow the author.
-                                Box(
-                                    Modifier.clip(RoundedCornerShape(12.dp))
-                                        .background(if (isFollowBack) FrianzoBlueTint else MaterialTheme.colorScheme.surfaceVariant)
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                                ) {
-                                    Text(if (isFollowBack) "Follow Back" else "Following", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (isFollowBack) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                                }
-                            }
+                            Text(c.author?.displayName ?: c.author?.username ?: "User", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            if (c.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+                            // U-B3 (web rule): the timestamp sits right
+                            // after the name, 11sp grey (was: detached at
+                            // the far right of the action row).
+                            Text(reelTimeAgo(c.createdAt), fontSize = 11.sp, color = Color(0xFF94A3B8), maxLines = 1, softWrap = false, modifier = Modifier.padding(start = 6.dp))
                         }
                         if (editing) {
                             Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedTextField(value = editDraft, onValueChange = { if (it.length <= 500) editDraft = it }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(10.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder))
+                                OutlinedTextField(value = editDraft, onValueChange = { if (it.length <= 500) editDraft = it }, modifier = Modifier.weight(1f).focusRequester(editFocus), singleLine = true, shape = RoundedCornerShape(10.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder))
                                 TextButton(onClick = { scope.launch { try { val r = api2.editReelComment(c.id, mapOf("content" to editDraft)); if (r.success) { editing = false; editError = null; onChanged() } else editError = friendlyReelsError(r.error?.message, "Could not save edit") } catch (e: Exception) { editError = friendlyReelsError(e, "Could not save edit") } } }) { Text("Save", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false) }
                                 TextButton(onClick = { editing = false; editDraft = c.content ?: "" }) { Text("Cancel", fontSize = 13.sp, maxLines = 1, softWrap = false) }
                             }
@@ -1770,43 +1854,59 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                                     if (prefix.isNotEmpty()) { withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append(prefix) } }
                                     append(c.content ?: "")
                                 },
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
                             )
                         }
-                    }
                 }
                 Spacer(Modifier.height(4.dp))
                 if (pickerOpen) {
-                    Row(Modifier.fillMaxWidth().padding(start = 8.dp, bottom = 4.dp)) {
-                        ReactionPickerPill(32.dp, listOf("like", "love", "haha", "wow", "sad", "angry")) { type -> pickerOpen = false; applyReaction(type) }
+                    // U-B5 (web rule): the picker FLOATS above the Like
+                    // button (web: absolute bottom-full left-0 mb-2)
+                    // instead of pushing the list down (was: an in-flow Row).
+                    // It is anchored to this row: if the list scrolls while
+                    // it is open it stays where it was — it closes on pick,
+                    // on an outside tap, or when another row opens a popup.
+                    Popup(
+                        alignment = Alignment.BottomStart,
+                        offset = with(LocalDensity.current) { IntOffset(8.dp.roundToPx(), (-44).dp.roundToPx()) },
+                        onDismissRequest = { pickerOpen = false; releasePopup() },
+                        properties = PopupProperties(focusable = false),
+                    ) {
+                        ReactionPickerPill(32.dp, listOf("like", "love", "haha", "wow", "sad", "angry")) { type -> pickerOpen = false; releasePopup(); applyReaction(type) }
                     }
                 }
                 Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.pointerInput(c.id) {
                         detectTapGestures(
-                            onLongPress = { applyReaction("like") },
-                            onTap = { pickerOpen = !pickerOpen },
+                            // C-A8 (web rule): a long-press on Like opens
+                            // the comment MENU (was: liked directly — the
+                            // old Tip line taught that wrong behaviour).
+                            // Tap still toggles the picker (web rule).
+                            onLongPress = { if (!popupBlocked) openMenu() },
+                            onTap = { togglePicker() },
                         )
                     }) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
-                            if (localReaction != null) { ReactionIcon(localReaction, 16.dp); Spacer(Modifier.width(4.dp)) }
-                            Text("Like", fontSize = 13.sp, fontWeight = if (localReaction != null) FontWeight.SemiBold else FontWeight.Normal, color = if (localReaction != null) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            // U-B11 (web rule): a reacted comment shows the
+                            // emoji only — no "Like" word beside it.
+                            if (localReaction != null) { ReactionIcon(localReaction, 16.dp) }
+                            else Text("Like", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                         }
                     }
+                    // U-B10 (web rule): the count sits right after Like
+                    // (was: after Reply, before the timestamp).
+                    if (localCount > 0) { Spacer(Modifier.width(6.dp)); Text(reelCount(localCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
-                    if (localCount > 0) { Spacer(Modifier.width(12.dp)); Text(reelCount(localCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     Spacer(Modifier.weight(1f))
-                    Text(reelTimeAgo(c.createdAt), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(8.dp))
                     Box {
-                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; editDraft = c.content ?: ""; editing = true })
-                            if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; showDelete = true })
-                            DropdownMenuItem(text = { Text("Reply") }, onClick = { menuOpen = false; onReply(c) })
-                            DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")); copied = true; scope.launch { delay(2000); copied = false } })
-                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = { menuOpen = false; showReport = true })
+                        IconButton(onClick = { if (!popupBlocked) openMenu() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        DropdownMenu(expanded = menuOpen && !popupBlocked, onDismissRequest = { menuOpen = false; releasePopup() }) {
+                            if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; releasePopup(); editDraft = c.content ?: ""; editing = true })
+                            if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; releasePopup(); showDelete = true })
+                            DropdownMenuItem(text = { Text("Reply") }, onClick = { menuOpen = false; releasePopup(); onReply(c) })
+                            DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; releasePopup(); clipboard.setText(AnnotatedString(c.content ?: "")); copied = true; scope.launch { delay(2000); copied = false } })
+                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = { menuOpen = false; releasePopup(); showReport = true })
                         }
                     }
                 }
@@ -1852,16 +1952,19 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
             title = { Text("Delete comment?") },
             text = { Text("This can't be undone.") },
             confirmButton = {
-                TextButton(onClick = {
-                    showDelete = false
-                    scope.launch {
-                        try {
-                            val r = api2.deleteReelComment(c.id)
-                            if (r.success) { onChanged(); onDeleted() }
-                            else deleteError = friendlyReelsError(r.error?.message, "Could not delete comment")
-                        } catch (e: Exception) { deleteError = friendlyReelsError(e, "Could not delete comment") }
-                    }
-                }) { Text("Delete", color = Color.Red) }
+                TextButton(
+                    enabled = !deleting,
+                    onClick = {
+                        deleting = true
+                        scope.launch {
+                            try {
+                                val r = api2.deleteReelComment(c.id)
+                                if (r.success) { showDelete = false; deleting = false; onChanged(); onDeleted() }
+                                else { showDelete = false; deleting = false; deleteError = friendlyReelsError(r.error?.message, "Could not delete comment") }
+                            } catch (e: Exception) { showDelete = false; deleting = false; deleteError = friendlyReelsError(e, "Could not delete comment") }
+                        }
+                    },
+                ) { Text(if (deleting) "Deleting..." else "Delete", color = Color.Red) }
             },
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
         )
