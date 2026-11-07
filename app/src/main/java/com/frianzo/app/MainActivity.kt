@@ -177,6 +177,10 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var openPostId by rememberSaveable { mutableStateOf<String?>(null) }
     var focusReelId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingReelUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // v5.1 (web-like reel editor): the editor + camera are full-screen
+    // (web: no nav bar on /reels/new) — ReelsScreen reports when either
+    // is open and the top bar hides until it closes.
+    var reelsEditorOpen by remember { mutableStateOf(false) }
     // v3.6: context must be declared BEFORE reelsSession uses it
     // (v3.5 build failed: MainActivity.kt:112 used it first).
     val context = LocalContext.current
@@ -287,6 +291,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         // The full chrome returns when an overlay opens (profile, chat,
         // drawer screen, post detail), because those need it.
         topBar = {
+            if (!reelsEditorOpen) {
             val overlayOpen = drawerScreen != null || openChat != null || openProfile != null || openPostId != null
             if (overlayOpen || tab != Tab.REELS) {
             Column {
@@ -370,6 +375,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                     }
                 }
             }
+            }
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
@@ -380,7 +386,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
                 tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
-                tab == Tab.REELS -> ReelsScreen(api2, myId, session = reelsSession, onAuthor = { username -> openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null })
+                tab == Tab.REELS -> ReelsScreen(api2, myId, session = reelsSession, onAuthor = { username -> openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null }, onEditorOpenChange = { reelsEditorOpen = it })
                 tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED }, onPostAsReel = { uri -> pendingMedia = null; pendingReelUri = uri; tab = Tab.REELS })
                 tab == Tab.CHAT -> ChatListScreen(api2, myId) { id, name -> openChat = id to name }
                 tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name })

@@ -20,6 +20,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
@@ -34,8 +35,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
@@ -68,6 +75,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -84,15 +92,20 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.frianzo.app.data.*
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.saveable.rememberSaveable
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
+import okhttp3.MediaType
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
+import okio.BufferedSink
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
+import kotlin.math.roundToInt
 
 // v3.6 (U2): never show raw exception / DNS text to users in reels.
 // Map any failure to a short friendly sentence; the raw message stays
@@ -181,7 +194,7 @@ private fun ReelLoadingSpinner() {
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}) {
+fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}, onEditorOpenChange: (Boolean) -> Unit = {}) {
     val context = LocalContext.current
     // Hoisted session state (R2): these survive leaving Reels.
     var reels by session::reels
@@ -313,6 +326,27 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
     // function — emitted before the main Column they were drawn UNDER its
     // opaque black background and invisible (the + button "did nothing").
     LaunchedEffect(uploadUri) { if (uploadUri != null) showUpload = true }
+    // v5.1 (web-like reel editor): the editor + camera are full-screen
+    // (web: no nav bar on /reels/new) — tell MainActivity when either
+    // is open so the top bar hides; reset on unmount.
+    LaunchedEffect(showUpload, showCamera) { onEditorOpenChange(showUpload || showCamera) }
+    DisposableEffect(Unit) { onDispose { onEditorOpenChange(false) } }
+    // v5.1 (web handleUpload): the daily limit is checked at the "+"
+    // tap, before the camera opens — not inside the editor. A failed
+    // status fetch opens the camera anyway (fail open; the server still
+    // enforces the limit at Post) — the web blocks on fetch failure,
+    // which would lock out reel creation on any status blip.
+    fun onCreateReelTap() {
+        scope.launch {
+            val remaining = try { api2.myReelStatus().data?.remaining } catch (_: Exception) { null }
+            if (remaining != null && remaining <= 0) {
+                notice = "You've reached your reel limit for the last 24 hours. Please try again later."
+                scope.launch { delay(3000); notice = null }
+            } else {
+                showCamera = true
+            }
+        }
+    }
     // v3.8 (F10): tab switches go through switchFeed() (cached restore);
     // this only loads the first tab on first composition.
     LaunchedEffect(Unit) { if (reels.isEmpty()) load() }
@@ -509,7 +543,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false, modifier = Modifier.noRippleClickable { switchFeed(v) })
                 }
             }
-            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).noRippleClickable { showUpload = true }, contentAlignment = Alignment.Center) {
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).noRippleClickable { onCreateReelTap() }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(12.dp))
             }
         }
@@ -1979,373 +2013,947 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
 // No code in this file may reference okio.buffer, Okio.buffer, .buffer(),
 // ForwardingSink or BufferedSink.
 
-// v3.8 (F22): one filter chip, reused by the grouped filter picker.
-@Composable
-private fun FilterChip(value: String, label: String, selected: String, onSelect: (String) -> Unit) {
-    val sel = selected == value
-    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { onSelect(value) }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-        Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+// ---------- REEL UPLOAD: web-like black editor (POST /api/reels) ----------
+// v5.1 (owner: "Web jaisa editor banao"): the old white scrolling form is
+// replaced by the web's black full-screen editor (/reels/new): fixed
+// header (X + "New Reel" + "Post" pill with real upload %), video preview
+// in the middle (live speed, flip/rotate, 12% letterbox, text overlay),
+// bottom panel (caption + 5-icon toolbar) and bottom sheets for Edit /
+// Filters / Templates / Text / Speed / Cover / Trim / Crop. Flow (web):
+// the video is picked/recorded FIRST (camera page / gallery) and the
+// editor only opens with a video; the + tap checks the daily limit
+// first. No manual category picker — AI only (owner order 2026-10-16).
+// Filter groups fixed to the web's (Cool is Trending, not Portrait).
+// NOT done (honest): live filter on the MAIN preview — the preview is a
+// VideoView, which has no filter API; the only real path is adding
+// media3 + media3-effect and rewriting the player, which cannot be
+// verified in the sandbox and risks the build. The filter IS applied
+// server-side on Post (as before), and the Filters sheet shows the real
+// filter on a video frame (ColorMatrix), so the posted reel is correct.
+
+private data class ReelEditorFilter(val id: String, val name: String, val cat: String)
+
+// Web REEL_FILTERS (src/app/reels/new/page.tsx): Trending = Normal,
+// Vivid, Warm, Cool; Portrait = Beauty only; B&W = B&W, Vintage.
+private val REEL_EDITOR_FILTERS = listOf(
+    ReelEditorFilter("normal", "Normal", "trending"),
+    ReelEditorFilter("vivid", "Vivid", "trending"),
+    ReelEditorFilter("warm", "Warm", "trending"),
+    ReelEditorFilter("cool", "Cool", "trending"),
+    ReelEditorFilter("beauty", "Beauty", "portrait"),
+    ReelEditorFilter("bw", "B&W", "mono"),
+    ReelEditorFilter("vintage", "Vintage", "mono"),
+)
+private val REEL_EDITOR_FILTER_CATS = listOf("trending" to "Trending", "portrait" to "Portrait", "mono" to "B&W")
+
+private data class ReelEditorTemplate(val id: String, val name: String, val color1: Color, val color2: Color, val filter: String, val speed: String, val letterbox: Boolean, val desc: String)
+
+// Web REEL_TEMPLATES: Cinematic (vintage, 1, letterbox), Glow (beauty,
+// 1), Slow Mo (cool, 0.5). Gradients are the web's 135deg values.
+private val REEL_EDITOR_TEMPLATES = listOf(
+    ReelEditorTemplate("cinematic", "Cinematic", Color(0xFF1A1A2E), Color(0xFF0F0F0F), "vintage", "1", true, "Movie-style bars"),
+    ReelEditorTemplate("glow", "Glow", Color(0xFFFFD9A0), Color(0xFFFF9A9E), "beauty", "1", false, "Smooth skin glow"),
+    ReelEditorTemplate("slowmo", "Slow Mo", Color(0xFFA8EDEA), Color(0xFF7FB8E8), "cool", "0.5", false, "Smooth slow motion"),
+)
+
+private enum class ReelEditorSheet { EDIT, FILTERS, TEMPLATES, TEXT, SPEED, COVER, TRIM, CROP }
+
+// 4x5 colour matrices (Compose ColorMatrix = 20 floats, translation in
+// 0..1). These are the web's CSS filter chains, composed into one matrix
+// so the Filters sheet shows the REAL filter on a video frame.
+private fun matIdentity(): FloatArray = floatArrayOf(
+    1f, 0f, 0f, 0f, 0f,
+    0f, 1f, 0f, 0f, 0f,
+    0f, 0f, 1f, 0f, 0f,
+    0f, 0f, 0f, 1f, 0f,
+)
+
+// Returns a*b (b is applied first, then a) for 4x5 matrices.
+private fun matMul(a: FloatArray, b: FloatArray): FloatArray {
+    val out = FloatArray(20)
+    for (r in 0 until 4) {
+        for (c in 0 until 5) {
+            var v = 0f
+            for (k in 0 until 4) v += a[r * 5 + k] * b[k * 5 + c]
+            if (c == 4) v += a[r * 5 + 4]
+            out[r * 5 + c] = v
+        }
+    }
+    return out
+}
+
+private fun matSaturation(s: Float): FloatArray {
+    val rw = 0.213f; val gw = 0.715f; val bw = 0.072f
+    return floatArrayOf(
+        rw + (1f - rw) * s, gw - gw * s, bw - bw * s, 0f, 0f,
+        rw - rw * s, gw + (1f - gw) * s, bw - bw * s, 0f, 0f,
+        rw - rw * s, gw - gw * s, bw + (1f - bw) * s, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    )
+}
+
+private fun matContrast(c: Float): FloatArray {
+    val t = 0.5f * (1f - c)
+    return floatArrayOf(
+        c, 0f, 0f, 0f, t,
+        0f, c, 0f, 0f, t,
+        0f, 0f, c, 0f, t,
+        0f, 0f, 0f, 1f, 0f,
+    )
+}
+
+private fun matBrightness(b: Float): FloatArray = floatArrayOf(
+    b, 0f, 0f, 0f, 0f,
+    0f, b, 0f, 0f, 0f,
+    0f, 0f, b, 0f, 0f,
+    0f, 0f, 0f, 1f, 0f,
+)
+
+private fun matSepia(a: Float): FloatArray {
+    val sep = floatArrayOf(
+        0.393f, 0.769f, 0.189f, 0f, 0f,
+        0.349f, 0.686f, 0.168f, 0f, 0f,
+        0.272f, 0.534f, 0.131f, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    )
+    val id = matIdentity()
+    return FloatArray(20) { i -> id[i] * (1f - a) + sep[i] * a }
+}
+
+private fun matHueRotate(deg: Float): FloatArray {
+    val rad = Math.toRadians(deg.toDouble())
+    val cos = Math.cos(rad).toFloat(); val sin = Math.sin(rad).toFloat()
+    val rw = 0.213f; val gw = 0.715f; val bw = 0.072f
+    return floatArrayOf(
+        rw + cos * (1f - rw) + sin * (-rw), gw + cos * (-gw) + sin * (-gw), bw + cos * (-bw) + sin * (1f - bw), 0f, 0f,
+        rw + cos * (-rw) + sin * 0.143f, gw + cos * (1f - gw) + sin * 0.140f, bw + cos * (-bw) + sin * (-0.283f), 0f, 0f,
+        rw + cos * (-rw) + sin * (-(1f - rw)), gw + cos * (-gw) + sin * gw, bw + cos * (1f - bw) + sin * bw, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    )
+}
+
+// The web's CSS filter chain per filter id, as one ColorMatrix.
+// Functions are applied left-to-right like CSS (the first in the chain
+// runs first).
+private fun filterColorMatrix(id: String): ColorMatrix {
+    var m = matIdentity()
+    fun apply(next: FloatArray) { m = matMul(next, m) }
+    when (id) {
+        "vivid" -> { apply(matSaturation(1.5f)); apply(matContrast(1.12f)); apply(matBrightness(1.01f)) }
+        "warm" -> { apply(matSepia(0.25f)); apply(matSaturation(1.3f)); apply(matContrast(1.05f)); apply(matBrightness(1.03f)) }
+        "cool" -> { apply(matSaturation(1.15f)); apply(matContrast(1.05f)); apply(matBrightness(1.02f)); apply(matHueRotate(-10f)) }
+        "beauty" -> { apply(matBrightness(1.04f)); apply(matSaturation(1.18f)); apply(matContrast(1.02f)) }
+        "bw" -> { apply(matSaturation(0f)); apply(matContrast(1.1f)) }
+        "vintage" -> { apply(matSepia(0.4f)); apply(matSaturation(0.8f)); apply(matContrast(0.95f)); apply(matBrightness(1.02f)) }
+    }
+    return ColorMatrix(m)
+}
+
+private fun formatTrimTime(sec: Float): String {
+    val s = sec.toInt().coerceAtLeast(0)
+    return "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
+}
+
+// v5.1: real upload % WITHOUT Okio buffer() — the v3.7 counting fix
+// removed CountingRequestBody because buffer() broke the build, and the
+// task forbids re-adding it. This body writes the file in 8KB chunks
+// straight to the BufferedSink (sink.write(ByteArray, Int, Int) is
+// stable Okio API in every version) and reports progress. No Buffer,
+// no ForwardingSink, no buffer() anywhere. Progress is throttled to
+// whole-percent changes (max 100 callbacks per upload).
+private class ProgressFileBody(
+    private val file: File,
+    private val contentType: MediaType?,
+    private val onProgress: (written: Long, total: Long) -> Unit,
+) : RequestBody() {
+    override fun contentType() = contentType
+    override fun contentLength() = file.length()
+    override fun writeTo(sink: BufferedSink) {
+        val total = file.length()
+        var written = 0L
+        var lastPct = -1
+        file.inputStream().use { input ->
+            val buf = ByteArray(8 * 1024)
+            var read: Int
+            while (input.read(buf).also { read = it } != -1) {
+                sink.write(buf, 0, read)
+                written += read
+                val pct = if (total > 0) ((written * 100) / total).toInt().coerceIn(0, 100) else 100
+                if (pct != lastPct) { lastPct = pct; onProgress(written, total) }
+            }
+        }
+        sink.flush()
     }
 }
 
-// ---------- REEL UPLOAD: video + caption + category (POST /api/reels) ----------
+@Composable
+private fun ReelEditorHeader(onCancel: () -> Unit, postLabel: String, postEnabled: Boolean, onPost: () -> Unit) {
+    Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(24.dp).noRippleClickable { onCancel() }, contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.Close, contentDescription = "Cancel", tint = Color.White, modifier = Modifier.size(24.dp))
+        }
+        Text("New Reel", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+        Box(Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = if (postEnabled) 1f else 0.5f)).noRippleClickable { if (postEnabled) onPost() }.padding(horizontal = 16.dp, vertical = 6.dp)) {
+            Text(postLabel, color = Color(0xFF0F172A), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+        }
+    }
+}
+
+@Composable
+private fun ReelEditorToolbarButton(icon: ImageVector, label: String, active: Boolean, onClick: () -> Unit) {
+    Column(Modifier.width(64.dp).noRippleClickable { onClick() }, horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(44.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = 0.10f)), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(22.dp))
+            }
+            if (active) {
+                Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(10.dp).clip(CircleShape).background(Color(0xFF34D399)).border(2.dp, Color.Black, CircleShape))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+    }
+}
+
+@Composable
+private fun ReelEditorEditButton(icon: ImageVector, label: String, active: Boolean, badge: String? = null, onClick: () -> Unit) {
+    Column(Modifier.noRippleClickable { onClick() }, horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)).background(if (active) Color(0xFF34D399).copy(alpha = 0.20f) else Color.White.copy(alpha = 0.10f)).border(if (active) 2.dp else 0.dp, if (active) Color(0xFF34D399) else Color.Transparent, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(24.dp))
+            if (badge != null) {
+                Box(Modifier.align(Alignment.BottomCenter).offset(y = 4.dp).clip(RoundedCornerShape(50)).background(Color(0xFF34D399)).padding(horizontal = 6.dp, vertical = 1.dp)) {
+                    Text(badge, color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+    }
+}
+
+@Composable
+private fun ReelEditorSheetHeader(title: String, onDone: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+        Box(Modifier.clip(RoundedCornerShape(50)).background(Color.White).noRippleClickable { onDone() }.padding(horizontal = 20.dp, vertical = 6.dp)) {
+            Text("Done", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+        }
+    }
+}
+
+// Dark text-field colours for the editor (web: border-white/20,
+// bg-white/10, white text, white/50 placeholder).
+@Composable
+private fun darkEditorFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = Color.White.copy(alpha = 0.10f),
+    unfocusedContainerColor = Color.White.copy(alpha = 0.10f),
+    focusedBorderColor = Color.White.copy(alpha = 0.20f),
+    unfocusedBorderColor = Color.White.copy(alpha = 0.20f),
+    focusedTextColor = Color.White,
+    unfocusedTextColor = Color.White,
+    cursorColor = Color.White,
+    focusedPlaceholderColor = Color.White.copy(alpha = 0.5f),
+    unfocusedPlaceholderColor = Color.White.copy(alpha = 0.5f),
+)
+
 @Composable
 private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, onDone: (String?) -> Unit, onClose: () -> Unit, initialCoverUri: Uri? = null, initialFilter: String? = null, initialSpeed: String? = null, onOpenCamera: () -> Unit = {}) {
     val context = LocalContext.current
+    val density = LocalDensity.current
+    val screenHeightDp = LocalConfiguration.current.screenHeightDp
     var videoUri by remember { mutableStateOf<Uri?>(initialVideoUri) }
     var caption by rememberSaveable { mutableStateOf("") }
+    // AI only (web rule) — the detected category is sent as-is; there is
+    // no manual picker, no chip row, no "Other" field any more.
     var category by rememberSaveable { mutableStateOf("") }
-    var customCategory by rememberSaveable { mutableStateOf("") }
-    // v3.4: real upload options the backend accepts (POST /api/reels):
-    // cover image, speed 0.5|1|1.5|2, text overlay (<=100), trim seconds.
     var coverUri by remember { mutableStateOf<Uri?>(initialCoverUri) }
     var speed by rememberSaveable { mutableStateOf(initialSpeed ?: "1") }
-    // v3.5 (R15): server filter enum normal/warm/cool/bw/vintage/vivid/beauty.
     var filter by rememberSaveable { mutableStateOf(initialFilter ?: "normal") }
     var textOverlay by rememberSaveable { mutableStateOf("") }
-    // v3.8 (F4): editor extras — the backend schema already accepts them.
-    var template by rememberSaveable { mutableStateOf<String?>(null) }
+    var activeTemplate by rememberSaveable { mutableStateOf<String?>(null) }
     var letterbox by rememberSaveable { mutableStateOf(false) }
     var flip by rememberSaveable { mutableStateOf(false) }
     var rotateDeg by rememberSaveable { mutableStateOf(0) }
     var crop by rememberSaveable { mutableStateOf<String?>(null) }
     var textPosition by rememberSaveable { mutableStateOf("top") }
-    // v3.8 (F2+F3): frames extracted from the picked video — cover
-    // thumbnails + AI category auto-detect.
     var coverFrames by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
     var selectedFrameIdx by remember { mutableStateOf(-1) }
     var detecting by remember { mutableStateOf(false) }
-    var manualCategory by remember { mutableStateOf(false) }
     var trimStartF by remember { mutableStateOf(0f) }
     var trimEndF by remember { mutableStateOf(0f) }
+    var trimApplied by remember { mutableStateOf(false) }
     var maxSec by remember { mutableStateOf(180) }
-    // v3.5 (R28): how many reels are left today.
     var dailyStatus by remember { mutableStateOf<ReelStatusData?>(null) }
-    // v3.5 (R25/R26/R27): picked-video facts, checked at pick time.
     var videoDurationSec by remember { mutableStateOf<Int?>(null) }
-    var videoSizeMb by remember { mutableStateOf<Double?>(null) }
-    var busy by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf(false) }
+    var posting by remember { mutableStateOf(false) }
+    var uploadProgress by remember { mutableStateOf<Int?>(null) }
+    var postTrimProcessing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var confirmDiscard by remember { mutableStateOf(false) }
+    var uploadJob by remember { mutableStateOf<Job?>(null) }
+    var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    // One sheet at a time (web: only one bottom sheet is ever open).
+    var sheet by remember { mutableStateOf<ReelEditorSheet?>(null) }
+    var filterCat by rememberSaveable { mutableStateOf("trending") }
+    // Trim sheet working state (snapshot = values when the sheet opened).
+    var trimSnapshot by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    var trimPlaying by remember { mutableStateOf(false) }
+    var currentTime by remember { mutableStateOf(0f) }
     val scope = rememberCoroutineScope()
+
+    val durationF = (videoDurationSec ?: 0).toFloat()
+    val trimChanged = trimStartF > 0.05f || (durationF > 0f && trimEndF < durationF - 0.05f)
+    val processing = posting && postTrimProcessing && uploadProgress == 100
+    val postLabel = if (posting) { if (processing) "Processing…" else "${uploadProgress ?: 0}%" } else "Post"
+    val postEnabled = !posting && videoUri != null && trimEndF > trimStartF && (dailyStatus?.remaining ?: 1) > 0
+
+    // Web Toast: one message at a time, auto-clears after 3 seconds.
+    LaunchedEffect(message) { if (message != null) { delay(3000); message = null } }
+
     LaunchedEffect(Unit) {
         scope.launch { try { val r = api2.reelsConfig(); if (r.success && r.data != null) maxSec = r.data.maxDurationSec } catch (_: Exception) {} }
         scope.launch { try { val r = api2.myReelStatus(); if (r.success && r.data != null) dailyStatus = r.data } catch (_: Exception) {} }
     }
-    // R26/R27: check length + size as soon as a video is picked, and
-    // refuse an over-long video BEFORE uploading instead of silently
-    // sending the whole file with a coerced duration number.
-    var lastCheckedUri by remember { mutableStateOf<Uri?>(null) }
+
     fun checkVideo(uri: Uri) {
-        if (uri == lastCheckedUri) return
-        lastCheckedUri = uri
-        try {
-            // B-B31: release in finally, not only on the happy path.
-            val mmr = MediaMetadataRetriever()
-            val durMs = try {
-                mmr.setDataSource(context, uri)
-                mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            } finally { try { mmr.release() } catch (_: Exception) {} }
+        scope.launch(Dispatchers.IO) {
+            val durMs = try { val mmr = MediaMetadataRetriever(); try { mmr.setDataSource(context, uri); mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 15000L } finally { try { mmr.release() } catch (_: Exception) {} } } catch (_: Exception) { 15000L }
             val durSec = (durMs / 1000).toInt()
-            val size = try { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L } catch (_: Exception) { -1L }
             videoDurationSec = durSec
-            videoSizeMb = if (size > 0) size / 1024.0 / 1024.0 else null
-            trimStartF = 0f; trimEndF = durSec.toFloat()
-            if (durSec > maxSec) { message = "This video is ${durSec}s — reels can be ${maxSec}s at most. Please pick a shorter video."; videoUri = null; lastCheckedUri = null; videoDurationSec = null }
-        } catch (e: Exception) { message = friendlyReelsError(e, "Couldn't read this video") }
+            if (durSec > maxSec) { message = "Reels must be ${maxSec}s seconds or shorter."; videoUri = null; return@launch }
+            trimStartF = 0f
+            trimEndF = durSec.toFloat()
+        }
     }
     LaunchedEffect(videoUri) { val u = videoUri; if (u != null) checkVideo(u) }
-    // v3.8 (F2+F3): extract frames once per video — cover thumbnails, and
-    // AI category auto-detect (POST /api/reels/detect-category, 3 frames).
+
     LaunchedEffect(videoUri) {
         val u = videoUri ?: return@LaunchedEffect
         scope.launch(Dispatchers.IO) {
-            val frames = extractVideoFrames(context, u, 6)
+            val frames = extractVideoFrames(context, u, 7)
             coverFrames = frames
             selectedFrameIdx = -1
-            if (!manualCategory && frames.isNotEmpty()) {
+            if (frames.isNotEmpty()) {
                 detecting = true
                 try {
                     val b64 = frames.take(3).map { bitmapToBase64Jpeg(it) }
                     val r = api2.detectCategory(mapOf<String, Any>("frames" to b64, "caption" to caption))
                     val cat = r.data?.category
-                    if (r.success && !cat.isNullOrBlank()) {
-                        val known = listOf("Funny", "Dance", "Music", "Comedy", "Food", "Travel", "Sports", "Fashion", "Education", "Gaming", "Lifestyle")
-                        val match = known.firstOrNull { it.equals(cat, ignoreCase = true) }
-                        if (match != null) { category = match; customCategory = "" }
-                        else { category = "Other"; customCategory = cat }
-                    }
+                    if (r.success && !cat.isNullOrBlank()) category = cat
                 } catch (_: Exception) {}
                 detecting = false
             }
         }
     }
+
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri -> if (uri != null) videoUri = uri }
-    // R27: the server rejects covers over 10MB, so check at pick time.
     val coverPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
             val size = try { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L } catch (_: Exception) { -1L }
-            if (size > 10 * 1024 * 1024) message = "Cover photo must be smaller than 10MB" else { coverUri = uri; selectedFrameIdx = -1 } // B-B14: a gallery cover beats a picked frame (upload prefers frames)
+            if (size > 10 * 1024 * 1024) message = "Cover photo must be smaller than 10MB" else { coverUri = uri; selectedFrameIdx = -1 }
         }
     }
     val pickCover = rememberPermissionGate(galleryPermissions(), onGranted = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
-    // v3.1: Gallery asked at pick time; Camera + Microphone asked when the
-    // user taps "Record a video" (owner-confirmed permissions).
     val pickReelVideo = rememberPermissionGate(galleryPermissions(), onGranted = { picker.launch(PickVisualMediaRequest(PickVisualMedia.VideoOnly)) })
-    // v3.8 (F1): "Record a video" now opens the in-app CameraX recorder
-    // (ReelCameraScreen) instead of the system camera intent.
-    // v3.6 (U1): the upload form is ~850-900dp tall with a video
-    // picked — scroll it so Trim and the Upload button stay reachable
-    // on small phones.
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text("Cancel", maxLines = 1, softWrap = false) }
-            Text("Upload reel", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { pickReelVideo() }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (videoUri == null) "Pick a video" else "Video selected", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            OutlinedButton(onClick = { onOpenCamera() }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Record a video", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-        }
-        // R25: a muted looping preview of the picked video + its length/size.
-        if (videoUri != null) {
-            Spacer(Modifier.height(12.dp))
-            // v3.6 (U3): a real 9:16 preview (180x320dp, centred)
-            // instead of the 200dp letterbox where a 9:16 video
-            // rendered only ~112dp wide with black bars.
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                // v3.8 (F4): preview shows flip / rotate / crop / letterbox
-                // and the text overlay at its chosen position.
-                Box(Modifier.height(320.dp).aspectRatio(if (crop == "square") 1f else 9f / 16f).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
-                    key(videoUri) {
-                        AndroidView(factory = { ctx -> VideoView(ctx).apply { setVideoURI(videoUri); setOnPreparedListener { mp -> mp.setVolume(0f, 0f); mp.isLooping = true; start() } } }, modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = if (flip) -1f else 1f; rotationZ = rotateDeg.toFloat() })
+
+    // Web: the preview really plays at the chosen speed (playbackRate).
+    LaunchedEffect(speed) {
+        val mp = previewPlayer ?: return@LaunchedEffect
+        try { mp.playbackParams = mp.playbackParams.setSpeed(speed.toFloatOrNull() ?: 1f) } catch (_: Exception) {}
+    }
+
+    // Web rule: while a trim is applied (or the trim sheet is open) the
+    // preview loops inside [trimStart, trimEnd] instead of the whole video.
+    LaunchedEffect(trimApplied, sheet, videoUri) {
+        if (!trimApplied && sheet != ReelEditorSheet.TRIM) return@LaunchedEffect
+        while (true) {
+            try {
+                val mp = previewPlayer
+                if (mp != null) {
+                    val pos = mp.currentPosition / 1000f
+                    currentTime = pos
+                    trimPlaying = mp.isPlaying
+                    if (trimEndF > trimStartF && pos >= trimEndF) {
+                        try { mp.seekTo((trimStartF * 1000).toInt()) } catch (_: Exception) {}
                     }
-                    if (letterbox) {
-                        Box(Modifier.fillMaxWidth().height(28.dp).background(Color.Black).align(Alignment.TopCenter))
-                        Box(Modifier.fillMaxWidth().height(28.dp).background(Color.Black).align(Alignment.BottomCenter))
-                    }
-                    if (textOverlay.isNotBlank()) {
-                        Box(Modifier.fillMaxSize().padding(12.dp), contentAlignment = when (textPosition) { "bottom" -> Alignment.BottomCenter; "middle" -> Alignment.Center; else -> Alignment.TopCenter }) {
-                            Text(textOverlay, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            } catch (_: Exception) {}
+            delay(100)
+        }
+    }
+
+    // Web handleCancel: if posting, abort the upload and stay on the
+    // editor; if a file is loaded, ask "Discard this reel?"; else back.
+    fun handleCancel() {
+        if (posting) {
+            uploadJob?.cancel()
+            uploadJob = null
+            posting = false
+            uploadProgress = null
+            postTrimProcessing = false
+            message = "Upload cancelled."
+            return
+        }
+        if (videoUri != null) confirmDiscard = true else onClose()
+    }
+
+    fun handlePost() {
+        val uri = videoUri ?: return
+        if (posting || trimEndF <= trimStartF) return
+        posting = true
+        uploadProgress = 0
+        val changed = trimStartF > 0.05f || (durationF > 0f && trimEndF < durationF - 0.05f)
+        postTrimProcessing = changed
+        uploadJob = scope.launch {
+            var tmp: File? = null
+            var coverTmp: File? = null
+            try {
+                val durMs = try { val mmr = MediaMetadataRetriever(); try { mmr.setDataSource(context, uri); mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 15000L } finally { try { mmr.release() } catch (_: Exception) {} } } catch (_: Exception) { 15000L }
+                val durationSec = (durMs / 1000).toInt()
+                if (durationSec < 1) throw Exception("Couldn't read this video's length.")
+                if (durationSec > maxSec) throw Exception("This video is ${durationSec}s — reels can be ${maxSec}s at most.")
+                val input = context.contentResolver.openInputStream(uri) ?: throw Exception("Could not read the video")
+                val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null } ?: "video/mp4"
+                tmp = File(context.cacheDir, "reel_upload.mp4")
+                input.use { inp -> tmp!!.outputStream().use { out -> inp.copyTo(out) } }
+                // Real upload % without Okio buffer() (see ProgressFileBody).
+                // The body calls us only when the whole % changes.
+                val videoBody = ProgressFileBody(tmp!!, mime.toMediaTypeOrNull()) { written, total ->
+                    val pct = if (total > 0) ((written * 100) / total).toInt().coerceIn(0, 100) else 100
+                    scope.launch(Dispatchers.Main) { uploadProgress = pct }
+                }
+                var coverPart: MultipartBody.Part? = null
+                val frameCover = selectedFrameIdx.takeIf { it >= 0 }?.let { coverFrames.getOrNull(it) }
+                if (frameCover != null) {
+                    val cTmp = File(context.cacheDir, "reel_cover.jpg")
+                    coverTmp = cTmp
+                    cTmp.outputStream().use { out -> frameCover.compress(Bitmap.CompressFormat.JPEG, 85, out) }
+                    coverPart = MultipartBody.Part.createFormData("cover", cTmp.name, cTmp.asRequestBody("image/jpeg".toMediaTypeOrNull()))
+                } else if (coverUri != null) {
+                    val c = coverUri!!
+                    val cMime = try { context.contentResolver.getType(c) } catch (_: Exception) { null } ?: "image/jpeg"
+                    val cSize = try { context.contentResolver.openFileDescriptor(c, "r")?.use { it.statSize } ?: -1L } catch (_: Exception) { -1L }
+                    if (cSize > 10 * 1024 * 1024) throw Exception("Cover photo must be smaller than 10MB")
+                    coverTmp = File(context.cacheDir, "reel_cover.jpg")
+                    context.contentResolver.openInputStream(c)?.use { inp -> coverTmp!!.outputStream().use { out -> inp.copyTo(out) } }
+                    coverPart = MultipartBody.Part.createFormData("cover", coverTmp!!.name, coverTmp!!.asRequestBody(cMime.toMediaTypeOrNull()))
+                }
+                val trimStartSec = trimStartF.toInt().takeIf { it > 0 }
+                val trimEndSec = trimEndF.toInt().takeIf { it > 0 && it < durationSec && (trimStartSec == null || it > trimStartSec) }
+                val res = api2.uploadReel(
+                    MultipartBody.Part.createFormData("video", tmp!!.name, videoBody),
+                    caption.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    category.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    durationSec.toString().toRequestBody("text/plain".toMediaTypeOrNull()),
+                    cover = coverPart,
+                    speed = if (speed == "1") null else speed.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    textOverlay = textOverlay.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    trimStartSec = trimStartSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    trimEndSec = trimEndSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    filter = if (filter == "normal") null else filter.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    letterbox = if (letterbox) "true".toRequestBody("text/plain".toMediaTypeOrNull()) else null,
+                    flip = if (flip) "true".toRequestBody("text/plain".toMediaTypeOrNull()) else null,
+                    rotate = if (rotateDeg != 0) rotateDeg.toString().toRequestBody("text/plain".toMediaTypeOrNull()) else null,
+                    crop = crop?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                    textPosition = if (textOverlay.isNotBlank()) textPosition.toRequestBody("text/plain".toMediaTypeOrNull()) else null,
+                )
+                if (!res.success) throw Exception(res.error?.message ?: "Upload failed")
+                onDone(res.data?.reel?.id)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message = friendlyReelsError(e, "Upload failed — try again")
+            } finally {
+                posting = false; uploadProgress = null; postTrimProcessing = false; uploadJob = null
+                try { tmp?.delete() } catch (_: Exception) {}
+                try { coverTmp?.delete() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    // No video yet (photo path: a cover was taken, no video) — the web
+    // editor never opens without a video; the app only reaches here when
+    // the camera's photo mode supplied a cover. Offer pick / record only.
+    if (videoUri == null) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            Column(Modifier.fillMaxSize()) {
+                ReelEditorHeader(onCancel = { onClose() }, postLabel = "Post", postEnabled = false, onPost = {})
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Pick a video to start", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(16.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.10f)).noRippleClickable { pickReelVideo() }.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                Text("Pick a video", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            Box(Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.10f)).noRippleClickable { onOpenCamera() }.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                Text("Record a video", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
                         }
                     }
                 }
             }
-            videoDurationSec?.let { d -> Spacer(Modifier.height(4.dp)); Text("${d}s" + (videoSizeMb?.let { s -> " · %.1f MB".format(s) } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        }
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(value = caption, onValueChange = { if (it.length <= 500) caption = it }, label = { Text("Caption (optional)") }, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(8.dp))
-        // R36: category chips instead of a free-text box.
-        // v3.8 (F2): AI auto-detect runs when a video is picked; tapping a
-        // chip overrides it (manualCategory) and stops further auto-detect.
-        Text("Category" + if (detecting) " — detecting…" else "", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(4.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(listOf("Funny", "Dance", "Music", "Comedy", "Food", "Travel", "Sports", "Fashion", "Education", "Gaming", "Lifestyle", "Other")) { cat ->
-                val sel = category == cat
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { category = cat; manualCategory = true; if (cat != "Other") customCategory = "" }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(cat, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+            message?.let {
+                Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).clip(RoundedCornerShape(28.dp)).background(Color(0xFF1F2937)).padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Text(it, color = Color.White, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
-        if (category == "Other") { Spacer(Modifier.height(8.dp)); OutlinedTextField(value = customCategory, onValueChange = { customCategory = it }, label = { Text("Your category") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
-        Text("Max length: ${maxSec}s" + (dailyStatus?.let { " · Reels left today: ${it.remaining} (posted ${it.postedToday})" } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = { pickCover() }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (coverUri == null && selectedFrameIdx < 0) "Add cover photo (optional)" else "Cover selected", maxLines = 1, softWrap = false) }
-        // v3.8 (F3): pick the cover from the video's own frames (web rule).
-        if (coverFrames.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text("Cover from video", style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(4.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(coverFrames.size) { idx ->
-                    val sel = selectedFrameIdx == idx
-                    Box(Modifier.size(width = 64.dp, height = 112.dp).clip(RoundedCornerShape(8.dp)).border(if (sel) 3.dp else 1.dp, if (sel) FrianzoBlue else FrianzoBorder, RoundedCornerShape(8.dp)).clickable { selectedFrameIdx = idx; coverUri = null }) {
-                        androidx.compose.foundation.Image(bitmap = coverFrames[idx].asImageBitmap(), contentDescription = "Cover frame ${idx + 1}", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+        return
+    }
+
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Column(Modifier.fillMaxSize()) {
+            ReelEditorHeader(onCancel = { handleCancel() }, postLabel = postLabel, postEnabled = postEnabled, onPost = { handlePost() })
+            // Preview (flex-1, centred). The preview box size follows the
+            // crop (web): original 9:16 fills the space, square 1:1 and
+            // portrait 4:5 cap at 70% of the height. A 90/270-degree
+            // rotation scales 0.5625 so the rotated video still fits.
+            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
+                val maxW = maxWidth
+                val maxH = maxHeight
+                val boxW: Dp
+                val boxH: Dp
+                when (crop) {
+                    "square" -> { val side = minOf(maxH * 0.7f, maxW); boxW = side; boxH = side }
+                    "portrait" -> { val h = minOf(maxH * 0.7f, maxW * 5f / 4f); boxW = h * 4f / 5f; boxH = h }
+                    else -> { val h = minOf(maxH, maxW * 16f / 9f); boxW = h * 9f / 16f; boxH = h }
+                }
+                Box(Modifier.width(boxW).height(boxH).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
+                    key(videoUri) {
+                        AndroidView(factory = { ctx -> VideoView(ctx).apply {
+                            setVideoURI(videoUri)
+                            setOnPreparedListener { mp ->
+                                mp.setVolume(0f, 0f); mp.isLooping = true
+                                previewPlayer = mp
+                                try { mp.playbackParams = mp.playbackParams.setSpeed(speed.toFloatOrNull() ?: 1f) } catch (_: Exception) {}
+                                start()
+                            }
+                            setOnErrorListener { _, _, _ -> previewError = true; true }
+                        } }, modifier = Modifier.fillMaxSize().graphicsLayer {
+                            val rotScale = if (rotateDeg == 90 || rotateDeg == 270) 0.5625f else 1f
+                            scaleX = (if (flip) -1f else 1f) * rotScale
+                            scaleY = rotScale
+                            rotationZ = rotateDeg.toFloat()
+                        })
+                    }
+                    if (letterbox) {
+                        Box(Modifier.fillMaxWidth().height(boxH * 0.12f).background(Color.Black).align(Alignment.TopCenter))
+                        Box(Modifier.fillMaxWidth().height(boxH * 0.12f).background(Color.Black).align(Alignment.BottomCenter))
+                    }
+                    if (textOverlay.isNotBlank()) {
+                        Box(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentAlignment = when (textPosition) { "bottom" -> Alignment.BottomCenter; "middle" -> Alignment.Center; else -> Alignment.TopCenter }) {
+                            Text(textOverlay, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 3, overflow = TextOverflow.Ellipsis, style = TextStyle(shadow = Shadow(color = Color.Black.copy(alpha = 0.7f), offset = Offset(0f, 2f), blurRadius = 10f)))
+                        }
                     }
                 }
             }
-        }
-        Spacer(Modifier.height(8.dp))
-        // R15 + v3.8 (F22): filter picker grouped like web
-        // (Trending / Portrait / B&W) — the server applies the filter.
-        Text("Filter", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(4.dp))
-        Text("Trending", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip("normal", "Normal", filter) { filter = it }
-            FilterChip("warm", "Warm", filter) { filter = it }
-            FilterChip("vivid", "Vivid", filter) { filter = it }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("Portrait", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip("beauty", "Beauty", filter) { filter = it }
-            FilterChip("cool", "Cool", filter) { filter = it }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("B&W", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip("bw", "B&W", filter) { filter = it }
-            FilterChip("vintage", "Vintage", filter) { filter = it }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("Speed", style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("0.5", "1", "1.5", "2").forEach { s ->
-                val sel = speed == s
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { speed = s }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text("${s}x", color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
-                }
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        // v3.8 (F4): one-tap templates (web rule).
-        Text("Template", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf<Pair<String?, String>>(null to "None", "cinematic" to "Cinematic", "glow" to "Glow", "slowmo" to "Slow Mo").forEach { (v, label) ->
-                val sel = template == v
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable {
-                    template = v
-                    when (v) {
-                        // B-B15: "None" resets filter/letterbox/speed to
-                        // defaults; each template also resets the speed it
-                        // does not use, so a Slow-Mo 0.5x never survives
-                        // switching to Cinematic/Glow/None.
-                        null -> { filter = "normal"; letterbox = false; speed = "1" }
-                        "cinematic" -> { filter = "vintage"; letterbox = true; speed = "1" }
-                        "glow" -> { filter = "beauty"; letterbox = false; speed = "1" }
-                        "slowmo" -> { filter = "cool"; speed = "0.5" }
+            // Bottom panel (web: max 45dvh, scrollable): caption + toolbar.
+            Column(Modifier.fillMaxWidth().heightIn(max = screenHeightDp.dp * 0.45f).verticalScroll(rememberScrollState()).imePadding().padding(16.dp)) {
+                if (previewError) {
+                    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFFFFF7ED)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text("Video preview is not supported on this device. MP4 (H.264) is recommended.", color = Color(0xFF92400E), fontSize = 12.sp)
                     }
-                }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                    Spacer(Modifier.height(12.dp))
+                }
+                if (processing) {
+                    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFF1E3A8A)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text("Processing… Please wait while the server prepares your reel.", color = Color.White, fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+                OutlinedTextField(value = caption, onValueChange = { if (it.length <= 500) caption = it }, placeholder = { Text("Write a caption", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp) }, minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth(), colors = darkEditorFieldColors())
+                if (detecting) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("AI video dekh raha hai...", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+                }
+                if (uploadProgress != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.20f))) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth((uploadProgress ?: 0) / 100f).clip(RoundedCornerShape(50)).background(Color.White))
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.10f)))
+                Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceAround) {
+                    ReelEditorToolbarButton(icon = Icons.Filled.Edit, label = "Edit", active = trimChanged || coverUri != null || selectedFrameIdx >= 0 || flip || rotateDeg != 0 || crop != null) { sheet = ReelEditorSheet.EDIT }
+                    ReelEditorToolbarButton(icon = Icons.Filled.Star, label = "Filters", active = filter != "normal") { sheet = ReelEditorSheet.FILTERS }
+                    ReelEditorToolbarButton(icon = Icons.Filled.GridView, label = "Effects", active = activeTemplate != null) { sheet = ReelEditorSheet.TEMPLATES }
+                    ReelEditorToolbarButton(icon = Icons.Filled.TextFields, label = "Text", active = textOverlay.isNotBlank()) { sheet = ReelEditorSheet.TEXT }
+                    ReelEditorToolbarButton(icon = Icons.Filled.Schedule, label = "Speed", active = speed != "1") { sheet = ReelEditorSheet.SPEED }
                 }
             }
         }
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { letterbox = !letterbox }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Letterbox: " + if (letterbox) "On" else "Off", fontSize = 13.sp, maxLines = 1, softWrap = false) }
-            OutlinedButton(onClick = { flip = !flip }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Flip: " + if (flip) "On" else "Off", fontSize = 13.sp, maxLines = 1, softWrap = false) }
-            OutlinedButton(onClick = { rotateDeg = when (rotateDeg) { 0 -> 90; 90 -> 180; 180 -> 270; else -> 0 } }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Rotate: ${rotateDeg}°", fontSize = 13.sp, maxLines = 1, softWrap = false) }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("Crop", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf<Pair<String?, String>>(null to "Original", "square" to "Square", "portrait" to "Portrait").forEach { (v, label) ->
-                val sel = crop == v
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { crop = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
-                }
+        // Web Toast: bottom-centre pill, auto-clears after 3s.
+        message?.let {
+            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).clip(RoundedCornerShape(28.dp)).background(Color(0xFF1F2937)).padding(horizontal = 16.dp, vertical = 10.dp)) {
+                Text(it, color = Color.White, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(value = textOverlay, onValueChange = { if (it.length <= 100) textOverlay = it }, label = { Text("Text overlay (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        if (textOverlay.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Text("Text position", style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("top" to "Top", "middle" to "Middle", "bottom" to "Bottom").forEach { (v, label) ->
-                    val sel = textPosition == v
-                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { textPosition = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                        Text(label, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, softWrap = false)
+        // Discard dialog (web: "Discard this reel?").
+        if (confirmDiscard) {
+            AlertDialog(onDismissRequest = { confirmDiscard = false }, title = { Text("Discard this reel?") }, text = { Text("Your video and edits will be lost.") }, confirmButton = { TextButton(onClick = { confirmDiscard = false; onClose() }) { Text("Discard", color = Color.Red) } }, dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing") } })
+        }
+
+        // Bottom sheets (web: one at a time, rounded-t-3xl, neutral-950).
+        when (sheet) {
+            ReelEditorSheet.EDIT -> {
+                ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+                        ReelEditorSheetHeader(title = "Edit", onDone = { sheet = null })
+                        Spacer(Modifier.height(20.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            ReelEditorEditButton(icon = Icons.Filled.ContentCut, label = "Trim", active = trimChanged) {
+                                trimSnapshot = trimStartF to trimEndF
+                                sheet = ReelEditorSheet.TRIM
+                            }
+                            ReelEditorEditButton(icon = Icons.Filled.Image, label = "Cover", active = coverUri != null || selectedFrameIdx >= 0) { sheet = ReelEditorSheet.COVER }
+                            ReelEditorEditButton(icon = Icons.Filled.SwapHoriz, label = "Flip", active = flip) {
+                                flip = !flip
+                                sheet = null
+                                message = if (flip) "Flipped" else "Flip off"
+                            }
+                            ReelEditorEditButton(icon = Icons.Filled.RotateRight, label = "Rotate", active = rotateDeg != 0, badge = if (rotateDeg != 0) "${rotateDeg}°" else null) {
+                                rotateDeg = when (rotateDeg) { 0 -> 90; 90 -> 180; 180 -> 270; else -> 0 }
+                                message = if (rotateDeg == 0) "Rotation reset" else "Rotated ${rotateDeg}°"
+                            }
+                            ReelEditorEditButton(icon = Icons.Filled.Crop, label = "Crop", active = crop != null) { sheet = ReelEditorSheet.CROP }
+                        }
                     }
                 }
             }
-        }
-        Spacer(Modifier.height(8.dp))
-        // R25: visual trim — drag the start/end of the video instead of
-        // typing seconds into two boxes.
-        if (videoDurationSec != null && videoDurationSec!! > 1) {
-            Text("Trim: ${trimStartF.toInt()}s – ${trimEndF.toInt()}s", style = MaterialTheme.typography.bodyMedium)
-            Slider(value = trimStartF, onValueChange = { trimStartF = it.coerceIn(0f, (trimEndF - 1f).coerceAtLeast(0f)) }, valueRange = 0f..videoDurationSec!!.toFloat())
-            Slider(value = trimEndF, onValueChange = { trimEndF = it.coerceIn(trimStartF + 1f, videoDurationSec!!.toFloat()) }, valueRange = 0f..videoDurationSec!!.toFloat())
-        }
-        Spacer(Modifier.height(12.dp))
-        // B-B37: the daily limit is enforced BEFORE the upload, not only
-        // by the server after the whole file has uploaded.
-        if (dailyStatus?.remaining == 0) {
-            Text("You've reached today's reel limit — come back tomorrow.", color = FrianzoBadgeRed, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(8.dp))
-        }
-        Button(enabled = !busy && videoUri != null && (dailyStatus?.remaining ?: 1) > 0, onClick = {
-            busy = true
-            scope.launch {
-                // B-B31: temp files are deleted in finally (below), so a
-                // failed upload no longer leaks cache files.
-                var tmp: File? = null
-                var coverTmp: File? = null
-                try {
-                    val uri = videoUri!!
-                    val durMs = try { val mmr = MediaMetadataRetriever(); try { mmr.setDataSource(context, uri); mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 15000L } finally { try { mmr.release() } catch (_: Exception) {} } } catch (_: Exception) { 15000L }
-                    // R26: never coerce an over-long video into the limit —
-                    // refuse it with a clear message instead.
-                    val durationSec = (durMs / 1000).toInt()
-                    if (durationSec < 1) throw Exception("Couldn't read this video's length.")
-                    if (durationSec > maxSec) throw Exception("This video is ${durationSec}s — reels can be ${maxSec}s at most.")
-                    val input = context.contentResolver.openInputStream(uri) ?: throw Exception("Could not read the video")
-                    val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null } ?: "video/mp4"
-                    tmp = File(context.cacheDir, "reel_upload.mp4")
-                    input.use { inp -> tmp!!.outputStream().use { out -> inp.copyTo(out) } }
-                    val videoPart = MultipartBody.Part.createFormData("video", tmp!!.name, tmp!!.asRequestBody(mime.toMediaTypeOrNull()))
-                    var coverPart: MultipartBody.Part? = null
-                    // v3.8 (F3): a picked video frame beats a gallery cover.
-                    val frameCover = selectedFrameIdx.takeIf { it >= 0 }?.let { coverFrames.getOrNull(it) }
-                    if (frameCover != null) {
-                        val cTmp = File(context.cacheDir, "reel_cover.jpg")
-                        coverTmp = cTmp
-                        cTmp.outputStream().use { out -> frameCover.compress(Bitmap.CompressFormat.JPEG, 85, out) }
-                        coverPart = MultipartBody.Part.createFormData("cover", cTmp.name, cTmp.asRequestBody("image/jpeg".toMediaTypeOrNull()))
-                    } else if (coverUri != null) {
-                        val cInput = context.contentResolver.openInputStream(coverUri!!) ?: throw Exception("Could not read the cover photo")
-                        val cMime = try { context.contentResolver.getType(coverUri!!) } catch (_: Exception) { null } ?: "image/jpeg"
-                        val cExt = when (cMime.substringAfter("/")) { "png" -> "png"; "webp" -> "webp"; else -> "jpg" }
-                        val cTmp = File(context.cacheDir, "reel_cover.$cExt")
-                        coverTmp = cTmp
-                        cInput.use { inp -> cTmp.outputStream().use { out -> inp.copyTo(out) } }
-                        coverPart = MultipartBody.Part.createFormData("cover", cTmp.name, cTmp.asRequestBody(cMime.toMediaTypeOrNull()))
+            ReelEditorSheet.FILTERS -> {
+                ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+                        ReelEditorSheetHeader(title = "Filters", onDone = { sheet = null })
+                        Spacer(Modifier.height(16.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                            REEL_EDITOR_FILTER_CATS.forEach { (id, name) ->
+                                val sel = filterCat == id
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.noRippleClickable { filterCat = id }) {
+                                    Text(name, color = if (sel) Color.White else Color.White.copy(alpha = 0.4f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                    Spacer(Modifier.height(10.dp))
+                                    Box(Modifier.width(24.dp).height(2.dp).clip(RoundedCornerShape(50)).background(if (sel) Color(0xFF34D399) else Color.Transparent))
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            items(REEL_EDITOR_FILTERS.filter { it.cat == filterCat }) { f ->
+                                val sel = filter == f.id
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(80.dp)) {
+                                    Box(Modifier.size(width = 80.dp, height = 112.dp).clip(RoundedCornerShape(16.dp)).border(if (sel) 2.dp else 1.dp, if (sel) Color(0xFF34D399) else Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp)).noRippleClickable { filter = f.id }) {
+                                        // The thumbnail is a real frame of
+                                        // THIS video with the REAL filter
+                                        // matrix applied (web: live
+                                        // video-frame thumbnails).
+                                        val thumb = coverFrames.getOrNull(coverFrames.size / 2) ?: coverFrames.firstOrNull()
+                                        if (thumb != null) {
+                                            androidx.compose.foundation.Image(bitmap = thumb.asImageBitmap(), contentDescription = f.name, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop, colorFilter = if (f.id == "normal") null else ColorFilter.colorMatrix(filterColorMatrix(f.id)))
+                                        } else {
+                                            Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFFF59E0B), Color(0xFFEF4444), Color(0xFF8B5CF6), Color(0xFF3B82F6)))))
+                                        }
+                                        if (sel) {
+                                            Box(Modifier.align(Alignment.BottomEnd).padding(6.dp).size(20.dp).clip(CircleShape).background(Color(0xFF34D399)), contentAlignment = Alignment.Center) {
+                                                Icon(Icons.Filled.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(10.dp))
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(f.name, color = if (sel) Color(0xFF34D399) else Color.White.copy(alpha = 0.7f), fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
                     }
-                    val trimStartSec = trimStartF.toInt().takeIf { it > 0 }
-                    val trimEndSec = trimEndF.toInt().takeIf { it > 0 && it < durationSec && (trimStartSec == null || it > trimStartSec) }
-                    val effectiveCategory = if (category == "Other") customCategory.trim() else category
-                    val res = api2.uploadReel(
-                        videoPart,
-                        caption.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        effectiveCategory.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        durationSec.toString().toRequestBody("text/plain".toMediaTypeOrNull()),
-                        cover = coverPart,
-                        speed = if (speed == "1") null else speed.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        textOverlay = textOverlay.ifBlank { null }?.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        trimStartSec = trimStartSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        trimEndSec = trimEndSec?.toString()?.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        filter = if (filter == "normal") null else filter.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        // v3.8 (F4): editor extras — backend schema accepts them.
-                        letterbox = if (letterbox) "true".toRequestBody("text/plain".toMediaTypeOrNull()) else null,
-                        flip = if (flip) "true".toRequestBody("text/plain".toMediaTypeOrNull()) else null,
-                        rotate = if (rotateDeg != 0) rotateDeg.toString().toRequestBody("text/plain".toMediaTypeOrNull()) else null,
-                        crop = crop?.toRequestBody("text/plain".toMediaTypeOrNull()),
-                        textPosition = if (textOverlay.isNotBlank()) textPosition.toRequestBody("text/plain".toMediaTypeOrNull()) else null,
-                    )
-                    if (!res.success) throw Exception(res.error?.message ?: "Upload failed")
-                    // R29: hand the new reel's id back so the feed opens it.
-                    onDone(res.data?.reel?.id)
-                } catch (e: Exception) { message = friendlyReelsError(e, "Upload failed — try again") }
-                finally { busy = false; try { tmp?.delete() } catch (_: Exception) {}; try { coverTmp?.delete() } catch (_: Exception) {} }
+                }
             }
-        }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (busy) "Uploading..." else "Upload reel", maxLines = 1, softWrap = false) }
-        message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
-        if (busy) {
-            // v3.7: no real % any more (CountingRequestBody deleted) —
-            // indeterminate spinner while the upload runs.
-            Spacer(Modifier.height(12.dp))
-            DotsLoading()
-            Spacer(Modifier.height(4.dp))
-            Text("Uploading…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ReelEditorSheet.TEMPLATES -> {
+                ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Templates", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                            if (activeTemplate != null) {
+                                Box(Modifier.clip(RoundedCornerShape(50)).border(1.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(50)).noRippleClickable { filter = "normal"; speed = "1"; letterbox = false; activeTemplate = null }.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                                    Text("Clear", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                }
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Box(Modifier.clip(RoundedCornerShape(50)).background(Color.White).noRippleClickable { sheet = null }.padding(horizontal = 20.dp, vertical = 6.dp)) {
+                                Text("Done", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            }
+                        }
+                        Spacer(Modifier.height(20.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            REEL_EDITOR_TEMPLATES.forEach { t ->
+                                val sel = activeTemplate == t.id
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                    Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(16.dp)).background(Brush.linearGradient(listOf(t.color1, t.color2))).border(if (sel) 2.dp else 1.dp, if (sel) Color(0xFF34D399) else Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp)).noRippleClickable {
+                                        filter = t.filter; speed = t.speed; letterbox = t.letterbox; activeTemplate = t.id
+                                        sheet = null
+                                        message = t.name + " applied"
+                                    }) {
+                                        if (t.letterbox) {
+                                            Box(Modifier.fillMaxWidth().fillMaxHeight(0.16f).background(Color.Black).align(Alignment.TopCenter))
+                                            Box(Modifier.fillMaxWidth().fillMaxHeight(0.16f).background(Color.Black).align(Alignment.BottomCenter))
+                                        }
+                                        if (sel) {
+                                            Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(24.dp).clip(CircleShape).background(Color(0xFF34D399)), contentAlignment = Alignment.Center) {
+                                                Icon(Icons.Filled.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(12.dp))
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(10.dp))
+                                    Text(t.name, color = if (sel) Color(0xFF34D399) else Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                    Text(t.desc, color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ReelEditorSheet.TEXT -> {
+                ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Add text", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                            Box(Modifier.clip(RoundedCornerShape(50)).background(Color.White).noRippleClickable { sheet = null }.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                                Text("Done", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(value = textOverlay, onValueChange = { if (it.length <= 100) textOverlay = it }, placeholder = { Text("Write something...", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = darkEditorFieldColors())
+                        Spacer(Modifier.height(12.dp))
+                        Text("Position", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("top" to "Top", "middle" to "Middle", "bottom" to "Bottom").forEach { (v, label) ->
+                                val sel = textPosition == v
+                                Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (sel) Color(0xFF34D399) else Color.White.copy(alpha = 0.10f)).noRippleClickable { textPosition = v }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                    Text(label, color = if (sel) Color.Black else Color.White.copy(alpha = 0.7f), fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
+                        if (textOverlay.isNotBlank()) {
+                            Spacer(Modifier.height(12.dp))
+                            Text("Remove text", color = Color(0xFFF87171), fontSize = 12.sp, modifier = Modifier.noRippleClickable { textOverlay = "" })
+                        }
+                    }
+                }
+            }
+            ReelEditorSheet.SPEED -> {
+                ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+                        ReelEditorSheetHeader(title = "Playback speed", onDone = { sheet = null })
+                        Spacer(Modifier.height(20.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("0.5", "1", "1.5", "2").forEach { s ->
+                                val sel = speed == s
+                                Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (sel) Color(0xFF34D399) else Color.White.copy(alpha = 0.10f)).noRippleClickable { speed = s }.padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                                    Text("${s}x", color = if (sel) Color.Black else Color.White.copy(alpha = 0.7f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text("Preview plays at this speed. The posted reel keeps it too.", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+                    }
+                }
+            }
+
+            ReelEditorSheet.COVER -> {
+                ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Select cover", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                            Text("Cancel", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, modifier = Modifier.noRippleClickable { sheet = null })
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Box(Modifier.align(Alignment.CenterHorizontally).width(128.dp).aspectRatio(9f / 16f).clip(RoundedCornerShape(12.dp)).background(Color.Black).border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                            when {
+                                coverUri != null -> AsyncImage(model = coverUri, contentDescription = "Custom cover", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                selectedFrameIdx >= 0 -> coverFrames.getOrNull(selectedFrameIdx)?.let { androidx.compose.foundation.Image(bitmap = it.asImageBitmap(), contentDescription = "Cover preview", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+                                coverFrames.isNotEmpty() -> coverFrames.getOrNull(0)?.let { androidx.compose.foundation.Image(bitmap = it.asImageBitmap(), contentDescription = "Cover preview", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+                                else -> Text("Loading...", color = Color.White.copy(alpha = 0.4f), fontSize = 12.sp)
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            (0 until 7).forEach { i ->
+                                val thumb = coverFrames.getOrNull(i)
+                                val sel = selectedFrameIdx == i
+                                Box(Modifier.weight(1f).aspectRatio(3f / 4f).clip(RoundedCornerShape(8.dp)).border(if (sel) 2.dp else 1.dp, if (sel) Color.White else Color.Transparent, RoundedCornerShape(8.dp)).noRippleClickable { selectedFrameIdx = i; coverUri = null }) {
+                                    if (thumb != null) {
+                                        androidx.compose.foundation.Image(bitmap = thumb.asImageBitmap(), contentDescription = "Frame ${i + 1}", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                    } else {
+                                        Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.10f)))
+                                    }
+                                    if (sel) {
+                                        Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(16.dp).clip(CircleShape).background(Color.White), contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Filled.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(10.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp)).noRippleClickable { pickCover() }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                Text("Upload custom", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                            }
+                            if (coverUri != null || selectedFrameIdx >= 0) {
+                                Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp)).noRippleClickable { coverUri = null; selectedFrameIdx = -1 }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                    Text("Remove", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                                }
+                            }
+                            Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(Color(0xFF3B82F6)).noRippleClickable { sheet = null }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                Text("Done", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                }
+            }
+            ReelEditorSheet.TRIM -> {
+                // Dismissing (swipe down / back / outside tap) cancels the
+                // trim, like the web's Cancel: the snapshot is restored.
+                ModalBottomSheet(onDismissRequest = {
+                    trimSnapshot?.let { trimStartF = it.first; trimEndF = it.second }
+                    trimSnapshot = null; trimPlaying = false; sheet = null
+                }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.Top) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Trim video", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                Text("${formatTrimTime(trimStartF)} – ${formatTrimTime(trimEndF)}", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+                            }
+                            Text("Cancel", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, modifier = Modifier.noRippleClickable {
+                                trimSnapshot?.let { trimStartF = it.first; trimEndF = it.second }
+                                trimSnapshot = null; trimPlaying = false; sheet = null
+                            })
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(36.dp).clip(CircleShape).background(Color.White).noRippleClickable {
+                                val mp = previewPlayer
+                                if (mp != null) {
+                                    if (mp.isPlaying) {
+                                        try { mp.pause() } catch (_: Exception) {}
+                                        trimPlaying = false
+                                    } else {
+                                        try {
+                                            val pos = mp.currentPosition / 1000f
+                                            if (pos < trimStartF || pos >= trimEndF) mp.seekTo((trimStartF * 1000).toInt())
+                                            mp.start()
+                                        } catch (_: Exception) {}
+                                        trimPlaying = true
+                                    }
+                                }
+                            }, contentAlignment = Alignment.Center) {
+                                Icon(if (trimPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = if (trimPlaying) "Pause" else "Play", tint = Color.Black, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        // Timeline (web): 7 frame thumbnails, draggable
+                        // emerald handles, playhead, selection overlay.
+                        BoxWithConstraints(Modifier.fillMaxWidth().height(64.dp)) {
+                            val wDp = maxWidth
+                            val wPx = with(density) { wDp.toPx() }
+                            val startX = if (durationF > 0f) trimStartF / durationF * wDp else 0.dp
+                            val endX = if (durationF > 0f) trimEndF / durationF * wDp else wDp
+                            val playX = if (durationF > 0f) currentTime.coerceIn(trimStartF, trimEndF) / durationF * wDp else 0.dp
+                            Box(Modifier.fillMaxWidth().padding(top = 24.dp).height(32.dp).clip(RoundedCornerShape(8.dp)).border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.05f)).pointerInput(Unit) {
+                                detectTapGestures(onTap = { offset ->
+                                    if (durationF <= 0f || wPx <= 0f) return@detectTapGestures
+                                    val t = (offset.x / wPx * durationF).coerceIn(trimStartF, trimEndF)
+                                    try { previewPlayer?.seekTo((t * 1000).toInt()); previewPlayer?.start() } catch (_: Exception) {}
+                                    currentTime = t; trimPlaying = true
+                                })
+                            }) {
+                                Row(Modifier.fillMaxSize()) {
+                                    if (coverFrames.isNotEmpty()) {
+                                        coverFrames.forEach { bmp ->
+                                            androidx.compose.foundation.Image(bitmap = bmp.asImageBitmap(), contentDescription = null, modifier = Modifier.weight(1f).fillMaxHeight(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                        }
+                                    } else {
+                                        repeat(7) { Box(Modifier.weight(1f).fillMaxHeight().background(Color.White.copy(alpha = 0.10f))) }
+                                    }
+                                }
+                            }
+                            Box(Modifier.offset { IntOffset(startX.toPx().roundToInt(), 20.dp.toPx().roundToInt()) }.width(endX - startX).height(40.dp).clip(RoundedCornerShape(8.dp)).border(2.dp, Color(0xFF34D399), RoundedCornerShape(8.dp)).background(Color(0xFF34D399).copy(alpha = 0.10f)))
+                            Box(Modifier.offset { IntOffset(playX.toPx().roundToInt(), 4.dp.toPx().roundToInt()) }.width(2.dp).height(56.dp).background(Color.White)) {
+                                Box(Modifier.align(Alignment.TopCenter).offset(y = (-6).dp).size(12.dp).clip(CircleShape).background(Color.White))
+                            }
+                            // Start handle: drags trimStart (min 1s trim).
+                            Box(Modifier.offset { IntOffset((startX - 12.dp).toPx().roundToInt(), 8.dp.toPx().roundToInt()) }.width(24.dp).height(64.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF34D399)).pointerInput(Unit) {
+                                detectDragGestures(onDragStart = {}, onDrag = { _, dragAmount ->
+                                    if (durationF <= 0f || wPx <= 0f) return@detectDragGestures
+                                    val dxSec = dragAmount.x / wPx * durationF
+                                    val newStart = (trimStartF + dxSec).coerceIn(0f, (trimEndF - 1f).coerceAtLeast(0f))
+                                    trimStartF = newStart
+                                    try { previewPlayer?.seekTo((newStart * 1000).toInt()) } catch (_: Exception) {}
+                                    currentTime = newStart
+                                })
+                            }, contentAlignment = Alignment.Center) {
+                                Box(Modifier.width(4.dp).height(32.dp).clip(RoundedCornerShape(50)).background(Color.White))
+                            }
+                            // End handle: drags trimEnd (min 1s trim).
+                            Box(Modifier.offset { IntOffset((endX - 12.dp).toPx().roundToInt(), 8.dp.toPx().roundToInt()) }.width(24.dp).height(64.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF34D399)).pointerInput(Unit) {
+                                detectDragGestures(onDragStart = {}, onDrag = { _, dragAmount ->
+                                    if (durationF <= 0f || wPx <= 0f) return@detectDragGestures
+                                    val dxSec = dragAmount.x / wPx * durationF
+                                    val newEnd = (trimEndF + dxSec).coerceIn((trimStartF + 1f).coerceAtMost(durationF), durationF)
+                                    trimEndF = newEnd
+                                    try { previewPlayer?.seekTo((newEnd * 1000).toInt()) } catch (_: Exception) {}
+                                    currentTime = newEnd
+                                })
+                            }, contentAlignment = Alignment.Center) {
+                                Box(Modifier.width(4.dp).height(32.dp).clip(RoundedCornerShape(50)).background(Color.White))
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp)).noRippleClickable {
+                                trimStartF = 0f; trimEndF = durationF
+                                try { previewPlayer?.seekTo(0) } catch (_: Exception) {}
+                                currentTime = 0f
+                            }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                Text("Reset", color = Color.White, fontSize = 14.sp, maxLines = 1, softWrap = false)
+                            }
+                            Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(Color(0xFF10B981)).noRippleClickable {
+                                if (trimEndF - trimStartF < 1f || durationF < 1f) { message = "Trimmed reel must be at least 1 second long."; return@noRippleClickable }
+                                trimApplied = trimStartF > 0.05f || trimEndF < durationF - 0.05f
+                                trimSnapshot = null; trimPlaying = false; sheet = null
+                            }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                Text("Done", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                }
+            }
+            ReelEditorSheet.CROP -> {
+                ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Color(0xFF0A0A0A), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+                        ReelEditorSheetHeader(title = "Crop", onDone = { sheet = null })
+                        Spacer(Modifier.height(20.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            listOf<Triple<String?, String, String>>(Triple(null, "Original", "9:16"), Triple("square", "Square", "1:1"), Triple("portrait", "Portrait", "4:5")).forEach { (v, label, ratio) ->
+                                val sel = crop == v
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                    Box(Modifier.width(64.dp).aspectRatio(when (v) { "square" -> 1f; "portrait" -> 4f / 5f; else -> 9f / 16f }).clip(RoundedCornerShape(12.dp)).border(if (sel) 2.dp else 1.dp, if (sel) Color(0xFF34D399) else Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp)).background(if (sel) Color(0xFF34D399).copy(alpha = 0.10f) else Color.White.copy(alpha = 0.05f)).noRippleClickable {
+                                        crop = v; sheet = null
+                                        if (v == "square") message = "Square crop applied"
+                                        if (v == "portrait") message = "4:5 crop applied"
+                                    }, contentAlignment = Alignment.Center) {
+                                        Text(ratio, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            null -> {}
         }
     }
 }

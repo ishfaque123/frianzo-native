@@ -1,12 +1,21 @@
-// ---------- IN-APP CAMERA RECORDER (v3.8, F1): TikTok-style recorder —
-// 15s / 60s / 3m picker, 7 effects (B-B29: one name per server filter),
-// flash, front/back flip, countdown
-// timer, speed, Photo mode, gallery pick, progress + timer, auto-stop.
-// CameraX (no system camera intent). Honest limit: the 12 effects are
+// ---------- IN-APP CAMERA RECORDER (v5.2, web-like rebuild): TikTok-style
+// recorder rebuilt to match the live web camera page
+// (vynzo-frontend src/app/reels/camera/page.tsx) exactly — same tools,
+// same places, same sizes. 15s / 60s / 3m pill (default 60s), 12 effects
+// as circular face thumbnails, "All effects" sheet (Trending / Games),
+// right toolbar (Timer / Speed / Photo mode) with popups, record row
+// (Gallery / Record / Flip), recording pill + progress at the TOP.
+// CameraX (no system camera intent). Honest limits: the 12 effects are
 // chosen here and applied by the SERVER at upload (the server filter
 // enum); there is no real-time GPU processing of the preview — the tint
-// overlay is only a preview hint of the chosen effect. Speed is likewise
-// an upload value, not a live preview speed.
+// overlay is only a preview hint of the chosen effect, and the face
+// thumbnails show the effect via a ColorMatrix (the web's CSS chain).
+// Speed is likewise an upload value, not a live preview speed. No
+// backdrop blur (Compose has no backdrop-blur API for the background
+// behind a composable); the pills use the web's black/40 and black/70
+// backgrounds, which read the same. The recording red dot does not
+// pulse (the web's animate-pulse is a CSS animation; a static dot is
+// used instead).
 package com.frianzo.app.ui
 
 import android.Manifest
@@ -28,35 +37,46 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlipCameraAndroid
-import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.composed
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,18 +85,159 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.frianzo.app.R
 import java.io.File
 import kotlinx.coroutines.delay
 
 private fun formatRecTime(ms: Long): String {
     val s = (ms / 1000).toInt()
     return "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
+}
+
+// 4x5 colour matrices (Compose ColorMatrix = 20 floats, translation in
+// 0..1). Same technique as the editor staging's filterColorMatrix, but
+// these are the web CAMERA page's CSS filter chains (not the upload
+// page's), composed into one matrix so the face thumbnails show the REAL
+// effect look.
+private fun camMatIdentity(): FloatArray = floatArrayOf(
+    1f, 0f, 0f, 0f, 0f,
+    0f, 1f, 0f, 0f, 0f,
+    0f, 0f, 1f, 0f, 0f,
+    0f, 0f, 0f, 1f, 0f,
+)
+
+// Returns a*b (b is applied first, then a) for 4x5 matrices.
+private fun camMatMul(a: FloatArray, b: FloatArray): FloatArray {
+    val out = FloatArray(20)
+    for (r in 0 until 4) {
+        for (c in 0 until 5) {
+            var v = 0f
+            for (k in 0 until 4) v += a[r * 5 + k] * b[k * 5 + c]
+            if (c == 4) v += a[r * 5 + 4]
+            out[r * 5 + c] = v
+        }
+    }
+    return out
+}
+
+private fun camMatSaturation(s: Float): FloatArray {
+    val rw = 0.213f; val gw = 0.715f; val bw = 0.072f
+    return floatArrayOf(
+        rw + (1f - rw) * s, gw - gw * s, bw - bw * s, 0f, 0f,
+        rw - rw * s, gw + (1f - gw) * s, bw - bw * s, 0f, 0f,
+        rw - rw * s, gw - gw * s, bw + (1f - bw) * s, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    )
+}
+
+private fun camMatContrast(c: Float): FloatArray {
+    val t = 0.5f * (1f - c)
+    return floatArrayOf(
+        c, 0f, 0f, 0f, t,
+        0f, c, 0f, 0f, t,
+        0f, 0f, c, 0f, t,
+        0f, 0f, 0f, 1f, 0f,
+    )
+}
+
+private fun camMatBrightness(b: Float): FloatArray = floatArrayOf(
+    b, 0f, 0f, 0f, 0f,
+    0f, b, 0f, 0f, 0f,
+    0f, 0f, b, 0f, 0f,
+    0f, 0f, 0f, 1f, 0f,
+)
+
+private fun camMatSepia(a: Float): FloatArray {
+    val sep = floatArrayOf(
+        0.393f, 0.769f, 0.189f, 0f, 0f,
+        0.349f, 0.686f, 0.168f, 0f, 0f,
+        0.272f, 0.534f, 0.131f, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    )
+    val id = camMatIdentity()
+    return FloatArray(20) { i -> id[i] * (1f - a) + sep[i] * a }
+}
+
+private fun camMatHueRotate(deg: Float): FloatArray {
+    val rad = Math.toRadians(deg.toDouble())
+    val cos = Math.cos(rad).toFloat(); val sin = Math.sin(rad).toFloat()
+    val rw = 0.213f; val gw = 0.715f; val bw = 0.072f
+    return floatArrayOf(
+        rw + cos * (1f - rw) + sin * (-rw), gw + cos * (-gw) + sin * (-gw), bw + cos * (-bw) + sin * (1f - bw), 0f, 0f,
+        rw + cos * (-rw) + sin * 0.143f, gw + cos * (1f - gw) + sin * 0.140f, bw + cos * (-bw) + sin * (-0.283f), 0f, 0f,
+        rw + cos * (-rw) + sin * (-(1f - rw)), gw + cos * (-gw) + sin * gw, bw + cos * (1f - bw) + sin * bw, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    )
+}
+
+// The web camera page's CSS filter chain per effect id, as one
+// ColorMatrix. Functions are applied left-to-right like CSS (the first
+// in the chain runs first).
+private fun camFilterColorMatrix(id: String): ColorMatrix {
+    var m = camMatIdentity()
+    fun apply(next: FloatArray) { m = camMatMul(next, m) }
+    when (id) {
+        "vivid" -> { apply(camMatSaturation(1.5f)); apply(camMatContrast(1.12f)) }
+        "warm" -> { apply(camMatSepia(0.3f)); apply(camMatSaturation(1.4f)) }
+        "cool" -> { apply(camMatSaturation(1.1f)); apply(camMatHueRotate(-15f)) }
+        "beauty" -> { apply(camMatBrightness(1.08f)); apply(camMatSaturation(1.2f)); apply(camMatContrast(1.02f)) }
+        "bw" -> { apply(camMatSaturation(0f)); apply(camMatContrast(1.15f)) }
+        "vintage" -> { apply(camMatSepia(0.5f)); apply(camMatSaturation(0.8f)); apply(camMatContrast(0.95f)) }
+        "sunset" -> { apply(camMatSepia(0.4f)); apply(camMatSaturation(1.6f)); apply(camMatHueRotate(-20f)) }
+        "neon" -> { apply(camMatSaturation(2f)); apply(camMatContrast(1.3f)) }
+        "dreamy" -> { apply(camMatBrightness(1.15f)); apply(camMatSaturation(0.9f)); apply(camMatContrast(0.9f)) }
+        "noir" -> { apply(camMatSaturation(0f)); apply(camMatContrast(1.4f)); apply(camMatBrightness(0.9f)) }
+        "golden" -> { apply(camMatSepia(0.6f)); apply(camMatSaturation(1.3f)); apply(camMatBrightness(1.05f)) }
+    }
+    return ColorMatrix(m)
+}
+
+// Web CAMERA_EFFECTS (src/app/reels/camera/page.tsx), in order. server
+// is the upload filter the effect maps to (B-B29: only 7 distinct
+// server filters exist; several camera effects share one).
+private data class CamEffect(val id: String, val name: String, val cat: String, val server: String)
+
+private val CAM_EFFECTS = listOf(
+    CamEffect("normal", "Normal", "trending", "normal"),
+    CamEffect("vivid", "Vivid", "trending", "vivid"),
+    CamEffect("warm", "Warm Glow", "trending", "warm"),
+    CamEffect("cool", "Cool Tone", "trending", "cool"),
+    CamEffect("beauty", "Beauty", "trending", "beauty"),
+    CamEffect("bw", "Mono", "trending", "bw"),
+    CamEffect("vintage", "Vintage", "trending", "vintage"),
+    CamEffect("sunset", "Sunset", "trending", "warm"),
+    CamEffect("neon", "Neon Pop", "games", "vivid"),
+    CamEffect("dreamy", "Dreamy", "games", "beauty"),
+    CamEffect("noir", "Noir", "games", "bw"),
+    CamEffect("golden", "Golden", "games", "warm"),
+)
+
+private val CAM_EFFECT_CATS = listOf("trending" to "Trending", "games" to "Games")
+private val CAM_DURATIONS = listOf(15 to "15s", 60 to "60s", 180 to "3m")
+private val CAM_TIMER_OPTIONS = listOf("Off" to 0, "3s" to 3, "10s" to 10)
+private val CAM_SPEEDS = listOf("0.5x" to "0.5", "1x" to "1", "1.5x" to "1.5", "2x" to "2")
+
+// v4.7 (owner): ripple-free tap for the reels screen — local copy of the
+// Screens2.kt helper (it is private to that file). Compose's default
+// clickable draws a grey ripple on press; on the dark camera preview
+// that reads as a dirty shadow. Same pattern: a remembered
+// MutableInteractionSource with indication = null.
+private fun Modifier.noRippleClickable(onClick: () -> Unit): Modifier = composed {
+    val interactionSource = remember { MutableInteractionSource() }
+    clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
 }
 
 @Composable
@@ -116,7 +277,7 @@ fun ReelCameraScreen(
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     var camera by remember { mutableStateOf<Camera?>(null) }
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
-    // B-B17: an error pill clears itself after 5s (and is cleared by a
+    // B-B17: an error banner clears itself after 5s (and is cleared by a
     // successful record/photo, above) instead of staying pinned all session.
     LaunchedEffect(error) {
         if (error != null) { delay(5000); error = null }
@@ -147,29 +308,28 @@ fun ReelCameraScreen(
 
     // Recorder state.
     var mode by remember { mutableStateOf("video") } // video | photo
-    var maxDurationSec by remember { mutableStateOf(15) }
+    var maxDurationSec by remember { mutableStateOf(60) } // web default is 60s (was 15s)
     var speed by remember { mutableStateOf("1") }
-    var effect by remember { mutableStateOf("Normal") }
+    var effectId by remember { mutableStateOf("normal") } // camera effect id (ColorMatrix)
     var serverFilter by remember { mutableStateOf("normal") }
-    var timerOn by remember { mutableStateOf(false) }
+    var timerSecs by remember { mutableStateOf(0) } // 0 = Off, else 3 or 10 (web TIMER_OPTIONS)
+    var timerOpen by remember { mutableStateOf(false) }
+    var speedOpen by remember { mutableStateOf(false) }
+    var effectsOpen by remember { mutableStateOf(false) }
+    var effectCat by remember { mutableStateOf("trending") }
     var torchOn by remember { mutableStateOf(false) }
     var countdown by remember { mutableStateOf(0) }
     var activeRecording by remember { mutableStateOf<Recording?>(null) }
     var startMs by remember { mutableStateOf(0L) }
     var elapsedMs by remember { mutableStateOf(0L) }
     val recording = activeRecording != null
+    val activeEffect = CAM_EFFECTS.firstOrNull { it.id == effectId } ?: CAM_EFFECTS[0]
+    val selectEffect: (CamEffect) -> Unit = { ef -> effectId = ef.id; serverFilter = ef.server }
 
-    // B-B29: 7 distinct server filters, one name each. The old list
-    // had 12 names for the same 7 filters ("Sunset"/"Warm Glow"/"Golden"
-    // were all "warm", etc.), so different picks uploaded identically.
-    // No new server filters are invented here.
-    val effects = listOf(
-        "Normal" to "normal", "Vivid" to "vivid", "Warm Glow" to "warm",
-        "Cool Tone" to "cool", "Beauty" to "beauty", "Mono" to "bw",
-        "Vintage" to "vintage",
-    )
     // Preview hint tint for the chosen effect (the real effect is applied
-    // by the server at upload — see the file header).
+    // by the server at upload — see the file header). Keyed by the
+    // server filter, so Sunset/Golden share warm, Neon shares vivid,
+    // Dreamy shares beauty, Noir shares bw.
     val tint = when (serverFilter) {
         "warm" -> Color(0xFFF97316).copy(alpha = 0.12f)
         "cool" -> Color(0xFF3B82F6).copy(alpha = 0.12f)
@@ -244,7 +404,11 @@ fun ReelCameraScreen(
         } else elapsedMs = 0L
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+        val third = maxHeight / 3
+        val sheetMaxH = maxHeight * 0.7f
+        val gridMaxH = maxHeight * 0.4f
+
         if (cameraGranted && cameraProvider != null) {
             AndroidView(
                 factory = { previewView.also { preview.setSurfaceProvider(it.surfaceProvider) } },
@@ -256,129 +420,345 @@ fun ReelCameraScreen(
                 Text(if (permanentlyDenied(Manifest.permission.CAMERA)) "Camera permission is off. Turn it on in Settings to use the camera." else "Camera is needed to record a reel or take a photo. (Microphone is only needed for video.)", color = Color.White, fontSize = 15.sp)
                 Spacer(Modifier.height(16.dp))
                 if (permanentlyDenied(Manifest.permission.CAMERA)) {
-                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable { openAppSettings() }.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).noRippleClickable { openAppSettings() }.padding(horizontal = 20.dp, vertical = 12.dp)) {
                         Text("Open Settings", color = Color.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     }
                 } else {
-                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).clickable { permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)) }.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                    Box(Modifier.clip(RoundedCornerShape(28.dp)).background(Color.White).noRippleClickable { permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)) }.padding(horizontal = 20.dp, vertical = 12.dp)) {
                         Text("Allow camera", color = Color.Black, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                Box(Modifier.clickable { onClose() }.padding(8.dp)) { Text("Close", color = Color.White, fontSize = 15.sp) }
+                Box(Modifier.noRippleClickable { onClose() }.padding(8.dp)) { Text("Close", color = Color.White, fontSize = 15.sp) }
             }
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Starting camera…", color = Color.White, fontSize = 15.sp) }
         }
 
         if (cameraGranted) {
-            // Top bar: close, countdown timer, flash, flip — 40dp dark
-            // circles with ~20dp glyphs (live-web sizes).
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(40.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)).clickable { onClose() }, contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.Close, contentDescription = "Close camera", tint = Color.White, modifier = Modifier.size(20.dp))
+            // Top bar: X left, flash right ONLY (web). No Timer/Flip here.
+            Row(
+                Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(40.dp).noRippleClickable { onClose() }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Close, contentDescription = "Close camera", tint = Color.White, modifier = Modifier.size(24.dp))
                 }
-                Spacer(Modifier.weight(1f))
-                Box(Modifier.size(40.dp).clip(CircleShape).background(if (timerOn) Color.White else Color.Black.copy(alpha = 0.45f)).clickable { timerOn = !timerOn }, contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.Timer, contentDescription = "3 second countdown", tint = if (timerOn) Color.Black else Color.White, modifier = Modifier.size(20.dp))
-                }
-                Spacer(Modifier.width(8.dp))
                 if (camera?.cameraInfo?.hasFlashUnit() == true) {
-                    Box(Modifier.size(40.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)).clickable {
+                    Box(Modifier.size(40.dp).noRippleClickable {
                         torchOn = !torchOn
                         try { camera?.cameraControl?.enableTorch(torchOn) } catch (_: Exception) {}
                     }, contentAlignment = Alignment.Center) {
-                        Icon(if (torchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff, contentDescription = "Flash", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(if (torchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff, contentDescription = "Flash", tint = Color.White, modifier = Modifier.size(24.dp))
                     }
-                    Spacer(Modifier.width(8.dp))
-                }
-                Box(Modifier.size(40.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)).clickable {
-                    lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
-                    torchOn = false
-                }, contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip camera", tint = Color.White, modifier = Modifier.size(20.dp))
+                } else {
+                    Spacer(Modifier.size(40.dp))
                 }
             }
 
-            // Countdown number.
-            if (countdown > 0) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("$countdown", color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Bold)
+            // Recording timer + progress at the TOP (web: top-16).
+            if (recording) {
+                Column(Modifier.align(Alignment.TopCenter).padding(top = 64.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(
+                        Modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.5f)).padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFEF4444)))
+                        Text(
+                            "${formatRecTime(elapsedMs)} / ${formatRecTime(maxDurationSec * 1000L)}",
+                            color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Box(Modifier.width(192.dp).height(4.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.2f))) {
+                        Box(Modifier.fillMaxWidth((elapsedMs.toFloat() / (maxDurationSec * 1000f)).coerceIn(0f, 1f)).height(4.dp).background(Color(0xFFEF4444)))
+                    }
                 }
             }
 
-            // Bottom controls.
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-                if (mode == "video") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(formatRecTime(elapsedMs), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.width(8.dp))
-                        Box(Modifier.weight(1f).height(3.dp).background(Color.White.copy(alpha = 0.3f))) {
-                            Box(Modifier.fillMaxWidth((elapsedMs.toFloat() / (maxDurationSec * 1000f)).coerceIn(0f, 1f)).height(3.dp).background(Color.White))
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Text(formatRecTime(maxDurationSec * 1000L), color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    // Duration + speed pickers.
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(listOf(15 to "15s", 60 to "60s", 180 to "3m")) { (v, label) ->
-                            val sel = maxDurationSec == v && !recording
-                            Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.2f)).clickable { if (!recording) maxDurationSec = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                                Text(label, color = if (sel) Color.Black else Color.White, fontSize = 13.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
-                            }
-                        }
-                        items(listOf("0.5" to "0.5×", "1" to "1×", "1.5" to "1.5×", "2" to "2×")) { (v, label) ->
-                            val sel = speed == v && !recording
-                            Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.2f)).clickable { if (!recording) speed = v }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                                Text(label, color = if (sel) Color.Black else Color.White, fontSize = 13.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(10.dp))
+            // Error banner (web: red 90%, rounded 12dp, top-20, margins 16dp).
+            if (error != null) {
+                Box(
+                    Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 80.dp)
+                        .clip(RoundedCornerShape(12.dp)).background(Color(0xFFEF4444).copy(alpha = 0.9f)).padding(12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(error!!, color = Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
                 }
-                // 7 effects (one per server filter) — the chosen one is
-                // applied by the server at upload; the preview tint is only a hint.
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(effects) { (label, server) ->
-                        val sel = effect == label
-                        Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) Color.White else Color.White.copy(alpha = 0.2f)).clickable { effect = label; serverFilter = server }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                            Text(label, color = if (sel) Color.Black else Color.White, fontSize = 13.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
+            }
+
+            // Duration pill (web: bottom-236dp, black/40 pill, 13sp semibold).
+            if (!recording && !effectsOpen) {
+                Row(
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 236.dp)
+                        .clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.4f)).padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    CAM_DURATIONS.forEach { (v, label) ->
+                        val sel = maxDurationSec == v
+                        Box(
+                            Modifier.clip(RoundedCornerShape(50)).background(if (sel) Color.White else Color.Transparent)
+                                .noRippleClickable { if (!recording) maxDurationSec = v }.padding(horizontal = 16.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, color = if (sel) Color.Black else Color.White.copy(alpha = 0.7f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                         }
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            }
+
+            // Effects row: circular face thumbnails (web: bottom-152dp).
+            if (!recording && !effectsOpen) {
+                LazyRow(
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 152.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, bottom = 4.dp),
+                ) {
+                    items(CAM_EFFECTS) { ef ->
+                        val sel = effectId == ef.id
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Box(
+                                Modifier.size(56.dp).clip(CircleShape)
+                                    .border(if (sel) 3.dp else 1.dp, if (sel) Color.White else Color.White.copy(alpha = 0.3f), CircleShape)
+                                    .noRippleClickable { selectEffect(ef) },
+                            ) {
+                                Image(
+                                    painter = painterResource(R.drawable.effect_preview_face),
+                                    contentDescription = ef.name,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
+                                    colorFilter = if (ef.id == "normal") null else ColorFilter.colorMatrix(camFilterColorMatrix(ef.id)),
+                                )
+                            }
+                            Text(
+                                ef.name, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f),
+                                fontSize = 10.sp, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                                modifier = Modifier.widthIn(max = 64.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Right toolbar (web: right-3, top-1/3): Timer, Speed, Photo mode.
+            if (!recording && countdown == 0) {
+                Column(
+                    Modifier.align(Alignment.TopEnd).padding(top = third, end = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.noRippleClickable { timerOpen = !timerOpen; speedOpen = false },
+                    ) {
+                        Icon(Icons.Filled.Timer, contentDescription = "Timer", tint = Color.White, modifier = Modifier.size(22.dp))
+                        Text(if (timerSecs > 0) "${timerSecs}s" else "Timer", color = Color.White.copy(alpha = 0.8f), fontSize = 10.sp)
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.noRippleClickable { speedOpen = !speedOpen; timerOpen = false },
+                    ) {
+                        Icon(Icons.Filled.FlashOn, contentDescription = "Speed", tint = Color.White, modifier = Modifier.size(22.dp))
+                        Text("${speed}x", color = Color.White.copy(alpha = 0.8f), fontSize = 10.sp)
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.noRippleClickable { if (!recording) mode = if (mode == "video") "photo" else "video" },
+                    ) {
+                        Icon(Icons.Filled.PhotoCamera, contentDescription = "Photo mode", tint = Color.White, modifier = Modifier.size(22.dp))
+                        Text(if (mode == "photo") "Photo" else "Video", color = Color.White.copy(alpha = 0.8f), fontSize = 10.sp)
+                    }
+                }
+            }
+
+            // Timer popup (web: right-16, top-1/3, black/70, rounded 16dp).
+            if (timerOpen && !recording) {
+                Column(
+                    Modifier.align(Alignment.TopEnd).padding(top = third, end = 64.dp)
+                        .clip(RoundedCornerShape(16.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(8.dp),
+                ) {
+                    CAM_TIMER_OPTIONS.forEach { (label, value) ->
+                        val sel = timerSecs == value
+                        Box(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (sel) Color.White else Color.Transparent)
+                                .noRippleClickable { timerSecs = value; timerOpen = false }.padding(horizontal = 16.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, color = if (sel) Color.Black else Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+
+            // Speed popup (same position/style as the timer popup).
+            if (speedOpen && !recording) {
+                Column(
+                    Modifier.align(Alignment.TopEnd).padding(top = third, end = 64.dp)
+                        .clip(RoundedCornerShape(16.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(8.dp),
+                ) {
+                    CAM_SPEEDS.forEach { (label, value) ->
+                        val sel = speed == value
+                        Box(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (sel) Color.White else Color.Transparent)
+                                .noRippleClickable { speed = value; speedOpen = false }.padding(horizontal = 16.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, color = if (sel) Color.Black else Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+
+            // Bottom controls (web: bottom-0, pb-8, pt-4).
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(top = 16.dp, bottom = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(40.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     // Gallery pick.
-                    Box(Modifier.size(40.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)).clickable {
-                        if (mode == "video") pickVideo.launch("video/*") else pickPhoto.launch("image/*")
-                    }, contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Image, contentDescription = "Pick from gallery", tint = Color.White, modifier = Modifier.size(20.dp))
+                    Box(
+                        Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.15f))
+                            .noRippleClickable { if (mode == "video") pickVideo.launch("video/*") else pickPhoto.launch("image/*") },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.Image, contentDescription = "Pick from gallery", tint = Color.White, modifier = Modifier.size(22.dp))
                     }
-                    Spacer(Modifier.weight(1f))
-                    // Record / stop — 72dp.
-                    Box(Modifier.size(72.dp).clip(CircleShape).background(Color(0xFFEF4444)).clickable {
-                        if (recording) { activeRecording?.stop() }
-                        else if (mode == "photo") { takePhoto() }
-                        else if (timerOn) { countdown = 3 }
-                        else { startRecording() }
-                    }, contentAlignment = Alignment.Center) {
-                        if (recording) Box(Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(Color.White))
-                        else Box(Modifier.size(56.dp).clip(CircleShape).background(Color(0xFFDC2626)))
+                    // Record / capture — 76dp outer circle, 5dp white border.
+                    Box(
+                        Modifier.size(76.dp).border(5.dp, Color.White.copy(alpha = 0.9f), CircleShape)
+                            .noRippleClickable {
+                                if (recording) { activeRecording?.stop() }
+                                else if (mode == "photo") { takePhoto() }
+                                else if (timerSecs > 0) { countdown = timerSecs }
+                                else { startRecording() }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (mode == "photo") Box(Modifier.size(60.dp).clip(CircleShape).background(Color.White))
+                        else if (recording) Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(Color.White))
+                        else Box(Modifier.size(60.dp).clip(CircleShape).background(Color(0xFFEF4444)))
                     }
-                    Spacer(Modifier.weight(1f))
-                    // Photo / Video mode.
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Video", color = if (mode == "video") Color.White else Color.White.copy(alpha = 0.6f), fontSize = 13.sp, fontWeight = if (mode == "video") FontWeight.Bold else FontWeight.Normal, modifier = Modifier.clickable { if (!recording) mode = "video" }.padding(4.dp))
-                        Text("Photo", color = if (mode == "photo") Color.White else Color.White.copy(alpha = 0.6f), fontSize = 13.sp, fontWeight = if (mode == "photo") FontWeight.Bold else FontWeight.Normal, modifier = Modifier.clickable { if (!recording) mode = "photo" }.padding(4.dp))
+                    // Flip camera.
+                    Box(
+                        Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = 0.15f))
+                            .noRippleClickable {
+                                lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+                                torchOn = false
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip camera", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                }
+                // All effects button (web: below the record row, 12dp gap).
+                if (!recording) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.15f))
+                            .noRippleClickable { effectsOpen = true }.padding(horizontal = 20.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+                        Text("All effects", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
-        }
 
-        if (error != null) {
-            Box(Modifier.align(Alignment.TopCenter).padding(top = 64.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.7f)).padding(horizontal = 14.dp, vertical = 8.dp)) {
-                Text(error!!, color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+            // All Effects sheet (web: overlay black/60, sheet max 70%, #1c1c1e).
+            if (effectsOpen) {
+                Box(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)).noRippleClickable { effectsOpen = false })
+                    Column(
+                        Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = sheetMaxH)
+                            .background(Color(0xFF1C1C1E), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)).padding(16.dp),
+                    ) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column {
+                                Text(activeEffect.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Created by: Frianzo", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                            }
+                            Spacer(Modifier.weight(1f))
+                            Box(
+                                Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.1f))
+                                    .noRippleClickable { effectsOpen = false },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Filled.Close, contentDescription = "Close effects", tint = Color.White, modifier = Modifier.size(24.dp))
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                            CAM_EFFECT_CATS.forEach { (id, name) ->
+                                val sel = effectCat == id
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.noRippleClickable { effectCat = id }.padding(bottom = 8.dp),
+                                ) {
+                                    Text(name, color = if (sel) Color.White else Color.White.copy(alpha = 0.4f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                    Spacer(Modifier.height(4.dp))
+                                    Box(Modifier.size(width = 32.dp, height = 2.dp).clip(RoundedCornerShape(50)).background(if (sel) Color.White else Color.Transparent))
+                                }
+                            }
+                        }
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.1f)))
+                        Spacer(Modifier.height(12.dp))
+                        val shown = CAM_EFFECTS.filter { it.cat == effectCat }
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(4),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = gridMaxH),
+                        ) {
+                            items(shown.size) { i ->
+                                val ef = shown[i]
+                                val sel = effectId == ef.id
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.noRippleClickable { selectEffect(ef); effectsOpen = false },
+                                ) {
+                                    Box(
+                                        Modifier.size(64.dp).clip(RoundedCornerShape(16.dp))
+                                            .border(if (sel) 3.dp else 0.dp, Color.White, RoundedCornerShape(16.dp)),
+                                    ) {
+                                        Image(
+                                            painter = painterResource(R.drawable.effect_preview_face),
+                                            contentDescription = ef.name,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop,
+                                            colorFilter = if (ef.id == "normal") null else ColorFilter.colorMatrix(camFilterColorMatrix(ef.id)),
+                                        )
+                                    }
+                                    Text(
+                                        ef.name, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f),
+                                        fontSize = 11.sp, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                                        modifier = Modifier.widthIn(max = 80.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Countdown overlay (web: full overlay black/40, 128sp number).
+            if (countdown > 0) {
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) {
+                    Text("$countdown", color = Color.White, fontSize = 128.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
