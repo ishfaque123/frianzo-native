@@ -59,6 +59,7 @@ import java.util.Locale
 import java.util.TimeZone
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 // ---------- Drawer destinations, exactly the live web drawer order ----------
 // Settings / Your Activity / Professional Dashboard / Close Friends /
@@ -1570,7 +1571,7 @@ private fun ViewsLineChart(daily: List<DailyView>, selectedDay: Int?, onSelect: 
                 detectTapGestures { offset ->
                     if (daily.size < 2 || canvasWidth <= 0f) return@detectTapGestures
                     val step = canvasWidth / (daily.size - 1)
-                    val idx = kotlin.math.roundToInt(offset.x / step).coerceIn(0, daily.size - 1)
+                    val idx = (offset.x / step).roundToInt().coerceIn(0, daily.size - 1)
                     onSelect(if (selectedDay == idx) null else idx)
                 }
             }
