@@ -3521,6 +3521,7 @@ private fun TagPeopleDialog(api2: FrianzoApi2, initial: List<PublicProfile>, onD
 }
 
 // ---------- CHAT: list + thread (REST polling; live socket = later stage) ----------
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, String) -> Unit) {
     var list by remember { mutableStateOf<List<Conversation>>(emptyList()) }
@@ -6203,7 +6204,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 .sortedWith(compareByDescending<ProfileAllItem> { it.pinned }.thenByDescending { it.createdAt ?: "" })
         items(allEntries, key = { it.key }) { entry ->
             if (entry.reel != null) {
-                FeedReelCard(api2, entry.reel) { id -> onOpenReel?.invoke(id) }
+                FeedReelCard(api2, entry.reel, onOpenReel = { id -> onOpenReel?.invoke(id) })
                 return@items
             }
             val post = entry.post ?: return@items

@@ -802,6 +802,7 @@ fun PostContentText(text: String, fontSizeSp: Int, color: Color, modifier: Modif
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenReel: (String) -> Unit = {}, onTag: (String) -> Unit = {}) {
     val context = LocalContext.current

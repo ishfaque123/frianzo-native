@@ -34,8 +34,8 @@ android {
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 55
-        versionName = "5.18"
+        versionCode = 56
+        versionName = "5.18.1"
     }
 
     buildFeatures { compose = true }
