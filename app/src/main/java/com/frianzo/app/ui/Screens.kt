@@ -761,8 +761,49 @@ fun feedViewModelFactory(api: FrianzoApi, api2: FrianzoApi2, appContext: android
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+/**
+ * v5.18: tappable post/reel text — #tags (blue, semibold) open the tag
+ * page and @mentions open the profile, exactly like the web captions
+ * (PostContent.tsx / FeedReelCard.tsx split on
+ * /(#[a-zA-Z0-9_]+|@[a-zA-Z0-9_.]+)/g). A tap on plain text calls
+ * onTextClick (feed: open the detail; reel card: open the reel).
+ * NOT private — TagScreen.kt reuses it.
+ */
 @Composable
-fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenReel: (String) -> Unit = {}) {
+fun PostContentText(text: String, fontSizeSp: Int, color: Color, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE, fontWeight: FontWeight = FontWeight.Normal, onAuthor: (String) -> Unit = {}, onTag: (String) -> Unit = {}, onTextClick: () -> Unit = {}) {
+    val annotated = androidx.compose.ui.text.buildAnnotatedString {
+        val tagRegex = Regex("(#[A-Za-z0-9_]+|@[A-Za-z0-9_.]+)")
+        var last = 0
+        for (m in tagRegex.findAll(text)) {
+            if (m.range.first > last) append(text.substring(last, m.range.first))
+            val token = m.value
+            val ann = if (token.startsWith("#")) "tag:${token.drop(1)}" else "user:${token.drop(1)}"
+            pushStringAnnotation(ann, ann)
+            withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append(token) }
+            pop()
+            last = m.range.last + 1
+        }
+        if (last < text.length) append(text.substring(last))
+    }
+    ClickableText(
+        text = annotated,
+        style = androidx.compose.ui.text.TextStyle(color = color, fontSize = fontSizeSp.sp, fontWeight = fontWeight),
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier,
+        onClick = { offset ->
+            val ann = annotated.getStringAnnotations(offset, offset).firstOrNull()
+            when {
+                ann?.tag?.startsWith("tag:") == true -> onTag(ann.tag.removePrefix("tag:"))
+                ann?.tag?.startsWith("user:") == true -> onAuthor(ann.tag.removePrefix("user:"))
+                else -> onTextClick()
+            }
+        },
+    )
+}
+
+@Composable
+fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenReel: (String) -> Unit = {}, onTag: (String) -> Unit = {}) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val posts = vm.posts
@@ -1096,9 +1137,14 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             Modifier.fillMaxWidth().padding(horizontal = 12.dp).heightIn(min = 224.dp)
                                 .clip(RoundedCornerShape(16.dp)).background(postBackgroundBrush(post.backgroundStyle!!)),
                             contentAlignment = Alignment.Center
-                        ) { Text(it, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(24.dp).clickable { detailPostId = post.id }) }
+                        ) {
+                            // v5.18: hashtags/mentions tappable on the tile
+                            // (web); a plain tap opens the detail.
+                            PostContentText(it, fontSizeSp = 24, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(24.dp), onAuthor = onAuthor, onTag = onTag, onTextClick = { detailPostId = post.id })
+                        }
                     } else {
-                        Text(it, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp).clickable { detailPostId = post.id })
+                        // v5.18: hashtags/mentions tappable (web).
+                        PostContentText(it, fontSizeSp = 15, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(horizontal = 12.dp), onAuthor = onAuthor, onTag = onTag, onTextClick = { detailPostId = post.id })
                     }
                 }
                 post.imageUrl?.let {
@@ -1177,7 +1223,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             if ((index + 1) % 2 == 0) {
                 val ri = (index + 1) / 2 - 1
                 feedReels.getOrNull(ri)?.let { reel ->
-                    FeedReelCard(vm.api2, reel, onOpenReel = onOpenReel)
+                    FeedReelCard(vm.api2, reel, onOpenReel = onOpenReel, onAuthor = onAuthor, onTag = onTag)
                     Spacer(Modifier.height(8.dp))
                 }
             }
@@ -1250,7 +1296,25 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
-    var dmBusy by remember { mutableStateOf(false) }
+    // v5.18: "Send to" picker (web /messages/new) — the old DM tile
+    // created a chat with the AUTHOR and opened it EMPTY; the link was
+    // never sent (but the share count incremented). Now the user picks
+    // recipients and the link is actually sent to each of them.
+    var showDmPicker by remember { mutableStateOf(false) }
+    var dmQ by remember { mutableStateOf("") }
+    var dmFound by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var dmSelected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var dmSelectedUsers by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var dmSending by remember { mutableStateOf(false) }
+    LaunchedEffect(dmQ) {
+        if (dmQ.isBlank()) { dmFound = emptyList(); return@LaunchedEffect }
+        kotlinx.coroutines.delay(300)
+        val term = dmQ
+        try {
+            val r = vm.api2.searchUsers(term)
+            if (term == dmQ && r.success && r.data != null) dmFound = r.data.users
+        } catch (_: Exception) {}
+    }
     // A-D8: `reposted` was dead state (never read or written) — deleted.
     // A-B11/A-D4/A-D5: errors from share taps (no author, app missing).
     var shareError by remember { mutableStateOf<String?>(null) }
@@ -1268,6 +1332,40 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
         } catch (_: Exception) {}
     }
     fun record(channel: String) { scope.launch { try { vm.api2.recordShareEvent(mapOf("type" to "post", "id" to post.id, "channel" to channel)) } catch (_: Exception) {} } }
+    // v5.18: send the link to every picked recipient (declared after
+    // `link` and `record` — a local fun may only use what is declared
+    // above it).
+    fun sendDm() {
+        if (dmSelected.isEmpty() || dmSending) return
+        dmSending = true; shareError = null
+        val targets = dmSelectedUsers.filter { it.id in dmSelected }
+        scope.launch {
+            var sent = 0
+            var firstConv: Pair<String, String>? = null
+            for (u in targets) {
+                val uid = u.id ?: continue
+                try {
+                    val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(uid))
+                    val convId = res.data?.id ?: continue
+                    val obj = org.json.JSONObject()
+                    obj.put("conversationId", convId)
+                    obj.put("content", link)
+                    val ack = ChatSocket.emitAck("message:send", obj)
+                    if (ack?.optBoolean("success") == true) {
+                        sent += 1
+                        if (firstConv == null) firstConv = convId to (u.displayName ?: u.username ?: "User")
+                    }
+                } catch (_: Exception) {}
+            }
+            dmSending = false
+            if (sent > 0) {
+                record("dm"); onShared()
+                showDmPicker = false; onClose()
+                if (sent == 1 && firstConv != null) onOpenChat(firstConv!!.first, firstConv!!.second)
+                else Toast.makeText(context, "Sent to $sent chats", Toast.LENGTH_SHORT).show()
+            } else shareError = "Couldn't send — try again."
+        }
+    }
     // A-B11 + A-D5: an external share is counted ONLY after its app
     // actually opens — never before the tap, never when the target app
     // is missing, and never when the user only opened the sheet. The
@@ -1320,25 +1418,9 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
             // brand colours, 56dp circles, 11sp labels (ShareTile).
             Row(Modifier.fillMaxWidth()) {
                 Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    // A-D8: disabled while a DM is already being created.
-                    ShareTile("Frianzo DM", Color(0xFF0F172A), "F", enabled = !dmBusy) {
-                        // A-B13: double-tap guard — a second tap while the
-                        // first createConversation is in flight is ignored.
-                        if (dmBusy) return@ShareTile
-                        val authorId2 = post.author?.id
-                        // A-D4: no author id — say so instead of doing nothing.
-                        if (authorId2 == null) { shareError = "Can't message this post's author."; return@ShareTile }
-                        dmBusy = true; shareError = null
-                        scope.launch {
-                            try {
-                                val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId2))
-                                val convId = res.data?.id
-                                if (res.success && convId != null) { record("dm"); onShared(); onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
-                                else shareError = res.error?.message ?: "Couldn't start the chat. Try again."
-                            } catch (e: Exception) { shareError = e.message ?: "Couldn't start the chat. Try again." }
-                            finally { dmBusy = false }
-                        }
-                    }
+                    // v5.18: opens the "Send to" picker (web /messages/new).
+                    // The old tile created an EMPTY chat with the author.
+                    ShareTile("Frianzo DM", Color(0xFF0F172A), "F") { showDmPicker = true }
                 }
                 Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") } }
                 Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("WA Status", Color(0xFF25D366), "W") { openUrl("whatsapp://send?text=" + android.net.Uri.encode(link), "whatsapp_status") } }
@@ -1380,6 +1462,70 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
             }
         }
     }
+    // v5.18: "Send to" picker (web /messages/new?share=<url>): search
+    // people, multi-select, Send — the link goes to each recipient.
+    if (showDmPicker) {
+        ModalBottomSheet(
+            onDismissRequest = { showDmPicker = false },
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Send to", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+                    if (dmSelected.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                        Text("${dmSelected.size} selected", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { showDmPicker = false }, contentPadding = PaddingValues(0.dp)) { Text("Cancel", fontSize = 14.sp, color = FrianzoBlue, maxLines = 1, softWrap = false) }
+                }
+                HorizontalDivider(color = FrianzoBorder)
+                OutlinedTextField(
+                    value = dmQ, onValueChange = { dmQ = it },
+                    label = { Text("Search people") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    shape = RoundedCornerShape(12.dp),
+                )
+                dmFound.forEach { u ->
+                    val selected = u.id != null && dmSelected.contains(u.id)
+                    Row(
+                        Modifier.fillMaxWidth().background(if (selected) FrianzoBlueTint else Color.Transparent).clickable {
+                            val id = u.id ?: return@clickable
+                            if (selected) {
+                                dmSelected = dmSelected - id
+                                dmSelectedUsers = dmSelectedUsers.filter { it.id != id }
+                            } else {
+                                dmSelected = dmSelected + id
+                                dmSelectedUsers = dmSelectedUsers + u
+                            }
+                        }.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FrianzoAvatar(u.profilePictureUrl, 40.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text(u.displayName ?: u.username ?: "User", Modifier.weight(1f), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Box(Modifier.size(20.dp).clip(CircleShape).background(if (selected) FrianzoBlue else Color.Transparent).border(if (selected) 0.dp else 1.dp, if (selected) Color.Transparent else FrianzoBorder, CircleShape), contentAlignment = Alignment.Center) {
+                            if (selected) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                        }
+                    }
+                }
+                if (dmQ.isNotBlank() && dmFound.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("No people found", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { sendDm() },
+                    enabled = dmSelected.isNotEmpty() && !dmSending,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
+                ) {
+                    Text(if (dmSending) "Sending…" else "Send (${dmSelected.size})", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1401,7 +1547,7 @@ private fun ShareTile(label: String, color: Color, letter: String, enabled: Bool
 // caption 14sp, counts 13sp, Like 28x24, Comment/Share 26x22, NO time
 // label, NO eye icon, NO star.
 @Composable
-fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit) {
+fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit, onAuthor: (String) -> Unit = {}, onTag: (String) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var liked by remember(reel.id) { mutableStateOf(reel.liked) }
@@ -1444,8 +1590,10 @@ fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit) {
             }
         }
         // v3.9 (live-web audit #2): no more/less expander — one line, ellipsis only.
+        // v5.18: hashtags/mentions tappable in feed reel captions (web);
+        // a plain tap opens the reel.
         reel.caption?.let {
-            Text(it, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp))
+            PostContentText(it, fontSizeSp = 14, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp), onAuthor = onAuthor, onTag = onTag, onTextClick = { onOpenReel(reel.id) })
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.clickable {

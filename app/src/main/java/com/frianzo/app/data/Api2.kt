@@ -94,7 +94,7 @@ data class PostFavoriteData(val favorited: Boolean = false)
 data class PostFavoritesData(val posts: List<Post>? = null)
 
 // ---------- Chat ----------
-data class ConversationUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val lastActiveAt: String? = null, val isOnline: Boolean = false, val showOnlineStatus: Boolean? = null)
+data class ConversationUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val lastActiveAt: String? = null, val isOnline: Boolean = false, val showOnlineStatus: Boolean? = null, val isVerified: Boolean = false)
 // B-B39: read ticks. isRead/deliveredAt/readAt are populated by the
 // backend when it sends them (nullable until then); the thread also
 // reads otherLastReadAt/DeliveredAt from MessagesData below.
@@ -104,7 +104,7 @@ data class ConversationUser(val id: String?, val username: String?, val displayN
 data class MessageReaction(val userId: String?, val emoji: String?)
 data class ReplyRefSender(val displayName: String?, val username: String?)
 data class ReplyRef(val id: String?, val content: String?, val mediaType: String? = null, val sender: ReplyRefSender? = null, val deletedAt: String? = null)
-data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?, val mediaUrl: String? = null, val mediaType: String? = null, val voiceDuration: Int? = null, val isDeleted: Boolean = false, val isRead: Boolean? = null, val deliveredAt: String? = null, val readAt: String? = null, val replyToId: String? = null, val replyTo: ReplyRef? = null, val reactions: List<MessageReaction>? = null, val isForwarded: Boolean = false, val pinnedAt: String? = null, val pinnedById: String? = null, val editedAt: String? = null)
+data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?, val mediaUrl: String? = null, val mediaType: String? = null, val voiceDuration: Int? = null, val isDeleted: Boolean = false, val isRead: Boolean? = null, val deliveredAt: String? = null, val readAt: String? = null, val replyToId: String? = null, val replyTo: ReplyRef? = null, val reactions: List<MessageReaction>? = null, val isForwarded: Boolean = false, val pinnedAt: String? = null, val pinnedById: String? = null, val editedAt: String? = null, val expiresAt: String? = null)
 data class Conversation(
     val id: String,
     val otherUser: ConversationUser?,
@@ -184,6 +184,19 @@ data class PublicProfile(
 // v3.3: backend getMutualFollowers returns { username, displayName }.
 data class MutualFollower(val username: String?, val displayName: String? = null)
 data class SearchUsersData(val users: List<PublicProfile>)
+// v5.18: GET /api/upload/chat returns {url, mediaType} ("image" | "voice").
+data class UploadChatData(val url: String? = null, val mediaType: String? = null)
+// v5.18: GET /api/tags/:tag returns {tag, posts, reels, hasMore}.
+// The tag reel DTO lacks viewCount/shareCount/category/friendStatus —
+// Gson defaults on Reel cover them, no adapter change needed.
+data class TagData(val tag: String = "", val posts: List<Post> = emptyList(), val reels: List<Reel> = emptyList(), val hasMore: Boolean = false)
+// v5.18: GET /api/search (backend staged, NOT deployed yet — see
+// SEARCH_API_READY below). Response {q, posts, reels, hasMore}.
+data class SearchAllData(val q: String = "", val posts: List<Post> = emptyList(), val reels: List<Reel> = emptyList(), val hasMore: Boolean = false)
+/** v5.18: flip to true ONLY after the GET /api/search backend endpoint is
+ * deployed live. Until then the Posts/Reels search tabs stay hidden so
+ * nothing calls an endpoint that 404s. */
+const val SEARCH_API_READY = false
 data class FollowData(val following: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String?)
 /** Backend GET /api/follows/{id}/status returns { status: "none"|"following"|"follow_back"|"friends"|"self" }. */
 data class FollowStatusData(val status: String?)
@@ -478,7 +491,13 @@ interface FrianzoApi2 {
     @POST("api/messages/conversations")
     suspend fun createConversation(@Body body: CreateConversationRequest): Envelope<CreateConversationData>
     @GET("api/messages/conversations/{id}/messages")
-    suspend fun messages(@Path("id") id: String): Envelope<MessagesData>
+    suspend fun messages(@Path("id") id: String, @Query("cursor") cursor: String? = null): Envelope<MessagesData>
+    // v5.18: chat media upload — POST /api/upload/chat (field "file"),
+    // returns {url, mediaType}. The media itself is then sent over the
+    // socket (message:send with mediaUrl/mediaType), like the web.
+    @Multipart
+    @POST("api/upload/chat")
+    suspend fun uploadChatMedia(@Part file: MultipartBody.Part): Envelope<UploadChatData>
     @POST("api/messages/conversations/{id}/messages")
     suspend fun sendMessage(@Path("id") id: String, @Body body: SendMessageRequest): Envelope<ConversationMessage>
     @DELETE("api/messages/conversations/{id}")
@@ -522,6 +541,13 @@ interface FrianzoApi2 {
     suspend fun publicProfile(@Path("username") username: String): Envelope<ProfileResponse>
     @GET("api/users/search")
     suspend fun searchUsers(@Query("q") q: String): Envelope<SearchUsersData>
+    // v5.18: tag page — GET /api/tags/:tag (exists, no backend change).
+    @GET("api/tags/{tag}")
+    suspend fun getTag(@Path("tag") tag: String, @Query("limit") limit: Int = 20, @Query("offset") offset: Int = 0): Envelope<TagData>
+    // v5.18: post/reel search — GET /api/search (backend staged, gated by
+    // SEARCH_API_READY; do not call while the endpoint is not deployed).
+    @GET("api/search")
+    suspend fun searchAll(@Query("q") q: String, @Query("type") type: String = "all", @Query("limit") limit: Int = 20, @Query("offset") offset: Int = 0): Envelope<SearchAllData>
     @GET("api/posts/user/{username}")
     suspend fun userPosts(@Path("username") username: String): Envelope<FeedData>
     @POST("api/follows/{userId}")

@@ -2,6 +2,7 @@ package com.frianzo.app.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -227,9 +228,10 @@ fun FrianzoLogo(size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier
     )
 }
 
-/** Circular avatar like the web feed: photo if present, light-blue circle otherwise. */
+/** Circular avatar like the web feed: photo if present, light-blue circle otherwise.
+ * v5.18: optional green online dot (web chat list shows one on the avatar). */
 @Composable
-fun FrianzoAvatar(model: String?, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
+fun FrianzoAvatar(model: String?, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, online: Boolean = false) {
     // PERF: decode the avatar at its display size (e.g. 40dp -> ~100px)
     // instead of decoding the full upload, and crossfade in. This cuts
     // decode memory/time per avatar. It does NOT shrink the download
@@ -248,6 +250,15 @@ fun FrianzoAvatar(model: String?, size: androidx.compose.ui.unit.Dp, modifier: M
             modifier = Modifier.size(size).clip(CircleShape),
             contentScale = ContentScale.Crop,
         )
+        if (online) {
+            Box(
+                Modifier.align(androidx.compose.ui.Alignment.BottomEnd)
+                    .size((size.value * 0.32f).dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF22C55E))
+                    .border(2.dp, Color.White, CircleShape)
+            )
+        }
     }
 }
 

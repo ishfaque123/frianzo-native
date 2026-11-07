@@ -152,7 +152,7 @@ private enum class Tab { FEED, REELS, CREATE, CHAT, NOTIFS, SEARCH, PROFILE }
 // GET /api/share/{code} resolve exists, but the native Api2 has no call
 // for it (area B owns Api2.kt), so short links open in the browser
 // instead of being faked in-app — PARTIAL, see the area report.
-private enum class DeepLinkKind { POST, REEL, PROFILE, BROWSER }
+private enum class DeepLinkKind { POST, REEL, PROFILE, BROWSER, TAG }
 private data class DeepLink(val kind: DeepLinkKind, val value: String)
 
 private fun parseDeepLink(uri: Uri?): DeepLink? {
@@ -165,6 +165,7 @@ private fun parseDeepLink(uri: Uri?): DeepLink? {
         seg.size == 1 && seg[0] == "reels" && !uri.getQueryParameter("id").isNullOrBlank() -> DeepLink(DeepLinkKind.REEL, uri.getQueryParameter("id")!!)
         seg.size == 2 && seg[0] == "reels" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.REEL, seg[1])
         seg.size == 2 && seg[0] == "u" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.PROFILE, seg[1])
+        seg.size == 2 && seg[0] == "tag" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.TAG, seg[1])
         seg.size == 2 && seg[0] == "s" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.BROWSER, "https://frianzo.online/s/${seg[1]}")
         else -> null
     }
@@ -191,6 +192,8 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     // v2.9: notification deep-links + AI Video "Post as Reel" handoff.
     var openPostId by rememberSaveable { mutableStateOf<String?>(null) }
     var focusReelId by rememberSaveable { mutableStateOf<String?>(null) }
+    // v5.18: open tag page (from a tapped hashtag or a /tag/{tag} link).
+    var openTag by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingReelUri by remember { mutableStateOf<android.net.Uri?>(null) }
     // v5.1 (web-like reel editor): the editor + camera are full-screen
     // (web: no nav bar on /reels/new) — ReelsScreen reports when either
@@ -231,13 +234,15 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     BackHandler(enabled = openProfile != null) { openProfile = null }
     BackHandler(enabled = drawerScreen != null) { drawerScreen = null }
     BackHandler(enabled = openPostId != null) { openPostId = null }
+    // v5.18: Back from a tag page closes it.
+    BackHandler(enabled = openTag != null) { openTag = null }
     // C-B3: Back from a focused reel returns to the reels list, and Back
     // from Create / Search / Chat list / Notifications / Profile returns
     // to Feed — instead of closing the app. Registered after the overlay
     // handlers, so an open overlay still wins. The tab handler stays off
     // while any overlay is open.
     BackHandler(enabled = focusReelId != null) { focusReelId = null }
-    BackHandler(enabled = tab != Tab.FEED && openChat == null && openProfile == null && drawerScreen == null && openPostId == null && focusReelId == null) {
+    BackHandler(enabled = tab != Tab.FEED && openChat == null && openProfile == null && drawerScreen == null && openPostId == null && focusReelId == null && openTag == null) {
         // Leaving Create by Back drops the pending pick, like Close does.
         if (tab == Tab.CREATE) pendingMedia = null
         tab = Tab.FEED
@@ -252,6 +257,8 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             DeepLinkKind.POST -> { openChat = null; openProfile = null; openPostId = dl.value }
             DeepLinkKind.REEL -> { focusReelId = dl.value; tab = Tab.REELS }
             DeepLinkKind.PROFILE -> { openProfile = dl.value }
+            // v5.18: /tag/{tag} opens the in-app tag page (no backend change).
+            DeepLinkKind.TAG -> { openTag = dl.value }
             DeepLinkKind.BROWSER -> {
                 // Short link: no in-app resolver (see parseDeepLink note).
                 try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(dl.value))) } catch (_: Exception) {
@@ -387,7 +394,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         // drawer screen, post detail), because those need it.
         topBar = {
             if (!reelsEditorOpen) {
-            val overlayOpen = drawerScreen != null || openChat != null || openProfile != null || openPostId != null
+            val overlayOpen = drawerScreen != null || openChat != null || openProfile != null || openPostId != null || openTag != null
             if (overlayOpen || tab != Tab.REELS) {
             Column {
                 TopAppBar(
@@ -497,12 +504,14 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
-                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
-                tab == Tab.REELS -> ReelsScreen(api2, myId, session = reelsSession, onAuthor = { username -> openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null }, onEditorOpenChange = { reelsEditorOpen = it })
+                // v5.18: tag page overlay (hashtag taps + /tag/{tag} links).
+                openTag != null -> TagScreen(api2, openTag!!, myId, onBack = { openTag = null }, onOpenProfile = { username -> openTag = null; openProfile = username }, onOpenReel = { id -> openTag = null; focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openTag = null; openChat = id to name }, onOpenPost = { id -> openTag = null; openPostId = id }, onTag = { t -> openTag = t })
+                tab == Tab.FEED -> FeedScreen(feedVm, myId, onCreatePost = { tab = Tab.CREATE }, onPickMedia = { uri -> pendingMedia = uri; tab = Tab.CREATE }, onAuthor = { username -> if (username.isNotBlank()) openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onTag = { tag -> openTag = tag })
+                tab == Tab.REELS -> ReelsScreen(api2, myId, session = reelsSession, onAuthor = { username -> openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null }, onEditorOpenChange = { reelsEditorOpen = it }, onTag = { tag -> openTag = tag })
                 tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED }, onPostAsReel = { uri -> pendingMedia = null; pendingReelUri = uri; tab = Tab.REELS })
                 tab == Tab.CHAT -> ChatListScreen(api2, myId) { id, name -> openChat = id to name }
                 tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name })
-                tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
+                tab == Tab.SEARCH -> SearchScreen(api2, onTag = { tag -> openTag = tag }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }) { username -> openProfile = username }
                 tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it }, onDashboard = { drawerScreen = "Professional Dashboard" }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
             }
         }

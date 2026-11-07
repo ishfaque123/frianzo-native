@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.composed
@@ -201,7 +202,7 @@ private fun ReelLoadingSpinner() {
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}, onEditorOpenChange: (Boolean) -> Unit = {}) {
+fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}, onEditorOpenChange: (Boolean) -> Unit = {}, onTag: (String) -> Unit = {}) {
     val context = LocalContext.current
     // Hoisted session state (R2): these survive leaving Reels.
     var reels by session::reels
@@ -519,7 +520,7 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     muted = session.isMuted(reel.id, page == 0),
                     onToggleMute = { currentReelId?.let { session.updateMuted(it, !currentMuted) } },
                     dataSaver = dataSaver,
-                    onTag = { tag -> notice = "#$tag — tag pages are not in the app yet"; scope.launch { delay(3000); notice = null } },
+                    onTag = onTag,
                     commentCount = reelCommentCounts[reel.id] ?: reel.commentCount,
                     followOverride = reel.author?.id?.let { authorFollowStates[it] },
                     onFollowChange = { aid, st -> authorFollowStates = authorFollowStates + (aid to st) },
@@ -3536,18 +3537,45 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
     var showNewChat by remember { mutableStateOf(false) }
     var newQ by rememberSaveable { mutableStateOf("") }
     var found by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    // v5.18: selection mode (web: long-press 550ms selects) + delete
+    // confirmation (web: swipe → confirm sheet; the app deletes via the
+    // selection mode / the row Delete button, both confirmed).
+    var selecting by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var pendingDelete by remember { mutableStateOf<Conversation?>(null) }
+    var showBulkDelete by remember { mutableStateOf(false) }
+    var deleteProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    fun loadList() {
-        loading = true
+    fun loadList(quiet: Boolean = false) {
+        if (!quiet) loading = true
         scope.launch {
             try {
                 val res = api2.conversations()
                 if (res.success && res.data != null) list = res.data else error = res.error?.message
             } catch (e: Exception) { error = e.message }
-            finally { loading = false }
+            finally { if (!quiet) loading = false }
         }
     }
     LaunchedEffect(Unit) { loadList() }
+    // v5.18: live refresh — a new message or a presence change reloads
+    // the list quietly (web: socket message:new / presence:*). The
+    // 5s poll is NOT added here; the list only reloads on open + live
+    // events, like the web.
+    DisposableEffect(Unit) {
+        ChatSocket.init(PersistentCookieJar(context))
+        ChatSocket.connect()
+        val onNew = io.socket.emitter.Emitter.Listener { loadList(quiet = true) }
+        val onPresence = io.socket.emitter.Emitter.Listener { loadList(quiet = true) }
+        ChatSocket.on("message:new", onNew)
+        ChatSocket.on("presence:online", onPresence)
+        ChatSocket.on("presence:offline", onPresence)
+        onDispose {
+            ChatSocket.off("message:new", onNew)
+            ChatSocket.off("presence:online", onPresence)
+            ChatSocket.off("presence:offline", onPresence)
+        }
+    }
     // B-B7: only the latest query may write results — a slow earlier
     // response must not overwrite a newer one.
     LaunchedEffect(newQ) {
@@ -3562,8 +3590,20 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
         val name = "${c.otherUser?.displayName ?: ""} ${c.otherUser?.username ?: ""}"
         name.contains(q, ignoreCase = true) || (c.lastMessage?.content ?: "").contains(q, ignoreCase = true)
     }
-    LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentPadding = PaddingValues(vertical = 8.dp)) {
-        item { Text("Chats", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 8.dp)) {
+        // v5.18: selection header (web: Cancel / "N selected" / Delete).
+        if (selecting) {
+            item {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { selecting = false; selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Cancel", maxLines = 1, softWrap = false) }
+                    Text("${selectedIds.size} selected", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    TextButton(onClick = { if (selectedIds.isNotEmpty()) showBulkDelete = true }, enabled = selectedIds.isNotEmpty(), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Delete", color = FrianzoBadgeRed, maxLines = 1, softWrap = false) }
+                }
+            }
+        } else {
+            item { Text("Chats", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+        }
         item {
             OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search conversations...") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
         }
@@ -3598,24 +3638,45 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
         items(shown, key = { it.id }) { c ->
             val other = c.otherUser
             val last = c.lastMessage
-            // v3.4: preview from the real payload — "You:" for my own
-            // message, "Photo"/"Voice message" when mediaType is set.
+            // v5.18 (web parity): empty thread shows "Say hi 👋", not "".
             val preview = when {
-                last == null -> ""
+                last == null -> "Say hi 👋"
                 last.isDeleted -> "Message deleted"
                 last.mediaType == "image" -> "Photo"
                 last.mediaType == "voice" -> "Voice message"
                 else -> last.content ?: ""
             }
-            val youPrefix = last != null && last.senderId == myId && !last.isDeleted && preview.isNotBlank()
+            val youPrefix = last != null && last.senderId == myId && !last.isDeleted && preview.isNotBlank() && preview != "Say hi 👋"
+            val hasUnread = c.unreadCount > 0
+            val selected = selectedIds.contains(c.id)
             ListItem(
-                headlineContent = { Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                supportingContent = { Text((if (youPrefix) "You: " else "") + preview, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                leadingContent = { FrianzoAvatar(other?.profilePictureUrl, 48.dp) },
+                headlineContent = {
+                    // v5.18: verified badge + bold name when unread (web).
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(other?.displayName ?: other?.username ?: "Chat", style = MaterialTheme.typography.titleMedium, fontWeight = if (hasUnread) FontWeight.Bold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        if (other?.isVerified == true) {
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", tint = FrianzoBlue, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                supportingContent = { Text((if (youPrefix) "You: " else "") + preview, style = MaterialTheme.typography.bodySmall, color = if (hasUnread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingContent = {
+                    // v5.18: green online dot on the avatar (web) + a
+                    // check circle while selecting.
+                    if (selecting) {
+                        Box(Modifier.size(48.dp).clip(CircleShape).background(if (selected) FrianzoBlue else Color.Transparent).border(if (selected) 0.dp else 1.dp, if (selected) Color.Transparent else FrianzoBorder, CircleShape), contentAlignment = Alignment.Center) {
+                            if (selected) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                    } else {
+                        FrianzoAvatar(other?.profilePictureUrl, 48.dp, online = other?.isOnline == true && other?.showOnlineStatus != false)
+                    }
+                },
                 trailingContent = {
                     Column(horizontalAlignment = Alignment.End) {
                         val whenText = notifTimeAgo(last?.createdAt ?: c.updatedAt)
-                        if (whenText.isNotBlank()) Text(whenText, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        // v5.18: unread time is blue (web).
+                        if (whenText.isNotBlank()) Text(whenText, fontSize = 12.sp, color = if (hasUnread) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             // v3.4: read ticks from lastMessageStatus (only
                             // for my own last message): sent ✓, delivered ✓✓,
@@ -3629,17 +3690,34 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
                                 )
                                 Spacer(Modifier.width(4.dp))
                             }
-                            if (c.unreadCount > 0) Badge(containerColor = FrianzoBadgeRed) { Text("${c.unreadCount}", maxLines = 1, softWrap = false) }
-                            IconButton(onClick = { scope.launch { try { if (api2.deleteConversation(c.id).success) list = list.filter { it.id != c.id } } catch (_: Exception) {} } }) { Icon(Icons.Filled.Delete, contentDescription = "Delete chat", modifier = Modifier.size(20.dp)) }
+                            // v5.18: unread badge — 99+ cap; exactly 1 is a
+                            // blue dot, not a number (web).
+                            if (c.unreadCount > 1) Badge(containerColor = FrianzoBadgeRed) { Text(if (c.unreadCount > 99) "99+" else "${c.unreadCount}", maxLines = 1, softWrap = false) }
+                            else if (c.unreadCount == 1) Box(Modifier.size(8.dp).clip(CircleShape).background(FrianzoBlue))
+                            if (!selecting) IconButton(onClick = { pendingDelete = c }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.Delete, contentDescription = "Delete chat", modifier = Modifier.size(20.dp)) }
                         }
                     }
                 },
-                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
-                modifier = Modifier.clickable { onOpen(c.id, other?.displayName ?: other?.username ?: "") },
+                colors = ListItemDefaults.colors(containerColor = if (selected) FrianzoBlueTint else MaterialTheme.colorScheme.surface),
+                // v5.18: long-press selects (web: 550ms); tap toggles while
+                // selecting, opens the chat otherwise.
+                modifier = Modifier.combinedClickable(
+                    onClick = {
+                        if (selecting) selectedIds = if (selected) selectedIds - c.id else selectedIds + c.id
+                        else onOpen(c.id, other?.displayName ?: other?.username ?: "")
+                    },
+                    onLongClick = { if (!selecting) { selecting = true; selectedIds = setOf(c.id) } },
+                ),
             )
             HorizontalDivider()
         }
-        if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
+        if (error != null) item {
+            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(error!!, Modifier.weight(1f), color = FrianzoBadgeRed)
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { error = null; loadList() }) { Text("Retry", maxLines = 1, softWrap = false) }
+            }
+        }
         if (loading) item {
             // v5.12: skeleton rows on a bare first load; dots footer stays
             // for a load-more wait.
@@ -3650,6 +3728,62 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
             }
         }
         if (!loading && shown.isEmpty() && error == null) item { Text(if (list.isEmpty()) "No chats yet" else "No conversations match", Modifier.padding(16.dp)) }
+    }
+    // v5.18: delete confirmation (web: "Delete conversation?" sheet).
+    // The old code deleted immediately on tap — no confirmation.
+    if (pendingDelete != null) {
+        val target = pendingDelete!!
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete conversation?") },
+            text = { Text("This will remove the chat from your list. This can't be undone.") },
+            confirmButton = {
+                Button(onClick = {
+                    pendingDelete = null
+                    scope.launch {
+                        try {
+                            if (api2.deleteConversation(target.id).success) {
+                                list = list.filter { it.id != target.id }
+                                Toast.makeText(context, "Conversation deleted", Toast.LENGTH_SHORT).show()
+                            }
+                        } catch (_: Exception) { Toast.makeText(context, "Couldn't delete conversation", Toast.LENGTH_SHORT).show() }
+                    }
+                }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete", maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
+        )
+    }
+    // v5.18: bulk delete confirmation + progress (web: "Deleting n of N…").
+    if (showBulkDelete) {
+        AlertDialog(
+            onDismissRequest = { showBulkDelete = false },
+            title = { Text("Delete ${selectedIds.size} conversation(s)?") },
+            text = { Text("This will remove them from your list. This can't be undone.") },
+            confirmButton = {
+                Button(onClick = {
+                    showBulkDelete = false
+                    val targets = selectedIds.toList()
+                    scope.launch {
+                        var done = 0
+                        for (id in targets) {
+                            deleteProgress = done to targets.size
+                            try { if (api2.deleteConversation(id).success) list = list.filter { it.id != id } } catch (_: Exception) {}
+                            done += 1
+                            deleteProgress = done to targets.size
+                        }
+                        deleteProgress = null
+                        selecting = false
+                        selectedIds = emptySet()
+                        Toast.makeText(context, "${targets.size} conversation(s) deleted", Toast.LENGTH_SHORT).show()
+                    }
+                }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed)) { Text("Delete", maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { showBulkDelete = false }) { Text("Cancel") } },
+        )
+    }
+    deleteProgress?.let { (done, total) ->
+        Text("Deleting $done of $total…", Modifier.fillMaxWidth().padding(8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+    }
     }
 }
 
@@ -3695,12 +3829,36 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     var actionMsg by remember { mutableStateOf<String?>(null) }
     fun showMsg(m: String) { actionMsg = m; scope.launch { delay(2500); if (actionMsg == m) actionMsg = null } }
     var forwardOpen by remember { mutableStateOf(false) }
-    var forwardMessage by remember { mutableStateOf<ConversationMessage?>(null) }
     var forwardConversations by remember { mutableStateOf<List<Conversation>>(emptyList()) }
     var forwardLoaded by remember { mutableStateOf(false) }
     var forwardSelected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var forwardBusy by remember { mutableStateOf(false) }
     var pinnedCycle by remember { mutableStateOf(0) }
+    // v5.18: optimistic sends — local bubbles ("local-…") show a clock
+    // while sending, "Not sent · Tap to retry" when failed.
+    var sendingIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var failedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // v5.18: typing indicator + live presence (web: socket typing:* /
+    // presence:*). The 15s REST presence poll stays as a fallback.
+    var typingUser by remember { mutableStateOf(false) }
+    var lastTypingEmit by remember { mutableStateOf(0L) }
+    // v5.18: cursor pagination (web: "Load older messages", 30/page).
+    var hasMore by remember { mutableStateOf(true) }
+    var loadingOlder by remember { mutableStateOf(false) }
+    // v5.18: Forward enters selection mode (web); the picker then sends
+    // ALL selected messages to each selected chat.
+    var selecting by remember { mutableStateOf(false) }
+    var selectedMessages by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var forwardMessages by remember { mutableStateOf<List<ConversationMessage>>(emptyList()) }
+    // v5.18: photo/voice send + fullscreen image viewer.
+    var viewerUrl by remember { mutableStateOf<String?>(null) }
+    var photoBusy by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
+    var recordSeconds by remember { mutableStateOf(0) }
+    var recorder by remember { mutableStateOf<android.media.MediaRecorder?>(null) }
+    var voiceFile by remember { mutableStateOf<java.io.File?>(null) }
+    // v5.18: verified badge in the thread header (web shows one).
+    var otherIsVerified by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     fun disappearingLabel(duration: Int?): String = when (duration) {
         3600 -> "1 hour"
@@ -3729,6 +3887,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 otherAvatar = other?.profilePictureUrl
                 otherLastActiveAt = other?.lastActiveAt
                 otherIsOnline = other?.isOnline == true
+                otherIsVerified = other?.isVerified == true
                 disappearingDuration = conv?.disappearingDuration
                 timerLabel = disappearingLabel(conv?.disappearingDuration)
                 if (other?.id != null) { try { val bs = api2.blockStatus(other.id); isBlocked = bs.data?.blockedByMe == true } catch (_: Exception) {} }
@@ -3745,7 +3904,52 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         // v5.13: full data-class equality — the poll must also pick up
         // reactions / replyTo / pinnedAt / editedAt / isForwarded changes,
         // not just id/content/isDeleted.
-        if (fresh != messages) messages = fresh
+        // v5.18: optimistic local bubbles ("local-…") survive the 5s poll
+        // until the real message arrives (matched by content + media);
+        // otherwise the bubble would vanish mid-send.
+        val locals = messages.filter { it.id?.startsWith("local-") == true }
+        val keptLocals = locals.filter { local -> fresh.none { it.senderId == myId && it.content == local.content && it.mediaUrl == local.mediaUrl } }
+        val droppedLocals = locals - keptLocals.toSet()
+        if (droppedLocals.isNotEmpty()) {
+            val droppedIds = droppedLocals.mapNotNull { it.id }.toSet()
+            sendingIds = sendingIds - droppedIds
+            failedIds = failedIds - droppedIds
+        }
+        val merged = keptLocals + fresh
+        if (merged != messages) messages = merged
+    }
+    // v5.18: one new message (socket message:new / send ack) — prepends,
+    // because the list is newest-first, and swaps out a matching local
+    // bubble instead of duplicating it.
+    fun addMessage(msg: ConversationMessage) {
+        if (messages.any { it.id == msg.id }) return
+        val matchedLocal = messages.firstOrNull { it.id?.startsWith("local-") == true && it.senderId == myId && it.content == msg.content && it.mediaUrl == msg.mediaUrl }
+        if (matchedLocal != null) {
+            sendingIds = sendingIds - matchedLocal.id!!
+            failedIds = failedIds - matchedLocal.id!!
+            messages = listOf(msg) + messages.filter { it.id != matchedLocal.id }
+        } else {
+            messages = listOf(msg) + messages
+        }
+    }
+    // v5.18: "Load older messages" — cursor = oldest loaded message id
+    // (web: 30/page, hasMore false when fewer than 30 come back).
+    fun loadOlder() {
+        if (loadingOlder || !hasMore) return
+        val cursor = messages.lastOrNull()?.id ?: return
+        loadingOlder = true
+        scope.launch {
+            try {
+                val res = api2.messages(conversationId, cursor = cursor)
+                if (res.success && res.data != null) {
+                    val older = res.data.messages.reversed()
+                    val known = messages.mapNotNull { it.id }.toSet()
+                    messages = messages + older.filter { it.id !in known }
+                    hasMore = res.data.messages.size >= 30
+                }
+            } catch (_: Exception) {}
+            finally { loadingOlder = false }
+        }
     }
     // PERMANENT FIX for H3: poll every 5s while the thread is open, so
     // incoming messages appear without leaving and re-opening the thread.
@@ -3757,7 +3961,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 val res = api2.messages(conversationId)
                 // Backend already returns messages chronological (old -> new);
                 // reverse once so newest-first pairs with reverseLayout below.
-                if (res.success && res.data != null) { mergeMessages(res.data.messages.reversed()); otherLastReadAt = res.data.otherLastReadAt; otherLastDeliveredAt = res.data.otherLastDeliveredAt; loadError = null }
+                if (res.success && res.data != null) { mergeMessages(res.data.messages.reversed()); otherLastReadAt = res.data.otherLastReadAt; otherLastDeliveredAt = res.data.otherLastDeliveredAt; loadError = null; hasMore = res.data.messages.size >= 30 }
                 else loadError = res.error?.message
             } catch (e: Exception) { loadError = e.message }
             // B-B25: presence ("Active now" / last seen) and the timer are
@@ -3806,7 +4010,10 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
             if (json.optString("conversationId") != conversationId) return@Listener
             val msg = parseSocketMessage(json) ?: return@Listener
-            scope.launch { if (messages.none { it.id == msg.id }) mergeMessages(messages + msg) }
+            // v5.18: prepend — the list is newest-first (reversed), so
+            // appending put a new message at the visual top until the
+            // next poll fixed it.
+            scope.launch { addMessage(msg) }
         }
         val onEdited = io.socket.emitter.Emitter.Listener { args ->
             val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
@@ -3840,12 +4047,43 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         ChatSocket.on("message:reaction", onReaction)
         ChatSocket.on("message:pinned", onPinned)
         ChatSocket.on("message:deleted", onDeleted)
+        // v5.18: typing indicator + live presence (web: socket typing:*
+        // / presence:*). Presence updates only when the event is about
+        // the other user in this thread.
+        val onTypingStart = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            if (json.optString("conversationId") != conversationId) return@Listener
+            if (json.optString("userId") == myId) return@Listener
+            scope.launch { typingUser = true }
+        }
+        val onTypingStop = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            if (json.optString("conversationId") != conversationId) return@Listener
+            if (json.optString("userId") == myId) return@Listener
+            scope.launch { typingUser = false }
+        }
+        val onPresenceOnline = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            if (json.optString("userId") == otherUserId) scope.launch { otherIsOnline = true }
+        }
+        val onPresenceOffline = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            if (json.optString("userId") == otherUserId) scope.launch { otherIsOnline = false; typingUser = false }
+        }
+        ChatSocket.on("typing:start", onTypingStart)
+        ChatSocket.on("typing:stop", onTypingStop)
+        ChatSocket.on("presence:online", onPresenceOnline)
+        ChatSocket.on("presence:offline", onPresenceOffline)
         onDispose {
             ChatSocket.off("message:new", onNew)
             ChatSocket.off("message:edited", onEdited)
             ChatSocket.off("message:reaction", onReaction)
             ChatSocket.off("message:pinned", onPinned)
             ChatSocket.off("message:deleted", onDeleted)
+            ChatSocket.off("typing:start", onTypingStart)
+            ChatSocket.off("typing:stop", onTypingStop)
+            ChatSocket.off("presence:online", onPresenceOnline)
+            ChatSocket.off("presence:offline", onPresenceOffline)
         }
     }
     // v5.13: forward picker loads the conversation list when opened.
@@ -3860,9 +4098,37 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         }
     }
     val presenceText = when {
+        // v5.18: the other side typing shows in the status line (web).
+        typingUser -> "Typing…"
         otherIsOnline -> "Active now"
         otherLastActiveAt != null -> "Last seen ${lastSeenText(otherLastActiveAt)}"
         else -> ""
+    }
+    // v5.18: typing emit — typing:start on change (throttled to one per
+    // 2s; the server rate-limits at 10/10s), typing:stop 1500ms after the
+    // last keystroke (web timing).
+    fun emitTypingStart() {
+        val now = System.currentTimeMillis()
+        if (now - lastTypingEmit < 2000) return
+        lastTypingEmit = now
+        ChatSocket.emit("typing:start", org.json.JSONObject().put("conversationId", conversationId))
+    }
+    fun emitTypingStop() {
+        ChatSocket.emit("typing:stop", org.json.JSONObject().put("conversationId", conversationId))
+    }
+    LaunchedEffect(draft) {
+        if (draft.isNotBlank()) {
+            emitTypingStart()
+            kotlinx.coroutines.delay(1500)
+            emitTypingStop()
+        }
+    }
+    // v5.18: voice recording timer (1s ticks while recording).
+    LaunchedEffect(recording) {
+        while (recording) {
+            kotlinx.coroutines.delay(1000)
+            recordSeconds += 1
+        }
     }
     // v5.15: chat wallpaper (local-only) is the thread background.
     val wallpaperColor = ChatWallpapers.firstOrNull { it.first == wallpaperName }?.second ?: Color(0xFFF8FAFC)
@@ -3872,8 +4138,15 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             FrianzoAvatar(otherAvatar, 40.dp)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (presenceText.isNotBlank()) Text(presenceText, fontSize = 12.sp, color = if (otherIsOnline) FrianzoSuccess else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                // v5.18: verified badge next to the name (web).
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (otherIsVerified) {
+                        Spacer(Modifier.width(4.dp))
+                        Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", tint = FrianzoBlue, modifier = Modifier.size(16.dp))
+                    }
+                }
+                if (presenceText.isNotBlank()) Text(presenceText, fontSize = 12.sp, color = if (typingUser) FrianzoBlue else if (otherIsOnline) FrianzoSuccess else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
             }
             if (timerLabel != "Off") Text(timerLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
             Box {
@@ -3930,6 +4203,25 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 }
             }
         }
+        // v5.18: offline banner (web: "You're offline — messages will
+        // send when you reconnect."). The v5.12 Outbox still queues sends.
+        if (!NetworkMonitor.isOnline) {
+            Box(Modifier.fillMaxWidth().background(Color(0xFFFEF3C7)).padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("You're offline — messages will send when you reconnect.", fontSize = 13.sp, color = Color(0xFF92400E))
+            }
+        }
+        // v5.18: selection header (web: Cancel / "N selected" / Forward).
+        if (selecting) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { selecting = false; selectedMessages = emptySet() }, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Cancel", maxLines = 1, softWrap = false) }
+                Text("${selectedMessages.size} selected", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                IconButton(onClick = {
+                    val picked = messages.filter { it.id in selectedMessages && !it.isDeleted }
+                    if (picked.isNotEmpty()) { forwardMessages = picked; forwardSelected = emptySet(); forwardConversations = emptyList(); forwardOpen = true }
+                }, enabled = selectedMessages.isNotEmpty()) { Icon(Icons.Filled.Forward, contentDescription = "Forward selected") }
+            }
+            HorizontalDivider(color = FrianzoBorder)
+        }
         // v5.13: pinned banner (web: sticky at the top of the thread).
         // Tap scrolls to the pinned message and cycles when several.
         val pinnedMessages = messages.filter { it.pinnedAt != null && !it.isDeleted }.sortedByDescending { it.pinnedAt }
@@ -3950,8 +4242,9 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             Spacer(Modifier.height(8.dp))
         }
         // v3.4: big avatar + name + "View profile" pill header.
+        // v5.18: avatar is 80dp (web), was 72dp.
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            FrianzoAvatar(otherAvatar, 72.dp)
+            FrianzoAvatar(otherAvatar, 80.dp)
             Spacer(Modifier.height(8.dp))
             Text(title, fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (otherUsername != null) {
@@ -4073,34 +4366,169 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 } else sendError = "Could not delete message"
             }
         }
-        // v5.13: forward the picked message to the selected chats,
+        // v5.13: forward the picked message(s) to the selected chats,
         // sequentially (web: sendForwardedMessages). The web quirk is
         // kept: isForwarded is true only when forwarding someone else's
-        // message; no replyToId is carried.
+        // message; no replyToId is carried. v5.18: forwards ALL selected
+        // messages (web selection mode), not just one.
         fun sendForward() {
-            val target = forwardMessage ?: return
-            if (forwardSelected.isEmpty() || forwardBusy) return
+            val targets = forwardMessages
+            if (targets.isEmpty() || forwardSelected.isEmpty() || forwardBusy) return
             forwardBusy = true
-            val targets = forwardSelected.toList()
+            val convIds = forwardSelected.toList()
             scope.launch {
                 var failed = false
-                for (targetConvId in targets) {
-                    val obj = org.json.JSONObject()
-                    obj.put("conversationId", targetConvId)
-                    obj.put("content", target.content ?: "")
-                    if (target.mediaUrl != null) obj.put("mediaUrl", target.mediaUrl)
-                    if (target.mediaType != null) obj.put("mediaType", target.mediaType)
-                    if (target.voiceDuration != null) obj.put("voiceDuration", target.voiceDuration)
-                    obj.put("isForwarded", target.senderId != myId)
-                    val ack = ChatSocket.emitAck("message:send", obj)
-                    if (ack?.optBoolean("success") != true) { failed = true; break }
+                for (target in targets) {
+                    for (targetConvId in convIds) {
+                        val obj = org.json.JSONObject()
+                        obj.put("conversationId", targetConvId)
+                        obj.put("content", target.content ?: "")
+                        if (target.mediaUrl != null) obj.put("mediaUrl", target.mediaUrl)
+                        if (target.mediaType != null) obj.put("mediaType", target.mediaType)
+                        if (target.voiceDuration != null) obj.put("voiceDuration", target.voiceDuration)
+                        obj.put("isForwarded", target.senderId != myId)
+                        val ack = ChatSocket.emitAck("message:send", obj)
+                        if (ack?.optBoolean("success") != true) { failed = true; break }
+                    }
+                    if (failed) break
                 }
                 forwardBusy = false
                 forwardOpen = false
-                forwardMessage = null
+                forwardMessages = emptyList()
+                selecting = false
+                selectedMessages = emptySet()
                 if (failed) showMsg("Could not forward message") else showMsg("Message forwarded")
             }
         }
+        // v5.18: optimistic send (web). A local bubble appears at once
+        // with a clock; the socket ack swaps in the real message (the
+        // server also broadcasts message:new, which addMessage dedups).
+        // Ack timeout (15s) or a server rejection marks the bubble failed
+        // — tap to retry. Offline queues it in the v5.12 Outbox instead
+        // (plain text replays over REST, media/reply over the socket).
+        fun sendMessageNow(text: String, reply: ConversationMessage?, mediaUrl: String?, mediaType: String?, voiceDuration: Int?) {
+            val localId = "local-${java.util.UUID.randomUUID()}"
+            val nowIso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date())
+            val local = ConversationMessage(
+                id = localId, content = text, senderId = myId, createdAt = nowIso,
+                mediaUrl = mediaUrl, mediaType = mediaType, voiceDuration = voiceDuration,
+                replyToId = reply?.id,
+                replyTo = reply?.let { ReplyRef(id = it.id, content = it.content, mediaType = it.mediaType, sender = ReplyRefSender(displayName = if (it.senderId == myId) "You" else title, username = null)) },
+            )
+            scope.launch {
+                messages = listOf(local) + messages
+                sendingIds = sendingIds + localId
+                val obj = org.json.JSONObject()
+                obj.put("conversationId", conversationId)
+                obj.put("content", text)
+                if (reply != null) obj.put("replyToId", reply.id)
+                if (mediaUrl != null) obj.put("mediaUrl", mediaUrl)
+                if (mediaType != null) obj.put("mediaType", mediaType)
+                if (voiceDuration != null) obj.put("voiceDuration", voiceDuration)
+                val ack = ChatSocket.emitAck("message:send", obj)
+                if (ack?.optBoolean("success") == true) {
+                    val data = ack.optJSONObject("data")
+                    val sent = data?.let { parseSocketMessage(it) }
+                    if (sent != null) addMessage(sent)
+                    else { messages = messages.filter { it.id != localId }; sendingIds = sendingIds - localId; load() }
+                } else if (!NetworkMonitor.isOnlineNow(context)) {
+                    val fields = mutableMapOf("text" to text)
+                    if (reply?.id != null) fields["replyToId"] = reply.id!!
+                    if (mediaUrl != null) fields["mediaUrl"] = mediaUrl
+                    if (mediaType != null) fields["mediaType"] = mediaType
+                    if (voiceDuration != null) fields["voiceDuration"] = voiceDuration.toString()
+                    Outbox.enqueueJson(context, "MESSAGE", conversationId, fields)
+                    messages = messages.filter { it.id != localId }
+                    sendingIds = sendingIds - localId
+                    sendError = "Waiting for connection…"
+                } else {
+                    sendingIds = sendingIds - localId
+                    failedIds = failedIds + localId
+                    sendError = when (ack?.optString("error")) {
+                        "MESSAGING_RESTRICTED", "LINK_SPAM_RESTRICTED" -> "Messaging is restricted right now — try again later."
+                        "BLOCKED" -> "You can't message this user."
+                        "MESSAGES_DISABLED" -> "This user doesn't accept messages."
+                        "MESSAGES_RESTRICTED" -> "This user only accepts messages from followers."
+                        "RATE_LIMITED" -> "You're sending too fast — slow down."
+                        else -> "Could not send message"
+                    }
+                }
+            }
+        }
+        // v5.18: retry a failed bubble (web: "Not sent · Tap to retry").
+        fun retrySend(local: ConversationMessage) {
+            val id = local.id ?: return
+            failedIds = failedIds - id
+            messages = messages.filter { it.id != id }
+            val reply = local.replyToId?.let { rid -> messages.firstOrNull { it.id == rid } }
+            sendMessageNow(local.content ?: "", reply, local.mediaUrl, local.mediaType, local.voiceDuration)
+        }
+        // v5.18: upload a chat file — POST /api/upload/chat (field
+        // "file"), returns the R2 URL + mediaType. Suspend; callers run
+        // it inside scope.launch.
+        suspend fun uploadChatFile(bytes: ByteArray, fileName: String, mime: String): Pair<String, String>? {
+            val part = okhttp3.MultipartBody.Part.createFormData("file", fileName, bytes.toRequestBody(mime.toMediaTypeOrNull()))
+            val r = api2.uploadChatMedia(part)
+            val url = r.data?.url
+            return if (r.success && url != null) url to (r.data?.mediaType ?: "image") else null
+        }
+        // v5.18: photo send — gallery pick (10 MB limit, web) → upload →
+        // socket send with mediaUrl/mediaType.
+        val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            scope.launch {
+                photoBusy = true
+                try {
+                    val size = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1
+                    if (size > 10 * 1024 * 1024) { sendError = "Photo must be under 10 MB"; return@launch }
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    if (bytes == null) { sendError = "Couldn't read photo"; return@launch }
+                    val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    val uploaded = uploadChatFile(bytes, "photo.jpg", mime)
+                    if (uploaded != null) sendMessageNow("", null, uploaded.first, uploaded.second, null)
+                    else sendError = "Couldn't upload photo"
+                } catch (e: Exception) { sendError = e.message ?: "Couldn't upload photo" }
+                finally { photoBusy = false }
+            }
+        }
+        val photoGate = rememberPermissionGate(galleryPermissions(), onGranted = { photoPicker.launch("image/*") })
+        // v5.18: voice record — mic permission, MediaRecorder AAC/MP4,
+        // upload → socket send with mediaType "voice" + duration.
+        fun startRecording() {
+            try {
+                val file = java.io.File(context.cacheDir, "voice-${System.currentTimeMillis()}.m4a")
+                val rec = android.media.MediaRecorder()
+                rec.setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+                rec.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+                rec.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+                rec.setOutputFile(file.absolutePath)
+                rec.prepare()
+                rec.start()
+                recorder = rec
+                voiceFile = file
+                recordSeconds = 0
+                recording = true
+            } catch (e: Exception) { sendError = e.message ?: "Couldn't start recording" }
+        }
+        fun stopRecording(send: Boolean) {
+            val rec = recorder
+            val file = voiceFile
+            recording = false
+            recorder = null
+            voiceFile = null
+            try { rec?.stop() } catch (_: Exception) {}
+            try { rec?.release() } catch (_: Exception) {}
+            if (!send || file == null || !file.exists()) { file?.delete(); return }
+            val seconds = recordSeconds
+            scope.launch {
+                try {
+                    val uploaded = uploadChatFile(file.readBytes(), "voice.m4a", "audio/mp4")
+                    if (uploaded != null) sendMessageNow("", null, uploaded.first, "voice", seconds) else sendError = "Couldn't upload voice message"
+                } catch (e: Exception) { sendError = e.message ?: "Couldn't upload voice message" }
+                finally { file.delete() }
+            }
+        }
+        val micGate = rememberPermissionGate(arrayOf(android.Manifest.permission.RECORD_AUDIO), onGranted = { startRecording() })
         // B-B39: per-message read ticks. The backend does not (yet)
         // populate per-message isRead/readAt, so ticks derive from the
         // other side's watermarks (GET .../messages returns
@@ -4114,19 +4542,45 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             return "✓" to false
         }
         LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
-            items(messages, key = { it.id ?: "" }) { m ->
+            itemsIndexed(messages, key = { _, m -> m.id ?: "" }) { index, m ->
                 val mine = m.senderId == myId
                 val isDeleting = deletingId == m.id
                 // v5.13: deleted and id-less rows cannot open the sheet.
                 val canAct = !m.isDeleted && m.id != null
-                Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                    Column(horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+                // v5.18: optimistic state (local bubbles only).
+                val isLocal = m.id?.startsWith("local-") == true
+                val isSending = isLocal && sendingIds.contains(m.id)
+                val isFailed = isLocal && failedIds.contains(m.id)
+                val isSelected = m.id != null && selectedMessages.contains(m.id)
+                // v5.18: date separator above the newest message of a day
+                // (list is newest-first, so the neighbour is index-1).
+                val showDate = index == 0 || chatDayKey(messages.getOrNull(index - 1)?.createdAt) != chatDayKey(m.createdAt)
+                // v5.18: same-sender consecutive messages sit tighter (web).
+                val grouped = index > 0 && messages[index - 1].senderId == m.senderId && chatDayKey(messages[index - 1].createdAt) == chatDayKey(m.createdAt)
+                Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = if (grouped) 1.dp else 4.dp)) {
+                    if (showDate) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
+                                Text(chatDateLabel(m.createdAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                Box(Modifier.fillMaxWidth(), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                    // v5.18: bubble max-width 75% (web) — the Column wraps
+                    // content up to 75%, so short messages stay small.
+                    Column(horizontalAlignment = if (mine) Alignment.End else Alignment.Start, modifier = Modifier.fillMaxWidth(0.75f)) {
                     Surface(
-                        color = if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface,
-                        shape = RoundedCornerShape(16.dp),
+                        color = if (isSelected) FrianzoBlueTint else if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface,
+                        // v5.18: tails (web) — one corner square on the
+                        // sender's side.
+                        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = if (mine) 16.dp else 4.dp, bottomEnd = if (mine) 4.dp else 16.dp),
                         border = if (m.pinnedAt != null && !m.isDeleted) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B)) else null,
-                        modifier = Modifier.graphicsLayer { alpha = if (isDeleting) 0.6f else 1f }.pointerInput(m.id) {
-                            detectTapGestures(onLongPress = { if (canAct) actionMessage = m })
+                        modifier = Modifier.graphicsLayer { alpha = if (isDeleting) 0.6f else 1f }.pointerInput(m.id, selecting) {
+                            detectTapGestures(
+                                onLongPress = { if (canAct && !selecting) actionMessage = m },
+                                // v5.18: tap toggles selection while selecting.
+                                onTap = { if (selecting && canAct && m.id != null) selectedMessages = if (isSelected) selectedMessages - m.id!! else selectedMessages + m.id!! },
+                            )
                         }.pointerInput(m.id) {
                             // v5.15: swipe right on a bubble replies (web) —
                             // a horizontal drag past 55dp triggers the same
@@ -4136,7 +4590,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                             detectHorizontalDragGestures(
                                 onDragStart = { totalDx = 0f },
                                 onHorizontalDrag = { _, dragAmount -> totalDx += dragAmount },
-                                onDragEnd = { if (totalDx > 55.dp.toPx() && canAct) { replyTo = m; editingMessage = null } },
+                                onDragEnd = { if (totalDx > 55.dp.toPx() && canAct && !selecting) { replyTo = m; editingMessage = null } },
                             )
                         }
                     ) {
@@ -4156,16 +4610,37 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                                 }
                                 Spacer(Modifier.height(6.dp))
                             }
-                            // v3.4: a received photo/voice has no text content —
-                            // show "Photo"/"Voice message" instead of an empty bubble.
-                            val mediaLabel = when {
-                                m.isDeleted -> "Message deleted"
-                                m.mediaType == "image" -> "Photo"
-                                m.mediaType == "voice" -> "Voice message" + if ((m.voiceDuration ?: 0) > 0) " (${m.voiceDuration}s)" else ""
-                                else -> null
+                            // v5.18: real photo / voice rendering (web). A
+                            // photo shows the image (tap → fullscreen +
+                            // Download); a voice message shows a player.
+                            // Text-only fallback keeps the old labels.
+                            if (!m.isDeleted && m.mediaType == "image" && m.mediaUrl != null) {
+                                AsyncImage(
+                                    model = m.mediaUrl,
+                                    contentDescription = "Photo",
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 288.dp).clip(RoundedCornerShape(12.dp)).clickable { viewerUrl = m.mediaUrl },
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                )
+                                if ((m.content ?: "").isNotBlank()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(m.content!!, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                                }
+                            } else if (!m.isDeleted && m.mediaType == "voice" && m.mediaUrl != null) {
+                                VoiceMessagePlayer(url = m.mediaUrl, durationSec = m.voiceDuration, mine = mine)
+                                if ((m.content ?: "").isNotBlank()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(m.content!!, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                                }
+                            } else {
+                                val mediaLabel = when {
+                                    m.isDeleted -> "Message deleted"
+                                    m.mediaType == "image" -> "Photo"
+                                    m.mediaType == "voice" -> "Voice message" + if ((m.voiceDuration ?: 0) > 0) " (${m.voiceDuration}s)" else ""
+                                    else -> null
+                                }
+                                val shown = if ((m.content ?: "").isBlank()) mediaLabel ?: "" else m.content ?: ""
+                                Text(shown, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
                             }
-                            val shown = if ((m.content ?: "").isBlank()) mediaLabel ?: "" else m.content ?: ""
-                            Text(shown, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
                         }
                     }
                     // v5.13: reactions — deduplicated emoji pills (web: no
@@ -4189,17 +4664,54 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                         }
                     }
                     if (isDeleting) Text("Deleting…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, end = 4.dp), maxLines = 1, softWrap = false)
-                    if (mine) {
-                        val (tick, tickRead) = tickFor(m)
-                        Row(Modifier.padding(top = 2.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (m.editedAt != null) Text("Edited", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                            if (m.editedAt != null) Spacer(Modifier.width(6.dp))
-                            Text(tick, fontSize = 11.sp, color = if (tickRead) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    // v5.18: time + ticks in one row (web: "09:41 PM ✓✓").
+                    // "edited ·" prefixes the time; a clock icon marks a
+                    // disappearing message; a sending bubble shows 🕐.
+                    Row(Modifier.padding(top = 2.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (m.editedAt != null) {
+                            Text("edited · ", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                         }
-                    } else if (m.editedAt != null) {
-                        Text("Edited", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, start = 4.dp), maxLines = 1, softWrap = false)
+                        val timeText = chatTime(m.createdAt)
+                        if (timeText.isNotBlank()) Text(timeText, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        if (m.expiresAt != null && !m.isDeleted) {
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.Filled.AccessTime, contentDescription = "Disappears", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                        }
+                        if (mine) {
+                            Spacer(Modifier.width(4.dp))
+                            if (isSending) {
+                                Text("🕐", fontSize = 11.sp, maxLines = 1, softWrap = false)
+                            } else {
+                                val (tick, tickRead) = tickFor(m)
+                                Text(tick, fontSize = 11.sp, color = if (tickRead) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                    // v5.18: failed bubble — "Not sent · Tap to retry" (web).
+                    if (isFailed) {
+                        Text("Not sent · Tap to retry", fontSize = 11.sp, color = FrianzoBadgeRed, modifier = Modifier.padding(top = 2.dp, end = 4.dp).clickable { retrySend(m) }, maxLines = 1, softWrap = false)
                     }
                     } // Column
+                }
+                } // date Column
+            }
+            // v5.18: "Load older messages" sits at the visual top (the
+            // last item in a reverseLayout list) when more pages exist.
+            if (hasMore && messages.isNotEmpty()) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+                        OutlinedButton(onClick = { loadOlder() }, enabled = !loadingOlder, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)) {
+                            Text(if (loadingOlder) "Loading…" else "Load older messages", maxLines = 1, softWrap = false)
+                        }
+                    }
+                }
+            }
+            // v5.18: empty state (web: "No messages yet").
+            if (messages.isEmpty() && loadError == null) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Text("No messages yet", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
@@ -4248,7 +4760,10 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                             if (ack?.optBoolean("success") == true) load() else showMsg("Couldn't pin — try again")
                         }
                     }
-                    ChatActionRow(Icons.Filled.Forward, "Forward") { actionMessage = null; forwardMessage = target; forwardSelected = emptySet(); forwardConversations = emptyList(); forwardOpen = true }
+                    // v5.18: Forward enters selection mode (web) with
+                    // this message pre-selected; the picker opens from
+                    // the selection header.
+                    ChatActionRow(Icons.Filled.Forward, "Forward") { actionMessage = null; selecting = true; selectedMessages = setOf(target.id!!) }
                     ChatActionRow(Icons.Filled.Delete, "Delete", red = true) { actionMessage = null; deleteTarget = target; showDeleteDialog = true }
                     Spacer(Modifier.height(12.dp))
                     GreyCancelPill(modifier = Modifier.padding(horizontal = 16.dp), onClick = { actionMessage = null })
@@ -4266,7 +4781,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             ) {
                 Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Forward message", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+                        Text(if (forwardMessages.size > 1) "Forward ${forwardMessages.size} messages" else "Forward message", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
                         if (forwardSelected.isNotEmpty()) {
                             Spacer(Modifier.width(8.dp))
                             Text("${forwardSelected.size} selected", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
@@ -4341,8 +4856,38 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 }
             }
         }
-        loadError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
+        // v5.18: load error with Retry (web: "Couldn't load messages").
+        loadError?.let {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(it, Modifier.weight(1f), color = FrianzoBadgeRed)
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { loadError = null; load() }) { Text("Retry", maxLines = 1, softWrap = false) }
+            }
+        }
         sendError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
+        // v5.18: fullscreen image viewer (web: tap a photo → viewer with
+        // Download + Close).
+        if (viewerUrl != null) {
+            Dialog(onDismissRequest = { viewerUrl = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+                    AsyncImage(model = viewerUrl, contentDescription = "Photo", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
+                    Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { viewerUrl = null }) { Text("Close", color = Color.White, maxLines = 1, softWrap = false) }
+                        TextButton(onClick = {
+                            val url = viewerUrl!!
+                            try {
+                                val dm = context.getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+                                val req = android.app.DownloadManager.Request(android.net.Uri.parse(url))
+                                    .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                                    .setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, "frianzo-${System.currentTimeMillis()}.jpg")
+                                dm.enqueue(req)
+                                Toast.makeText(context, "Downloading…", Toast.LENGTH_SHORT).show()
+                            } catch (_: Exception) { Toast.makeText(context, "Couldn't download photo", Toast.LENGTH_SHORT).show() }
+                        }) { Text("Download", color = Color.White, maxLines = 1, softWrap = false) }
+                    }
+                }
+            }
+        }
         // v5.13: feedback pill (same pattern as the reel actionMsg).
         if (actionMsg != null) {
             Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
@@ -4371,15 +4916,34 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 TextButton(onClick = { editingMessage = null; draft = "" }) { Text("Cancel", fontSize = 13.sp, color = Color(0xFF92400E), maxLines = 1, softWrap = false) }
             }
         }
-        Row(Modifier.background(MaterialTheme.colorScheme.surface).padding(8.dp)) {
-            // v3.4: no photo/mic send buttons — photo/voice sending is
-            // socket-only (no REST endpoint), so they are not faked here.
-            OutlinedTextField(value = draft, onValueChange = { draft = it }, placeholder = { Text("Message...") }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(28.dp))
+        // v5.18: blocked → the composer is replaced by an Unblock button
+        // (web); recording replaces the row with Cancel / timer / Send.
+        if (isBlocked) {
+            Button(
+                onClick = { scope.launch { try { if (otherUserId != null && api2.unblockUser(otherUserId!!).success) isBlocked = false } catch (_: Exception) {} } },
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                shape = RoundedCornerShape(28.dp),
+            ) { Text("Unblock to send messages", maxLines = 1, softWrap = false) }
+        } else if (recording) {
+            Row(Modifier.background(MaterialTheme.colorScheme.surface).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { stopRecording(false) }) { Icon(Icons.Filled.Close, contentDescription = "Cancel recording") }
+                Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFEF4444)))
+                Spacer(Modifier.width(8.dp))
+                Text("Recording… ${recordSeconds / 60}:${"%02d".format(recordSeconds % 60)}", Modifier.weight(1f), fontSize = 15.sp, maxLines = 1, softWrap = false)
+                Button(shape = RoundedCornerShape(28.dp), onClick = { stopRecording(true) }) { Text("Stop and send", maxLines = 1, softWrap = false) }
+            }
+        } else Row(Modifier.background(MaterialTheme.colorScheme.surface).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            // v5.18: photo + mic send buttons (web). The old comment
+            // claimed media sending was "socket-only (no REST endpoint)"
+            // — the upload endpoint + socket media fields both exist
+            // (verified in the backend code), so the buttons are real.
+            IconButton(onClick = { photoGate() }, enabled = !photoBusy, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.Image, contentDescription = "Send photo", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) }
+            // v5.18: max message length 2000 (web).
+            OutlinedTextField(value = draft, onValueChange = { if (it.length <= 2000) draft = it }, placeholder = { Text("Message...") }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(28.dp))
+            IconButton(onClick = { micGate() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.Mic, contentDescription = "Record voice message", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) }
             // v3.4: Send appears only once text is typed.
             if (draft.isNotBlank()) {
                 Spacer(Modifier.width(8.dp))
-                // B-B1: a server rejection restores the draft (was: the
-                // message vanished with no error on success == false).
                 Button(shape = RoundedCornerShape(28.dp), onClick = {
                     sendError = null
                     val text = draft
@@ -4399,40 +4963,11 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                         return@Button
                     }
                     draft = ""
-                    scope.launch {
-                        // v5.13: a reply goes over the socket (the REST
-                        // send has no replyToId field).
-                        if (reply != null) {
-                            val obj = org.json.JSONObject().put("conversationId", conversationId).put("content", text).put("replyToId", reply.id)
-                            ChatSocket.emitWithAck("message:send", obj) { ack ->
-                                if (ack?.optBoolean("success") == true) {
-                                    replyTo = null
-                                    val data = ack.optJSONObject("data")
-                                    val sent = data?.let { try { com.google.gson.Gson().fromJson(it.toString(), ConversationMessage::class.java) } catch (_: Exception) { null } }
-                                    if (sent != null && messages.none { it.id == sent.id }) mergeMessages(messages + sent) else load()
-                                } else if (!NetworkMonitor.isOnlineNow(context)) {
-                                    // Offline: queue the reply; the flush
-                                    // replays it over the socket so the
-                                    // reply link is not lost.
-                                    Outbox.enqueueJson(context, "MESSAGE", conversationId, mapOf("text" to text, "replyToId" to (reply.id ?: "")))
-                                    replyTo = null
-                                    sendError = "Waiting for connection…"
-                                } else { draft = text; sendError = "Could not send reply" }
-                            }
-                            return@launch
-                        }
-                        try {
-                            val r = api2.sendMessage(conversationId, SendMessageRequest(text))
-                            if (r.success) load() else { draft = text; sendError = r.error?.message ?: "Couldn't send message" }
-                            } catch (e: Exception) {
-                                if (Outbox.isNetworkError(e)) {
-                                    // v5.12: offline — queue the message; the
-                                    // flush replays it when back online.
-                                    Outbox.enqueueJson(context, "MESSAGE", conversationId, mapOf("text" to text))
-                                    sendError = "Waiting for connection…"
-                                } else { draft = text; sendError = e.message }
-                            }
-                    }
+                    emitTypingStop()
+                    replyTo = null
+                    // v5.18: optimistic socket send (replaces the REST
+                    // send; replies already went over the socket).
+                    sendMessageNow(text, reply, null, null, null)
                 }) { Text("Send", maxLines = 1, softWrap = false) }
             }
         }
@@ -4475,7 +5010,7 @@ private fun notificationTitle(n: NotificationItem): String {
     return "$actor $action"
 }
 
-private fun notifTimeAgo(createdAt: String?): String {
+fun notifTimeAgo(createdAt: String?): String {
     if (createdAt.isNullOrBlank()) return ""
     return try {
         val f = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
@@ -4483,6 +5018,109 @@ private fun notifTimeAgo(createdAt: String?): String {
         val s = ((System.currentTimeMillis() - millis) / 1000).coerceAtLeast(0)
         when { s < 60 -> "now"; s < 3600 -> "${s / 60}m"; s < 86400 -> "${s / 3600}h"; s < 604800 -> "${s / 86400}d"; s < 2592000 -> "${s / 604800}w"; else -> "${s / 2592000}mo" }
     } catch (_: Exception) { createdAt.take(10) }
+}
+
+// ---------- v5.18: chat time helpers (web: "09:41 PM", "Today" /
+// "Yesterday" / "5 Nov" / "5 Nov 2025") ----------
+private fun parseChatMillis(iso: String?): Long? {
+    if (iso.isNullOrBlank()) return null
+    return try {
+        val f = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        f.parse(iso)?.time
+    } catch (_: Exception) { null }
+}
+
+private fun chatTime(iso: String?): String {
+    val ms = parseChatMillis(iso) ?: return ""
+    return java.text.SimpleDateFormat("hh:mm a", java.util.Locale.US).format(java.util.Date(ms))
+}
+
+private fun chatDayKey(iso: String?): String {
+    val ms = parseChatMillis(iso) ?: return ""
+    return java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(ms))
+}
+
+private fun chatDateLabel(iso: String?): String {
+    val ms = parseChatMillis(iso) ?: return ""
+    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+    val key = fmt.format(java.util.Date(ms))
+    val cal = java.util.Calendar.getInstance()
+    val today = fmt.format(cal.time)
+    cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+    val yesterday = fmt.format(cal.time)
+    return when (key) {
+        today -> "Today"
+        yesterday -> "Yesterday"
+        else -> {
+            val yearNow = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+            val yearMsg = java.util.Calendar.getInstance().apply { timeInMillis = ms }.get(java.util.Calendar.YEAR)
+            if (yearMsg == yearNow) java.text.SimpleDateFormat("d MMM", java.util.Locale.US).format(java.util.Date(ms))
+            else java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.US).format(java.util.Date(ms))
+        }
+    }
+}
+
+private fun formatVoiceTime(sec: Int): String = "%d:%02d".format(sec / 60, sec % 60)
+
+/** v5.18: voice message player (web: play/pause + waveform + seek +
+ * duration). The waveform is a progress bar here — a real 32-bar
+ * waveform needs audio decoding; the playback and seek are real. */
+@Composable
+private fun VoiceMessagePlayer(url: String, durationSec: Int?, mine: Boolean) {
+    var player by remember(url) { mutableStateOf<android.media.MediaPlayer?>(null) }
+    var playing by remember(url) { mutableStateOf(false) }
+    var positionMs by remember(url) { mutableStateOf(0) }
+    var totalMs by remember(url) { mutableStateOf((durationSec ?: 0) * 1000) }
+    var prepared by remember(url) { mutableStateOf(false) }
+    fun ensurePlayer(): android.media.MediaPlayer? {
+        player?.let { return it }
+        return try {
+            val mp = android.media.MediaPlayer()
+            mp.setDataSource(url)
+            mp.setOnPreparedListener {
+                totalMs = if (mp.duration > 0) mp.duration else totalMs
+                prepared = true
+                if (playing) { try { mp.start() } catch (_: Exception) {} }
+            }
+            mp.setOnCompletionListener { playing = false; positionMs = 0 }
+            mp.setOnErrorListener { _, _, _ -> playing = false; true }
+            mp.prepareAsync()
+            player = mp
+            mp
+        } catch (_: Exception) { null }
+    }
+    DisposableEffect(url) {
+        onDispose { try { player?.release() } catch (_: Exception) {}; player = null }
+    }
+    LaunchedEffect(playing) {
+        while (playing) {
+            val mp = player
+            if (mp != null) { try { positionMs = mp.currentPosition } catch (_: Exception) {} }
+            kotlinx.coroutines.delay(200)
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = {
+            val mp = ensurePlayer() ?: return@IconButton
+            if (playing) {
+                try { mp.pause() } catch (_: Exception) {}
+                playing = false
+            } else {
+                playing = true
+                if (prepared) { try { mp.start() } catch (_: Exception) {} }
+            }
+        }, modifier = Modifier.size(36.dp)) {
+            Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = if (mine) Color.White else FrianzoBlue, modifier = Modifier.size(24.dp))
+        }
+        Slider(
+            value = positionMs.toFloat(),
+            onValueChange = { v -> positionMs = v.toInt(); try { player?.seekTo(v.toInt()) } catch (_: Exception) {} },
+            valueRange = 0f..(totalMs.coerceAtLeast(1)).toFloat(),
+            modifier = Modifier.weight(1f),
+            colors = SliderDefaults.colors(thumbColor = if (mine) Color.White else FrianzoBlue, activeTrackColor = if (mine) Color.White else FrianzoBlue),
+        )
+        Text(formatVoiceTime(positionMs / 1000) + " / " + formatVoiceTime(totalMs / 1000), fontSize = 11.sp, color = if (mine) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+    }
 }
 
 @Composable
@@ -4616,12 +5254,20 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
 
 // ---------- SEARCH (users) + PROFILE ----------
 @Composable
-fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
+// v5.18: tabs People | Posts | Reels | Tags (web search is people-only;
+// tabs are the owner's approved #8 design). Posts/Reels call the new
+// GET /api/search endpoint and are hidden until SEARCH_API_READY is true
+// (the backend is staged, not deployed yet). Tags opens a tag page.
+fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit, onTag: (String) -> Unit = {}, onOpenPost: (String) -> Unit = {}, onOpenReel: (String) -> Unit = {}) {
     val context = LocalContext.current
     var q by rememberSaveable { mutableStateOf("") }
+    var tab by rememberSaveable { mutableStateOf("People") }
     var results by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
+    // v5.18: Posts/Reels search results (GET /api/search, gated).
+    var allResults by remember { mutableStateOf<SearchAllData?>(null) }
+    var allSearching by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     // Recent searches, kept on the phone only (SharedPreferences, no backend).
     // Stored as one newline-joined string so order is newest-first, and
@@ -4648,29 +5294,69 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
             finally { if (term == q) searching = false }
         }
     }
+    // v5.18: post/reel search (GET /api/search — gated by
+    // SEARCH_API_READY; never called while the endpoint is not live).
+    fun runSearchAll(term: String, type: String) {
+        if (term.isBlank()) { allResults = null; return }
+        searchError = null; allSearching = true
+        scope.launch {
+            try {
+                val res = api2.searchAll(term, type = type)
+                if (term != q) return@launch
+                if (res.success && res.data != null) allResults = res.data
+                else searchError = res.error?.message ?: "Couldn't search — try again"
+            } catch (e: Exception) { if (term == q) searchError = e.message ?: "Couldn't search — try again" }
+            finally { if (term == q) allSearching = false }
+        }
+    }
     // Live search as you type (300ms debounce), plus the Search button.
-    LaunchedEffect(q) {
-        if (q.isBlank()) { results = emptyList(); return@LaunchedEffect }
+    // v5.18: the active tab decides which endpoint runs.
+    LaunchedEffect(q, tab) {
+        if (q.isBlank()) { results = emptyList(); allResults = null; return@LaunchedEffect }
         kotlinx.coroutines.delay(300)
-        runSearch(q, saveRecent = false)
+        when (tab) {
+            "Posts" -> runSearchAll(q, "posts")
+            "Reels" -> runSearchAll(q, "reels")
+            "Tags" -> { /* tags need no search — #query opens the page */ }
+            else -> runSearch(q, saveRecent = false)
+        }
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         OutlinedTextField(
             value = q, onValueChange = { q = it },
-            label = { Text("Search people") }, singleLine = true,
+            label = { Text("Search") }, singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             shape = RoundedCornerShape(12.dp),
-            trailingIcon = { IconButton(onClick = { runSearch(q, saveRecent = true) }) { Icon(Icons.Filled.Search, contentDescription = "Search") } },
+            // v5.18: clear (X) button when there is text (web parity
+            // for the field); the Search button saves a recent.
+            trailingIcon = {
+                if (q.isNotBlank()) {
+                    IconButton(onClick = { q = ""; results = emptyList(); allResults = null; searchError = null }) { Icon(Icons.Filled.Close, contentDescription = "Clear search") }
+                } else {
+                    IconButton(onClick = { runSearch(q, saveRecent = true) }) { Icon(Icons.Filled.Search, contentDescription = "Search") }
+                }
+            },
         )
+        // v5.18: tabs (Posts/Reels hidden until GET /api/search lands).
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val tabNames = buildList { add("People"); if (SEARCH_API_READY) { add("Posts"); add("Reels") }; add("Tags") }
+            tabNames.forEach { name ->
+                val selected = tab == name
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (selected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { tab = name }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Text(name, style = MaterialTheme.typography.bodyMedium, color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         // v5.12: skeleton rows while searching with no results yet.
-        if (searching) {
-            if (results.isEmpty()) {
+        if (searching || allSearching) {
+            if (results.isEmpty() && allResults == null) {
                 Column { repeat(5) { SkeletonRow() } }
             } else {
                 Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) { DotsLoading() }
             }
         }
-        if (q.isBlank() && recents.isNotEmpty()) {
+        if (tab == "People" && q.isBlank() && recents.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Recent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 TextButton(onClick = { recents = emptyList(); saveRecents(emptyList()) }) { Text("Clear", maxLines = 1, softWrap = false) }
@@ -4685,19 +5371,85 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit) {
                 HorizontalDivider()
             }
         }
-        searchError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
-        if (results.isEmpty() && searchError == null && q.isNotBlank() && !searching) Text("No people found", Modifier.padding(16.dp))
-        if (results.isEmpty() && searchError == null && q.isBlank() && recents.isEmpty()) Text("Search for people by name or @username. Post search is not available yet — the backend has no post-search endpoint.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        LazyColumn {
-            items(results, key = { it.id ?: it.username ?: "" }) { u ->
-                ListItem(
-                    headlineContent = { Text(u.displayName ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
-                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.clickable { if (u.username != null) onUser(u.username) },
-                )
+        // v5.18: Tags tab — #query opens the tag page; anything else
+        // shows a hint (the tag page itself lists the posts + reels).
+        if (tab == "Tags") {
+            if (q.startsWith("#") && q.length > 1) {
+                Row(Modifier.fillMaxWidth().clickable { onTag(q.drop(1)) }.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(48.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
+                        Text("#", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(q, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("Open tag page", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    }
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 HorizontalDivider()
+            } else if (q.isNotBlank()) {
+                Text("Type #tag to open a tag page.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Text("Search tags — try #sunset, #travel or any hashtag you saw in a post.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        searchError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
+        if (tab == "People" && results.isEmpty() && searchError == null && q.isNotBlank() && !searching) Text("No people found", Modifier.padding(16.dp))
+        if (tab == "People" && results.isEmpty() && searchError == null && q.isBlank() && recents.isEmpty()) Text("Search for people by name or @username.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if ((tab == "Posts" || tab == "Reels") && allResults != null && searchError == null && !allSearching) {
+            val empty = if (tab == "Posts") allResults!!.posts.isEmpty() else allResults!!.reels.isEmpty()
+            if (empty && q.isNotBlank()) Text(if (tab == "Posts") "No posts found" else "No reels found", Modifier.padding(16.dp))
+        }
+        LazyColumn {
+            if (tab == "People") {
+                items(results, key = { it.id ?: it.username ?: "" }) { u ->
+                    ListItem(
+                        // v5.18: verified badge in search rows (web).
+                        headlineContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(u.displayName ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                if (u.isVerified) {
+                                    Spacer(Modifier.width(4.dp))
+                                    Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", tint = FrianzoBlue, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        },
+                        supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.clickable { if (u.username != null) onUser(u.username) },
+                    )
+                    HorizontalDivider()
+                }
+            }
+            if (tab == "Posts") {
+                items(allResults?.posts ?: emptyList(), key = { it.id }) { p ->
+                    ListItem(
+                        headlineContent = { Text(p.author?.displayName ?: p.author?.username ?: "User", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = { Text(p.content ?: "", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingContent = { FrianzoAvatar(p.author?.profilePictureUrl, 48.dp) },
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.clickable { onOpenPost(p.id) },
+                    )
+                    HorizontalDivider()
+                }
+            }
+            if (tab == "Reels") {
+                items(allResults?.reels ?: emptyList(), key = { it.id }) { r ->
+                    ListItem(
+                        headlineContent = { Text(r.caption ?: "Reel", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = { Text(r.author?.displayName ?: r.author?.username ?: "User", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingContent = {
+                            Box(Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
+                                if (r.thumbnailUrl != null) AsyncImage(model = r.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                else Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = FrianzoBlue)
+                            }
+                        },
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier.clickable { onOpenReel(r.id) },
+                    )
+                    HorizontalDivider()
+                }
             }
         }
     }

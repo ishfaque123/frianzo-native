@@ -64,7 +64,13 @@ object OutboxFlusher {
     private suspend fun replayMessage(api2: FrianzoApi2, conversationId: String, payload: Map<String, String>): Boolean {
         val replyToId = payload["replyToId"]?.takeIf { it.isNotBlank() }
         val isForwarded = payload["isForwarded"] == "true"
-        if (replyToId == null && !isForwarded) {
+        // v5.18: an offline media send keeps its uploaded URL — the media
+        // is already on the server (upload happened before queueing), so
+        // replaying only needs the socket send with the same fields.
+        val mediaUrl = payload["mediaUrl"]?.takeIf { it.isNotBlank() }
+        val mediaType = payload["mediaType"]?.takeIf { it.isNotBlank() }
+        val voiceDuration = payload["voiceDuration"]?.toIntOrNull()
+        if (replyToId == null && !isForwarded && mediaUrl == null) {
             return api2.sendMessage(conversationId, SendMessageRequest(payload["text"] ?: "")).success
         }
         val obj = org.json.JSONObject()
@@ -72,6 +78,9 @@ object OutboxFlusher {
         obj.put("content", payload["text"] ?: "")
         if (replyToId != null) obj.put("replyToId", replyToId)
         if (isForwarded) obj.put("isForwarded", true)
+        if (mediaUrl != null) obj.put("mediaUrl", mediaUrl)
+        if (mediaType != null) obj.put("mediaType", mediaType)
+        if (voiceDuration != null) obj.put("voiceDuration", voiceDuration)
         val ack = ChatSocket.emitAck("message:send", obj)
             ?: throw java.io.IOException("chat socket ack timeout")
         return ack.optBoolean("success")
