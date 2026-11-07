@@ -180,6 +180,14 @@ data class PublicProfile(
     val gender: String? = null,
     val usernameChangedAt: String? = null,
     val displayNameChangedAt: String? = null,
+    // v5.18.4 (A-H2): read by MyInterestsScreen — null until the backend
+    // returns it. VERIFIED 2026-11-08: userService.toPrivateProfile does
+    // NOT include `interests` (the DB column exists and PUT saves it, but
+    // no GET returns it), so this stays null and the screen keeps Save
+    // disabled rather than wiping saved interests. If the backend adds
+    // the field to toPrivateProfile, the screen starts working with no
+    // further app change.
+    val interests: List<String>? = null,
 )
 // v3.3: backend getMutualFollowers returns { username, displayName }.
 data class MutualFollower(val username: String?, val displayName: String? = null)
@@ -284,9 +292,36 @@ data class HighlightsData(val highlights: List<Highlight>? = null)
 // ---------- Interests (v2.9) ----------
 // GET /api/users/interests returns { interests: [12 fixed names] }.
 // PUT /api/users/me/interests { interests: [...] } returns { interests }.
-// There is NO GET for the user's current interests, so the screen starts
-// unselected and shows the saved list returned by PUT.
+// v5.18.4 (A-H2): there is STILL no GET for the user's current interests —
+// GET /api/users/me (toPrivateProfile) does not include `interests`
+// (verified in vynzo-backend userService.ts 2026-11-08), so
+// MyInterestsScreen only pre-selects when PublicProfile.interests is
+// non-null and otherwise keeps Save DISABLED instead of wiping the
+// saved list. The backend gap: toPrivateProfile must return `interests`.
 data class InterestsData(val interests: List<String>? = null)
+
+// ---------- Monetization (v5.18.4, A-H1) ----------
+// Payout methods + earnings (vynzo-backend payoutRoutes.ts, mounted at
+// /api/payout in app.ts; payoutService.ts):
+//   GET /api/payout/methods -> { methods: [PayoutMethod], country,
+//     countryName, allowed: { PK|IN|US: [{ code, label, fields }] } }
+//   POST /api/payout/methods { methodType, accountName, accountNumber,
+//     extra? } -> { method }
+//   DELETE /api/payout/methods/{id} -> { deleted: true }
+//   POST /api/payout/methods/{id}/default -> { updated: true }
+//   GET /api/payout/earnings?limit= -> { earnings: [EarningItem], total }
+// Leaderboard (userRoutes GET /api/users/leaderboard, referralService):
+//   GET /api/users/leaderboard?category=followers|likers|commenters|
+//     referrers&limit= -> { leaderboard: [LeaderboardEntry], category }
+data class PayoutMethodField(val accountNumber: String? = null, val extra: String? = null)
+data class PayoutMethodOption(val code: String? = null, val label: String? = null, val fields: PayoutMethodField? = null)
+data class PayoutMethod(val id: String? = null, val country: String? = null, val methodType: String? = null, val methodLabel: String? = null, val accountName: String? = null, val accountNumber: String? = null, val extra: String? = null, val isDefault: Boolean = false)
+data class PayoutMethodsData(val methods: List<PayoutMethod>? = null, val country: String? = null, val countryName: String? = null, val allowed: Map<String, List<PayoutMethodOption>>? = null)
+data class PayoutMethodData(val method: PayoutMethod? = null)
+data class EarningItem(val id: String? = null, val amount: Double = 0.0, val type: String? = null, val createdAt: String? = null)
+data class EarningsData(val earnings: List<EarningItem>? = null, val total: Double = 0.0)
+data class LeaderboardEntry(val rank: Int = 0, val username: String? = null, val displayName: String? = null, val avatar: String? = null, val isVerified: Boolean = false, val count: Int = 0)
+data class LeaderboardData(val leaderboard: List<LeaderboardEntry>? = null, val category: String? = null)
 
 // ---------- Verification (v2.9) ----------
 // GET /api/users/me/verification-request returns
@@ -627,6 +662,21 @@ interface FrianzoApi2 {
     suspend fun interests(): Envelope<InterestsData>
     @PUT("api/users/me/interests")
     suspend fun updateMyInterests(@Body body: Map<String, List<String>>): Envelope<InterestsData>
+    // v5.18.4 (A-H1): monetization — payout methods, earnings, leaderboard.
+    // Every endpoint below was verified to exist in vynzo-backend main
+    // (payoutRoutes.ts + userRoutes.ts) before this client was written.
+    @GET("api/payout/methods")
+    suspend fun payoutMethods(): Envelope<PayoutMethodsData>
+    @POST("api/payout/methods")
+    suspend fun addPayoutMethod(@Body body: Map<String, String>): Envelope<PayoutMethodData>
+    @DELETE("api/payout/methods/{id}")
+    suspend fun deletePayoutMethod(@Path("id") id: String): Envelope<Any>
+    @POST("api/payout/methods/{id}/default")
+    suspend fun setDefaultPayoutMethod(@Path("id") id: String): Envelope<Any>
+    @GET("api/payout/earnings")
+    suspend fun earnings(@Query("limit") limit: Int = 20): Envelope<EarningsData>
+    @GET("api/users/leaderboard")
+    suspend fun leaderboard(@Query("category") category: String, @Query("limit") limit: Int = 10): Envelope<LeaderboardData>
     // v2.9: verification
     @GET("api/users/me/verification-request")
     suspend fun verificationRequest(): Envelope<VerificationData>

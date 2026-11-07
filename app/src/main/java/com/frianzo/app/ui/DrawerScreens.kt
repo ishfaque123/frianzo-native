@@ -81,6 +81,7 @@ fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onL
         "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen)
         "Your Activity" -> ActivityScreen(api2, onBack)
         "Professional Dashboard" -> DashboardScreen(api2, onBack)
+        "Monetization" -> MonetizationScreen(api2, onBack)
         "Close Friends" -> CloseFriendsScreen(api2, onBack)
         "AI Video Generator" -> AiVideoScreen(api2, onBack, onPostAsReel)
         "ISAI Assistant" -> IsaiScreen(api2, onBack)
@@ -256,6 +257,18 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
         }
     }
     LaunchedEffect(Unit) { load() }
+    // v5.18.4 (A-H3): Settings → Edit Profile opens the FULL
+    // EditProfileScreen (Screens2.kt — username + 30-day locks, gender,
+    // cascading Country→Province→City, website, phone, avatar/cover),
+    // as a full screen like the other sub-screens — NOT the cut-down
+    // dialog below (kept untouched; nothing sets showEdit any more).
+    // The profile is the one Settings already loaded via
+    // api2.myProfile() in load(); if it never loaded, fall through to
+    // the Settings list, which shows the error + Retry.
+    if (subScreen == "editprofile" && profile != null) {
+        EditProfileScreen(api2, profile!!, onClose = { subScreen = null }, onSaved = { updated -> profile = updated; subScreen = null }, onProfileChanged = { updated -> profile = updated })
+        return
+    }
     DrawerScaffold("Settings", onBack) {
       Box(Modifier.weight(1f)) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -322,18 +335,16 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             // saved-account switcher. Card 2 = Logout. Card 3 = the legal
             // pages. Only the layout changed: every row below keeps its
             // original destination / action.
-            // NOTE (verified 2026-11-07): there is NO Admin row and NO
-            // Monetization screen in this build — PublicProfile has no
-            // role/admin field and no Monetization screen exists (the
-            // missing-features review lists both as missing), so no Admin
-            // row is shown and Monetization opens the Professional
-            // Dashboard, which is where the monetization status lives.
-            // Fingerprint Login is also NOT shown: no biometric bridge
-            // exists in the app to report on, so a toggle would be fake.
+            // NOTE (verified 2026-11-07): there is NO Admin row in this
+            // build — PublicProfile has no role/admin field — so no Admin
+            // row is shown. Fingerprint Login is also NOT shown: no
+            // biometric bridge exists in the app to report on, so a
+            // toggle would be fake. v5.18.4 (A-H1): Monetization now has
+            // its own screen (MonetizationScreen, via the router below).
             SettingsCard {
                 SettingsRow(Icons.Filled.BarChart, "Professional Dashboard") { onOpenDrawerScreen?.invoke("Professional Dashboard") }
                 SettingsCardDivider()
-                SettingsRow(Icons.Filled.MonetizationOn, "Monetization") { onOpenDrawerScreen?.invoke("Professional Dashboard") }
+                SettingsRow(Icons.Filled.MonetizationOn, "Monetization") { onOpenDrawerScreen?.invoke("Monetization") }
                 SettingsCardDivider()
                 SettingsRow(Icons.Filled.Verified, "Verification") { subScreen = "verification" }
                 SettingsCardDivider()
@@ -355,7 +366,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)) {
                         SettingsSubRow(Icons.Filled.Lock, "Account Privacy") { subScreen = "privacy" }
                         SettingsCardDivider()
-                        SettingsSubRow(Icons.Filled.Edit, "Edit Profile") { showEdit = true }
+                        SettingsSubRow(Icons.Filled.Edit, "Edit Profile") { subScreen = "editprofile" }
                         SettingsCardDivider()
                         SettingsSubRow(Icons.Filled.Block, "Blocked Accounts") { subScreen = "blocked" }
                         SettingsCardDivider()
@@ -937,12 +948,24 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var available by remember { mutableStateOf<List<String>>(emptyList()) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // v5.18.4 (A-H2): true ONLY once the server has actually returned the
+    // user's current selections. Until then Save stays DISABLED — saving
+    // blind would REPLACE all previously saved interests (PUT replaces
+    // the whole list). The load below reads them from GET /api/users/me
+    // (PublicProfile.interests); VERIFIED 2026-11-08 in vynzo-backend
+    // userService.toPrivateProfile: the field is NOT returned, so this
+    // stays false and Save stays off. Backend gap: toPrivateProfile
+    // must return `interests` (the DB column exists, PUT already saves
+    // it). If the backend adds the field, this screen starts working
+    // with no further app change — the selections pre-load and Save
+    // enables, exactly like the web interests page.
+    var loadedSelected by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     fun load() {
-        loading = true; error = null
+        loading = true; error = null; loadedSelected = false; selected = emptySet()
         scope.launch {
             try {
                 val r = api2.interests()
@@ -950,16 +973,29 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             } catch (e: Exception) { error = e.message }
             loading = false
         }
+        scope.launch {
+            try {
+                val p = api2.myProfile()
+                val saved = p.data?.user?.interests
+                if (p.success && saved != null) { selected = saved.toSet(); loadedSelected = true }
+            } catch (_: Exception) { /* selections stay unknown — Save stays disabled */ }
+        }
     }
     LaunchedEffect(Unit) { load() }
     DrawerScaffold("My Interests", onBack) {
       Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text("Pick what you like. Frianzo uses this to show you more of it.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))
-        // C-B4: saving replaces ALL previously saved interests, because
-        // the server keeps no readable copy of the current ones. Select
-        // every interest you want to keep before saving.
-        Text("Saving replaces your previously saved interests — select all the ones you want to keep.", fontSize = 13.sp, color = Color(0xFFB45309))
+        // v5.18.4 (A-H2): the old amber text warned that saving replaces
+        // everything — and then let the user do exactly that. Now the
+        // warning is honest AND enforced: until the server returns the
+        // current selections, Save is disabled, so nothing saved earlier
+        // can be wiped by accident.
+        if (loadedSelected) {
+            Text("Your current interests are selected below — change them and save.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            Text("Your saved interests could not be loaded, so Save is turned off. Saving now would erase the interests you saved before. This needs a server fix before it can work.", fontSize = 13.sp, color = Color(0xFFB45309))
+        }
         Spacer(Modifier.height(12.dp))
         if (loading) { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() } }
         else {
@@ -980,7 +1016,10 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Button(enabled = !saving && selected.isNotEmpty(), onClick = {
+            // v5.18.4 (A-H2): Save is enabled only once the current
+            // selections were loaded (loadedSelected) — a blind save
+            // would wipe previously saved interests. See the note above.
+            Button(enabled = !saving && loadedSelected && selected.isNotEmpty(), onClick = {
                 saving = true
                 scope.launch {
                     try {
@@ -1460,6 +1499,280 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("${range}d ago".uppercase(Locale.US), fontSize = 10.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text("Today".uppercase(Locale.US), fontSize = 10.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------- Monetization (v5.18.4, A-H1) ----------
+// Web: /settings-menu/monetization. Referral progress + referral-link copy
+// come from GET /api/users/me/dashboard (the same monetization block the
+// Professional Dashboard card shows); payout methods from
+// GET /api/payout/methods, earnings from GET /api/payout/earnings, and the
+// leaderboard from GET /api/users/leaderboard?category=&limit=. All five
+// endpoints were verified to exist in vynzo-backend main before this
+// screen was written (payoutRoutes.ts mounted at /api/payout in app.ts;
+// userRoutes.ts GET /api/users/leaderboard). The Referrers leaderboard
+// tab stays hidden, like on the web (owner order 2026-10-16).
+
+@Composable
+fun MonetizationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    var dash by remember { mutableStateOf<DashboardData?>(null) }
+    var earn by remember { mutableStateOf<EarningsData?>(null) }
+    var methods by remember { mutableStateOf<List<PayoutMethod>>(emptyList()) }
+    var allowed by remember { mutableStateOf<Map<String, List<PayoutMethodOption>>>(emptyMap()) }
+    var country by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    // Add-method form.
+    var showAdd by remember { mutableStateOf(false) }
+    var addMethodType by remember { mutableStateOf("") }
+    var addName by remember { mutableStateOf("") }
+    var addNumber by remember { mutableStateOf("") }
+    var addExtra by remember { mutableStateOf("") }
+    var addError by remember { mutableStateOf<String?>(null) }
+    var addSaving by remember { mutableStateOf(false) }
+    // Leaderboard, one cached list per tab (web fetches each tab once).
+    var activeTab by remember { mutableStateOf("followers") }
+    var boards by remember { mutableStateOf<Map<String, List<LeaderboardEntry>>>(emptyMap()) }
+    var boardLoading by remember { mutableStateOf(false) }
+    var boardError by remember { mutableStateOf<String?>(null) }
+    // Id of the method whose delete / set-default is in flight.
+    var methodBusy by remember { mutableStateOf<String?>(null) }
+    fun loadBoard(tab: String) {
+        if (boards.containsKey(tab)) return
+        boardLoading = true; boardError = null
+        scope.launch {
+            try {
+                val r = api2.leaderboard(tab, 10)
+                if (r.success && r.data?.leaderboard != null) boards = boards + (tab to r.data.leaderboard)
+                else boardError = r.error?.message ?: "Could not load leaderboard"
+            } catch (e: Exception) { boardError = e.message }
+            boardLoading = false
+        }
+    }
+    fun load() {
+        loading = true; error = null
+        scope.launch {
+            try {
+                val res = api2.dashboard()
+                if (res.success && res.data != null) dash = res.data else error = res.error?.message ?: "Could not load monetization info"
+            } catch (e: Exception) { error = e.message }
+            loading = false
+        }
+        scope.launch {
+            try { val r = api2.earnings(20); if (r.success && r.data != null) earn = r.data } catch (_: Exception) { /* earnings list is extra — the total below falls back to the dashboard */ }
+        }
+        scope.launch {
+            try {
+                val r = api2.payoutMethods()
+                if (r.success && r.data != null) {
+                    methods = r.data.methods ?: emptyList()
+                    allowed = r.data.allowed ?: emptyMap()
+                    country = r.data.country
+                }
+            } catch (_: Exception) { /* payout methods stay empty on failure */ }
+        }
+    }
+    LaunchedEffect(Unit) { load() }
+    LaunchedEffect(activeTab) { loadBoard(activeTab) }
+    DrawerScaffold("Monetization", onBack) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (loading) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
+            } else {
+                ErrorText(error)
+                if (error != null && dash == null) { TextButton(onClick = { load() }) { Text("Retry") } }
+                if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue) }
+                // 1. Earnings + referral progress (web: earnings card).
+                val m = dash?.monetization
+                DashboardCard {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Earnings", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        DashboardPill(if (m?.status == "eligible") "Eligible" else "Locked", emerald = m?.status == "eligible")
+                    }
+                    Text("$${"%.2f".format(earn?.total ?: dash?.earnings ?: 0.0)}", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("${m?.referrals ?: 0} / ${m?.requiredReferrals ?: 25} referrals", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${m?.progress ?: 0}%", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                            Box(Modifier.fillMaxWidth(((m?.progress ?: 0) / 100f).coerceIn(0f, 1f)).fillMaxHeight().clip(RoundedCornerShape(999.dp)).background(Color(0xFF0F172A)))
+                        }
+                    }
+                    val recent = earn?.earnings.orEmpty()
+                    if (recent.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Recent earnings", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            recent.take(5).forEach { e ->
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text("${if (e.type == "views") "Views" else "Referral"} · ${e.createdAt?.take(10) ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                    Text("+$${"%.2f".format(e.amount)}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF047857), maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
+                    }
+                }
+                // 2. Referral link (web: link card + Copy button).
+                DashboardCard {
+                    Text("Your referral link", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text("Share this link with friends to invite them to Frianzo.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = m?.referralLink ?: "", onValueChange = {}, readOnly = true, placeholder = { Text("Complete your profile to get a referral link", fontSize = 12.sp) }, singleLine = true, modifier = Modifier.weight(1f))
+                        Button(enabled = !m?.referralLink.isNullOrBlank(), onClick = {
+                            clipboard.setText(AnnotatedString(m?.referralLink ?: ""))
+                            Toast.makeText(context, "Referral link copied", Toast.LENGTH_SHORT).show()
+                        }, shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White)) { Text("Copy", fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+                    }
+                }
+                // 3. Leaderboard (web: Followers / Likers / Commenters tabs).
+                DashboardCard {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Filled.EmojiEvents, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
+                        Text("Leaderboard", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("followers" to "Followers", "likers" to "Likers", "commenters" to "Commenters").forEach { (key, label) ->
+                            val tabSelected = key == activeTab
+                            Box(Modifier.clip(RoundedCornerShape(999.dp)).background(if (tabSelected) Color(0xFF0F172A) else MaterialTheme.colorScheme.surfaceVariant).clickable { activeTab = key }.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (tabSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                    if (boardLoading && boards[activeTab] == null) {
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
+                    } else if (boardError != null && boards[activeTab] == null) {
+                        Text(boardError!!, fontSize = 13.sp, color = Color.Red)
+                    } else {
+                        val entries = boards[activeTab].orEmpty()
+                        val unit = when (activeTab) { "likers" -> "likes"; "commenters" -> "comments"; else -> "followers" }
+                        if (entries.isEmpty()) {
+                            Text("No rankings yet — be the first!", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                entries.forEach { e ->
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        Text("${e.rank}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = when (e.rank) { 1 -> Color(0xFFF59E0B); 2 -> Color(0xFF94A3B8); 3 -> Color(0xFFB45309); else -> MaterialTheme.colorScheme.onSurfaceVariant }, modifier = Modifier.width(24.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                                        FrianzoAvatar(e.avatar, 36.dp)
+                                        Column(Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("@${e.username ?: ""}", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                                if (e.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.Verified, contentDescription = "Verified", tint = FrianzoBlue, modifier = Modifier.size(14.dp)) }
+                                            }
+                                            if (!e.displayName.isNullOrBlank()) Text(e.displayName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        Text("${formatThousands(e.count)} $unit", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // 4. Payout methods (web: methods card + Add sheet).
+                DashboardCard {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Payout methods", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        TextButton(onClick = { addMethodType = ""; addName = ""; addNumber = ""; addExtra = ""; addError = null; showAdd = true }) { Text("+ Add", fontSize = 13.sp) }
+                    }
+                    if (methods.isEmpty()) {
+                        Text("No payout method added yet. Add one to withdraw your balance.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            methods.forEach { pm ->
+                                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text(pm.methodLabel ?: pm.methodType ?: "Method", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                        if (pm.isDefault) DashboardPill("Default", emerald = true)
+                                    }
+                                    Text(listOfNotNull(pm.accountName, pm.accountNumber, pm.extra).joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        if (!pm.isDefault) {
+                                            TextButton(enabled = methodBusy == null, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp), onClick = {
+                                                val id = pm.id ?: return@TextButton
+                                                methodBusy = id
+                                                scope.launch {
+                                                    try {
+                                                        val r = api2.setDefaultPayoutMethod(id)
+                                                        if (r.success) methods = methods.map { if (it.id == id) it.copy(isDefault = true) else it.copy(isDefault = false) }
+                                                        else error = r.error?.message ?: "Could not set default payout method"
+                                                    } catch (e: Exception) { error = e.message }
+                                                    methodBusy = null
+                                                }
+                                            }) { Text("Set default", fontSize = 12.sp) }
+                                        }
+                                        TextButton(enabled = methodBusy == null, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp), onClick = {
+                                            val id = pm.id ?: return@TextButton
+                                            methodBusy = id
+                                            scope.launch {
+                                                try {
+                                                    val r = api2.deletePayoutMethod(id)
+                                                    if (r.success) { methods = methods.filter { it.id != id }; notice = "Payout method removed." }
+                                                    else error = r.error?.message ?: "Could not remove payout method"
+                                                } catch (e: Exception) { error = e.message }
+                                                methodBusy = null
+                                            }
+                                        }) { Text("Remove", fontSize = 12.sp, color = Color.Red) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Add-method form (web: bottom sheet — inline here).
+                    if (showAdd) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                        Text("Add payout method", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        val countryMethods = country?.let { allowed[it] } ?: emptyList()
+                        if (country == null) {
+                            Text("Please set your country in your profile first.", fontSize = 13.sp, color = Color(0xFFB45309))
+                        } else if (countryMethods.isEmpty()) {
+                            Text("No payout methods are available for your country yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        } else {
+                            Text("Method", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                countryMethods.forEach { opt ->
+                                    val code = opt.code ?: ""
+                                    val optSelected = code == addMethodType
+                                    Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (optSelected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { addMethodType = code }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                        Text(opt.label ?: code, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (optSelected) Color.White else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
+                            val selectedMethod = countryMethods.firstOrNull { it.code == addMethodType }
+                            val extraLabel = selectedMethod?.fields?.extra
+                            OutlinedTextField(value = addName, onValueChange = { addName = it }, label = { Text("Account holder name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            OutlinedTextField(value = addNumber, onValueChange = { addNumber = it }, label = { Text(selectedMethod?.fields?.accountNumber ?: "Account number") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            if (extraLabel != null) {
+                                OutlinedTextField(value = addExtra, onValueChange = { addExtra = it }, label = { Text(extraLabel) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            }
+                            ErrorText(addError)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(enabled = !addSaving && country != null && addMethodType.isNotBlank() && addName.isNotBlank() && addNumber.isNotBlank(), onClick = {
+                                    addSaving = true
+                                    scope.launch {
+                                        try {
+                                            val body = mutableMapOf("methodType" to addMethodType, "accountName" to addName.trim(), "accountNumber" to addNumber.trim())
+                                            if (addExtra.isNotBlank()) body["extra"] = addExtra.trim()
+                                            val r = api2.addPayoutMethod(body)
+                                            val added = r.data?.method
+                                            if (r.success && added != null) {
+                                                methods = listOf(added) + methods.map { if (added.isDefault) it.copy(isDefault = false) else it }
+                                                showAdd = false; addMethodType = ""; addName = ""; addNumber = ""; addExtra = ""; addError = null
+                                                notice = "Payout method added."
+                                            } else addError = r.error?.message ?: "Could not add payout method"
+                                        } catch (e: Exception) { addError = e.message }
+                                        addSaving = false
+                                    }
+                                }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White)) { Text(if (addSaving) "Adding..." else "Add payout method", fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+                                OutlinedButton(onClick = { showAdd = false; addError = null }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) { Text("Cancel", fontSize = 14.sp) }
                             }
                         }
                     }
