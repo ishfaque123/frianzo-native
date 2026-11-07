@@ -48,7 +48,7 @@ object OutboxFlusher {
             "LIKE_REEL" -> api2.toggleReelLike(item.targetId).success
             "COMMENT_POST" -> api2.addPostComment(item.targetId, CommentCreateRequest(payload["text"] ?: "", payload["parent"]?.takeIf { it.isNotBlank() })).success
             "COMMENT_REEL" -> api2.addReelComment(item.targetId, CommentCreateRequest(payload["text"] ?: "", payload["parent"]?.takeIf { it.isNotBlank() })).success
-            "MESSAGE" -> replayMessage(item.targetId, payload)
+            "MESSAGE" -> replayMessage(api2, item.targetId, payload)
             else -> true
         }
     }
@@ -61,7 +61,7 @@ object OutboxFlusher {
      * a degraded plain message. A server rejection (success == false)
      * returns false so it is dropped, never retried forever.
      */
-    private suspend fun replayMessage(conversationId: String, payload: Map<String, String>): Boolean {
+    private suspend fun replayMessage(api2: FrianzoApi2, conversationId: String, payload: Map<String, String>): Boolean {
         val replyToId = payload["replyToId"]?.takeIf { it.isNotBlank() }
         val isForwarded = payload["isForwarded"] == "true"
         if (replyToId == null && !isForwarded) {
