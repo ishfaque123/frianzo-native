@@ -792,8 +792,12 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
     // than a 9:16 video on a phone). Before the video is prepared
     // the aspect defaults to 9:16.
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
-    val videoPw = player?.videoWidth ?: 0
-    val videoPh = player?.videoHeight ?: 0
+    // v5.7: getVideoWidth/Height throw IllegalStateException on a
+    // dead/errored player (Crashlytics ReelPage crash, 4x on 2026-11-07
+    // across 4.9/5.1/5.4/5.6 — the app closed on camera tap). Guard them
+    // like currentPosition already is; a dead player falls back to 9:16.
+    val videoPw = try { player?.videoWidth ?: 0 } catch (_: Exception) { 0 }
+    val videoPh = try { player?.videoHeight ?: 0 } catch (_: Exception) { 0 }
     val videoAspect = if (videoPw > 0 && videoPh > 0) videoPw.toFloat() / videoPh else 9f / 16f
     val videoWidthPx = if (pageSize.width > 0) pageSize.width.toFloat().coerceAtMost(pageSize.height * videoAspect) else 0f
     val videoHeightPx = if (pageSize.width > 0) pageSize.height.toFloat().coerceAtMost(pageSize.width / videoAspect) else 0f
@@ -2543,7 +2547,12 @@ private fun ReelUploadScreen(api2: FrianzoApi2, initialVideoUri: Uri? = null, on
                         AndroidView(factory = { ctx -> VideoView(ctx).apply {
                             setVideoURI(videoUri)
                             setOnPreparedListener { mp ->
-                                mp.setVolume(0f, 0f); mp.isLooping = true
+                                // v5.7: the editor preview was muted
+                                // (volume 0), so a recorded video sounded
+                                // silent and the owner thought the recording
+                                // had no voice. Play it with sound so the
+                                // recorded voice is audible.
+                                mp.setVolume(1f, 1f); mp.isLooping = true
                                 previewPlayer = mp
                                 try { mp.playbackParams = mp.playbackParams.setSpeed(speed.toFloatOrNull() ?: 1f) } catch (_: Exception) {}
                                 start()
