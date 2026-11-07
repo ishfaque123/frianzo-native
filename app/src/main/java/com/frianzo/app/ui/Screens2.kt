@@ -492,7 +492,14 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 Box(Modifier.fillParentMaxSize()) {
                 ReelPage(
                     api2 = api2, reel = reel, myId = myId,
-                    isActive = page == listState.firstVisibleItemIndex,
+                    // BUG (owner, 2026-11-07): the reel kept PLAYING (video +
+                    // audio) underneath the camera/editor, so a doll video
+                    // appeared in the camera by itself and kept playing while
+                    // recording. isActive only meant "visible page" — it never
+                    // knew the camera/editor was open on top. Now the reel
+                    // pauses whenever the camera or the editor is open, and
+                    // resumes when they close.
+                    isActive = page == listState.firstVisibleItemIndex && !showCamera && !showUpload,
                     muted = session.isMuted(reel.id, page == 0),
                     onToggleMute = { currentReelId?.let { session.updateMuted(it, !currentMuted) } },
                     dataSaver = dataSaver,
