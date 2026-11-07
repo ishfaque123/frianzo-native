@@ -153,18 +153,20 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     val loginBorder = Color(0xFFE2E8F0)
     val loginGrey = Color(0xFF64748B)
     val loginDark = Color(0xFF0F172A)
-    // Country word (v5.6): the Web detects it from IP via
-    // GET /api/location/country. The app used to hardcode Pakistan here
-    // (countryDisplayName(null)), so every country showed Pakistan.
-    // Now it fetches the same endpoint; the device locale is the
-    // fallback, then Pakistan.
-    var loginCountry by remember { mutableStateOf(deviceCountryName() ?: "Pakistan") }
-    LaunchedEffect(Unit) {
-        try {
-            val res = api.locationCountry()
-            val code = res.data?.country?.trim()?.uppercase()
-            countryNameFor(code)?.let { loginCountry = it }
-        } catch (_: Exception) { /* keep the locale/Pakistan fallback */ }
+    // Country word (v5.8 — v5.6 was WRONG, verified 2026-11-07): v5.6
+    // called a backend endpoint that does NOT exist — the Web's
+    // /api/location/country is a Next.js route on frianzo.online (it
+    // reads the Cloudflare cf-ipcountry header), not a backend route,
+    // so the call 404'd and the fallback (device locale en_US) showed
+    // "the United States" in Pakistan. The country now comes from the
+    // mobile network / SIM (the physical country) — not the phone
+    // language and not a VPN. No network call, no backend change.
+    val loginCountry = remember {
+        val tm = context.getSystemService(android.content.Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager
+        val net = tm?.networkCountryIso?.trim()?.uppercase()
+        val sim = tm?.simCountryIso?.trim()?.uppercase()
+        val iso = listOf(net, sim).firstOrNull { it != null && it.matches(Regex("^[A-Z]{2}$")) }
+        countryNameFor(iso) ?: "Pakistan"
     }
 
     fun fail(e: Exception, fallback: String) {
@@ -490,13 +492,6 @@ private fun countryNameFor(code: String?): String? {
         "GB" -> "the United Kingdom"
         else -> try { Locale("en", c).displayCountry.takeIf { it.isNotBlank() } } catch (_: Exception) { null }
     }
-}
-
-// v5.6: the device locale's country as a display name (login fallback
-// when the IP-based country fetch is unavailable).
-private fun deviceCountryName(): String? {
-    val iso = Locale.getDefault().country?.trim()?.uppercase()
-    return countryNameFor(iso)
 }
 
 private fun feedTime(createdAt: String?): String {
