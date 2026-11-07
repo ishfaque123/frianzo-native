@@ -77,7 +77,24 @@ class MainActivity : ComponentActivity() {
                     }
                     is AuthState.LoggedIn -> {
                         val user = (state as AuthState.LoggedIn).user
-                        AppShell(api, api2, user?.id, cookieJar, session, feedVm, deepLink = pendingDeepLink, onDeepLinkConsumed = { pendingDeepLink = null })
+                        // G1 (owner order): profile setup is MANDATORY.
+                        // A logged-in user whose profile is not complete
+                        // never reaches the feed — the only way forward is
+                        // completing and saving the profile (the setup
+                        // screen itself consumes Back). On save, the
+                        // session refreshes (/me then says
+                        // profileCompleted=true) and the feed opens.
+                        // The web only routes *new* users to /profile-setup
+                        // (isNewUser) and never blocks the feed for an
+                        // incomplete profile; this native gate is
+                        // deliberately harder, on the owner's explicit
+                        // order. Deep links still wait safely: they only
+                        // route once AppShell mounts, i.e. after setup.
+                        if (user?.profileCompleted != true) {
+                            ProfileSetupScreen(api2) { session.refresh() }
+                        } else {
+                            AppShell(api, api2, user?.id, cookieJar, session, feedVm, deepLink = pendingDeepLink, onDeepLinkConsumed = { pendingDeepLink = null })
+                        }
                     }
                     is AuthState.Error -> {
                         // Network failure on /me is not "logged out": show the

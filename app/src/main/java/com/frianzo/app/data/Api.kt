@@ -70,7 +70,7 @@ data class FeedData(
     val nextOffset: Int = 0,
 )
 
-data class MeData(val id: String?, val username: String?, val displayName: String?)
+data class MeData(val id: String?, val username: String?, val displayName: String?, val profileCompleted: Boolean = false)
 /** Backend /api/auth/me returns { user: {...} }, not bare fields. */
 data class MeResponse(val user: MeData?)
 data class NativeConfigData(val clientId: String)

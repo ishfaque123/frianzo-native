@@ -190,6 +190,21 @@ data class BlockedListData(val blocked: List<BlockedEntry>? = null)
 /** Backend GET /api/users/me and /api/users/{username} return { user: {...} }, not bare fields. */
 data class ProfileResponse(val user: PublicProfile?)
 
+// G1: POST /api/users/me/profile-setup — the same endpoint the web setup
+// page uses (submitProfileSetup in vynzo-frontend authApi.ts). The backend
+// sets profileCompleted=true, 409s USERNAME_TAKEN, and 403s when the profile
+// is already complete. gender is nullable so it can be omitted when blank:
+// the backend's zod enum rejects an empty string (see REPORT.md).
+data class ProfileSetupRequest(
+    val username: String,
+    val displayName: String,
+    val dateOfBirth: String,
+    val bio: String? = null,
+    val gender: String? = null,
+    val customGender: String? = null,
+    val phone: String? = null,
+)
+
 
 // ---------- Drawer destinations (v2.7, verified against the web frontend) ----------
 data class UsageData(val pings: List<String>? = null)
@@ -478,6 +493,9 @@ interface FrianzoApi2 {
     // Profile / search / follow
     @GET("api/users/me")
     suspend fun myProfile(): Envelope<ProfileResponse>
+    // G1: the web profile-setup save endpoint (POST /api/users/me/profile-setup).
+    @POST("api/users/me/profile-setup")
+    suspend fun submitProfileSetup(@Body req: ProfileSetupRequest): Envelope<ProfileResponse>
     @GET("api/users/{username}")
     suspend fun publicProfile(@Path("username") username: String): Envelope<ProfileResponse>
     @GET("api/users/search")
