@@ -3445,6 +3445,7 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, myId: String?, onBack: () -> Unit = {}, onOpenProfile: ((String) -> Unit)? = null) {
     val context = LocalContext.current
@@ -3469,6 +3470,26 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     var reportDetails by rememberSaveable { mutableStateOf("") }
     var reportDone by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    // v5.13: per-message actions (reply / react / forward / copy / edit /
+    // delete / pin). All of them go over the socket — the backend has no
+    // REST endpoints for them. Plain text sends stay on REST (v5.12).
+    val clipboard = LocalClipboardManager.current
+    var actionMessage by remember { mutableStateOf<ConversationMessage?>(null) }
+    var replyTo by remember { mutableStateOf<ConversationMessage?>(null) }
+    var editingMessage by remember { mutableStateOf<ConversationMessage?>(null) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<ConversationMessage?>(null) }
+    var deletingId by remember { mutableStateOf<String?>(null) }
+    var actionMsg by remember { mutableStateOf<String?>(null) }
+    fun showMsg(m: String) { actionMsg = m; scope.launch { delay(2500); if (actionMsg == m) actionMsg = null } }
+    var forwardOpen by remember { mutableStateOf(false) }
+    var forwardMessage by remember { mutableStateOf<ConversationMessage?>(null) }
+    var forwardConversations by remember { mutableStateOf<List<Conversation>>(emptyList()) }
+    var forwardLoaded by remember { mutableStateOf(false) }
+    var forwardSelected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var forwardBusy by remember { mutableStateOf(false) }
+    var pinnedCycle by remember { mutableStateOf(0) }
+    val listState = rememberLazyListState()
     fun disappearingLabel(duration: Int?): String = when (duration) {
         3600 -> "1 hour"
         86400 -> "1 day"
@@ -3509,9 +3530,10 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     // replace every 5s recomposed (and could jump) the list even when
     // nothing new arrived.
     fun mergeMessages(fresh: List<ConversationMessage>) {
-        val current = messages
-        val changed = fresh.size != current.size || fresh.zip(current).any { (a, b) -> a.id != b.id || a.content != b.content || a.isDeleted != b.isDeleted }
-        if (changed) messages = fresh
+        // v5.13: full data-class equality — the poll must also pick up
+        // reactions / replyTo / pinnedAt / editedAt / isForwarded changes,
+        // not just id/content/isDeleted.
+        if (fresh != messages) messages = fresh
     }
     // PERMANENT FIX for H3: poll every 5s while the thread is open, so
     // incoming messages appear without leaving and re-opening the thread.
@@ -3546,6 +3568,83 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 val res = api2.messages(conversationId)
                 if (res.success && res.data != null) { mergeMessages(res.data.messages.reversed()); otherLastReadAt = res.data.otherLastReadAt; otherLastDeliveredAt = res.data.otherLastDeliveredAt }
             } catch (e: Exception) { loadError = e.message }
+        }
+    }
+    // v5.13: short label for a message (reply quote, pinned banner).
+    // Declared here (before the Column) so every use below is after it.
+    fun messageLabel(m: ConversationMessage): String = when {
+        m.isDeleted -> "Message deleted"
+        m.mediaType == "image" -> "Photo"
+        m.mediaType == "voice" -> "Voice message"
+        (m.content ?: "").isBlank() -> "Message"
+        else -> m.content ?: ""
+    }
+    // v5.13: live socket for per-message actions + live updates. The 5s
+    // REST poll above stays as the fallback. Socket callbacks run on a
+    // background thread, so every state write goes through scope (main).
+    fun parseSocketMessage(json: org.json.JSONObject): ConversationMessage? {
+        return try { com.google.gson.Gson().fromJson(json.toString(), ConversationMessage::class.java) } catch (_: Exception) { null }
+    }
+    DisposableEffect(conversationId) {
+        ChatSocket.init(PersistentCookieJar(context))
+        ChatSocket.connect()
+        ChatSocket.emit("conversation:join", org.json.JSONObject().put("conversationId", conversationId))
+        ChatSocket.emit("conversation:read", org.json.JSONObject().put("conversationId", conversationId))
+        val onNew = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            if (json.optString("conversationId") != conversationId) return@Listener
+            val msg = parseSocketMessage(json) ?: return@Listener
+            scope.launch { if (messages.none { it.id == msg.id }) mergeMessages(messages + msg) }
+        }
+        val onEdited = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            val msg = parseSocketMessage(json) ?: return@Listener
+            scope.launch { messages = messages.map { if (it.id == msg.id) msg else it } }
+        }
+        val onReaction = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            val messageId = json.optString("messageId")
+            val reactionsJson = json.optJSONArray("reactions") ?: return@Listener
+            val reactions = try {
+                val type = object : com.google.gson.reflect.TypeToken<List<MessageReaction>>() {}.type
+                com.google.gson.Gson().fromJson<List<MessageReaction>>(reactionsJson.toString(), type) ?: emptyList()
+            } catch (_: Exception) { emptyList() }
+            scope.launch { messages = messages.map { if (it.id == messageId) it.copy(reactions = reactions) else it } }
+        }
+        val onPinned = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            val messageId = json.optString("messageId")
+            val pinnedAt = if (json.isNull("pinnedAt")) null else json.optString("pinnedAt")
+            val pinnedById = if (json.isNull("pinnedById")) null else json.optString("pinnedById")
+            scope.launch { messages = messages.map { if (it.id == messageId) it.copy(pinnedAt = pinnedAt, pinnedById = pinnedById) else it } }
+        }
+        val onDeleted = io.socket.emitter.Emitter.Listener { args ->
+            val json = args.firstOrNull() as? org.json.JSONObject ?: return@Listener
+            val messageId = json.optString("messageId")
+            scope.launch { messages = messages.map { if (it.id == messageId) it.copy(isDeleted = true, content = "", mediaUrl = null, mediaType = null, voiceDuration = null) else it } }
+        }
+        ChatSocket.on("message:new", onNew)
+        ChatSocket.on("message:edited", onEdited)
+        ChatSocket.on("message:reaction", onReaction)
+        ChatSocket.on("message:pinned", onPinned)
+        ChatSocket.on("message:deleted", onDeleted)
+        onDispose {
+            ChatSocket.off("message:new", onNew)
+            ChatSocket.off("message:edited", onEdited)
+            ChatSocket.off("message:reaction", onReaction)
+            ChatSocket.off("message:pinned", onPinned)
+            ChatSocket.off("message:deleted", onDeleted)
+        }
+    }
+    // v5.13: forward picker loads the conversation list when opened.
+    LaunchedEffect(forwardOpen) {
+        if (forwardOpen) {
+            forwardLoaded = false
+            try {
+                val res = api2.conversations()
+                if (res.success && res.data != null) forwardConversations = res.data.filter { it.id != conversationId && it.otherUser != null }
+            } catch (_: Exception) {}
+            forwardLoaded = true
         }
     }
     val presenceText = when {
@@ -3584,6 +3683,25 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                     })
                 }
             }
+        }
+        // v5.13: pinned banner (web: sticky at the top of the thread).
+        // Tap scrolls to the pinned message and cycles when several.
+        val pinnedMessages = messages.filter { it.pinnedAt != null && !it.isDeleted }.sortedByDescending { it.pinnedAt }
+        if (pinnedMessages.isNotEmpty()) {
+            val shownPinned = pinnedMessages[pinnedCycle % pinnedMessages.size]
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFFEF3C7)).noRippleClickable {
+                pinnedCycle = (pinnedCycle + 1) % pinnedMessages.size
+                val idx = messages.indexOfFirst { it.id == shownPinned.id }
+                if (idx >= 0) scope.launch { try { listState.scrollToItem(idx) } catch (_: Exception) {} }
+            }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("📌", fontSize = 16.sp, maxLines = 1, softWrap = false)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Pinned message" + if (pinnedMessages.size > 1) " ${pinnedCycle % pinnedMessages.size + 1}/${pinnedMessages.size}" else "", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF92400E), maxLines = 1, softWrap = false)
+                    Text(messageLabel(shownPinned), fontSize = 12.sp, color = Color(0xFF92400E), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
         }
         // v3.4: big avatar + name + "View profile" pill header.
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -3645,6 +3763,51 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 },
                 dismissButton = { TextButton(onClick = { showReport = false }) { Text("Cancel") } })
         }
+        // v5.13: delete one message (web: no undo anywhere). mode "me"
+        // removes it locally only; "everyone" applies the tombstone.
+        fun deleteMessage(target: ConversationMessage, mode: String) {
+            val id = target.id ?: return
+            deletingId = id
+            val obj = org.json.JSONObject().put("messageId", id).put("mode", mode)
+            ChatSocket.emitWithAck("message:delete", obj) { ack ->
+                deletingId = null
+                if (ack?.optBoolean("success") == true) {
+                    if (mode == "me") {
+                        messages = messages.filter { it.id != id }
+                    } else {
+                        messages = messages.map { if (it.id == id) it.copy(isDeleted = true, content = "", mediaUrl = null, mediaType = null, voiceDuration = null) else it }
+                    }
+                } else sendError = "Could not delete message"
+            }
+        }
+        // v5.13: forward the picked message to the selected chats,
+        // sequentially (web: sendForwardedMessages). The web quirk is
+        // kept: isForwarded is true only when forwarding someone else's
+        // message; no replyToId is carried.
+        fun sendForward() {
+            val target = forwardMessage ?: return
+            if (forwardSelected.isEmpty() || forwardBusy) return
+            forwardBusy = true
+            val targets = forwardSelected.toList()
+            scope.launch {
+                var failed = false
+                for (targetConvId in targets) {
+                    val obj = org.json.JSONObject()
+                    obj.put("conversationId", targetConvId)
+                    obj.put("content", target.content ?: "")
+                    if (target.mediaUrl != null) obj.put("mediaUrl", target.mediaUrl)
+                    if (target.mediaType != null) obj.put("mediaType", target.mediaType)
+                    if (target.voiceDuration != null) obj.put("voiceDuration", target.voiceDuration)
+                    obj.put("isForwarded", target.senderId != myId)
+                    val ack = ChatSocket.emitAck("message:send", obj)
+                    if (ack?.optBoolean("success") != true) { failed = true; break }
+                }
+                forwardBusy = false
+                forwardOpen = false
+                forwardMessage = null
+                if (failed) showMsg("Could not forward message") else showMsg("Message forwarded")
+            }
+        }
         // B-B39: per-message read ticks. The backend does not (yet)
         // populate per-message isRead/readAt, so ticks derive from the
         // other side's watermarks (GET .../messages returns
@@ -3657,33 +3820,212 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             if (otherLastDeliveredAt != null && ts <= otherLastDeliveredAt!!) return "✓✓" to false
             return "✓" to false
         }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
+        LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth(), reverseLayout = true) {
             items(messages, key = { it.id ?: "" }) { m ->
                 val mine = m.senderId == myId
+                val isDeleting = deletingId == m.id
+                // v5.13: deleted and id-less rows cannot open the sheet.
+                val canAct = !m.isDeleted && m.id != null
                 Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
                     Column(horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
-                    Surface(color = if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(16.dp)) {
-                        // v3.4: a received photo/voice has no text content —
-                        // show "Photo"/"Voice message" instead of an empty bubble.
-                        val mediaLabel = when {
-                            m.isDeleted -> "Message deleted"
-                            m.mediaType == "image" -> "Photo"
-                            m.mediaType == "voice" -> "Voice message" + if ((m.voiceDuration ?: 0) > 0) " (${m.voiceDuration}s)" else ""
-                            else -> null
+                    Surface(
+                        color = if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(16.dp),
+                        border = if (m.pinnedAt != null && !m.isDeleted) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B)) else null,
+                        modifier = Modifier.graphicsLayer { alpha = if (isDeleting) 0.6f else 1f }.pointerInput(m.id) {
+                            detectTapGestures(onLongPress = { if (canAct) actionMessage = m })
                         }
-                        val shown = if ((m.content ?: "").isBlank()) mediaLabel ?: "" else m.content ?: ""
-                        Text(shown, Modifier.padding(12.dp), color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            // v5.13: "Forwarded" label (web: italic 11px).
+                            if (m.isForwarded) Text("Forwarded", fontSize = 11.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = if (mine) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            // v5.13: reply quote (web: left border + sender + text).
+                            val quote = m.replyTo
+                            if (quote != null) {
+                                Row(Modifier.widthIn(max = 260.dp).clip(RoundedCornerShape(6.dp)).background(if (mine) Color.White.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Box(Modifier.width(3.dp).height(28.dp).background(if (mine) Color.White else FrianzoBlue))
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(quote.sender?.displayName ?: quote.sender?.username ?: "User", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (mine) Color.White else FrianzoBlue, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(if (quote.deletedAt != null) "Message deleted" else (quote.content?.takeIf { it.isNotBlank() } ?: when (quote.mediaType) { "image" -> "Photo"; "voice" -> "Voice message"; else -> "Message" }), fontSize = 12.sp, color = if (mine) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                            // v3.4: a received photo/voice has no text content —
+                            // show "Photo"/"Voice message" instead of an empty bubble.
+                            val mediaLabel = when {
+                                m.isDeleted -> "Message deleted"
+                                m.mediaType == "image" -> "Photo"
+                                m.mediaType == "voice" -> "Voice message" + if ((m.voiceDuration ?: 0) > 0) " (${m.voiceDuration}s)" else ""
+                                else -> null
+                            }
+                            val shown = if ((m.content ?: "").isBlank()) mediaLabel ?: "" else m.content ?: ""
+                            Text(shown, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                        }
                     }
+                    // v5.13: reactions — deduplicated emoji pills (web: no
+                    // counts, no who-reacted). Display only; change or
+                    // remove a reaction from the long-press sheet.
+                    val reactionEmojis = m.reactions.orEmpty().mapNotNull { it.emoji?.takeIf { e -> e.isNotBlank() } }.distinct()
+                    if (reactionEmojis.isNotEmpty()) {
+                        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            reactionEmojis.forEach { emoji ->
+                                Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp), border = androidx.compose.foundation.BorderStroke(1.dp, FrianzoBorder)) {
+                                    Text(emoji, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                                }
+                            }
+                        }
+                    }
+                    if (m.pinnedAt != null && !m.isDeleted) {
+                        Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("📌", fontSize = 11.sp, maxLines = 1, softWrap = false)
+                            Spacer(Modifier.width(2.dp))
+                            Text("Pinned", fontSize = 11.sp, color = Color(0xFFF59E0B), maxLines = 1, softWrap = false)
+                        }
+                    }
+                    if (isDeleting) Text("Deleting…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, end = 4.dp), maxLines = 1, softWrap = false)
                     if (mine) {
                         val (tick, tickRead) = tickFor(m)
-                        Text(tick, fontSize = 11.sp, color = if (tickRead) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, end = 4.dp), maxLines = 1, softWrap = false)
+                        Row(Modifier.padding(top = 2.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (m.editedAt != null) Text("Edited", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            if (m.editedAt != null) Spacer(Modifier.width(6.dp))
+                            Text(tick, fontSize = 11.sp, color = if (tickRead) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        }
+                    } else if (m.editedAt != null) {
+                        Text("Edited", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, start = 4.dp), maxLines = 1, softWrap = false)
                     }
                     } // Column
                 }
             }
         }
+        // v5.13: long-press action sheet (web: Reply / React / Forward /
+        // Copy / Edit / Delete / Pin). The emoji row shows only on other
+        // people's messages (web rule); tapping the same emoji again
+        // toggles the reaction off server-side.
+        if (actionMessage != null) {
+            val target = actionMessage!!
+            val targetMine = target.senderId == myId
+            val hasText = (target.content ?: "").isNotBlank()
+            ModalBottomSheet(onDismissRequest = { actionMessage = null }) {
+                Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Text("Message options", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                    HorizontalDivider(color = FrianzoBorder)
+                    if (!targetMine) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            listOf("❤️", "😂", "😮", "😢", "😡", "👍", "👎").forEach { emoji ->
+                                Text(emoji, fontSize = 28.sp, modifier = Modifier.noRippleClickable {
+                                    actionMessage = null
+                                    val obj = org.json.JSONObject().put("messageId", target.id).put("emoji", emoji)
+                                    ChatSocket.emitWithAck("message:reaction", obj) { ack ->
+                                        if (ack?.optBoolean("success") == true) load() else showMsg("Couldn't react — try again")
+                                    }
+                                })
+                            }
+                        }
+                        HorizontalDivider(color = FrianzoBorder)
+                    }
+                    MoreSheetRow(Icons.Filled.Reply, "Reply") { actionMessage = null; replyTo = target; editingMessage = null }
+                    MoreSheetRow(Icons.Filled.Forward, "Forward") { actionMessage = null; forwardMessage = target; forwardSelected = emptySet(); forwardConversations = emptyList(); forwardOpen = true }
+                    if (hasText) MoreSheetRow(Icons.Filled.ContentCopy, "Copy") {
+                        actionMessage = null
+                        clipboard.setText(AnnotatedString(target.content ?: ""))
+                        showMsg("Copied")
+                    }
+                    if (targetMine && hasText) MoreSheetRow(Icons.Filled.Edit, "Edit") { actionMessage = null; editingMessage = target; draft = target.content ?: ""; replyTo = null }
+                    MoreSheetRow(Icons.Filled.Bookmark, if (target.pinnedAt != null) "Unpin" else "Pin") {
+                        actionMessage = null
+                        val obj = org.json.JSONObject().put("messageId", target.id)
+                        ChatSocket.emitWithAck("message:pin", obj) { ack ->
+                            if (ack?.optBoolean("success") == true) load() else showMsg("Couldn't pin — try again")
+                        }
+                    }
+                    MoreSheetRow(Icons.Filled.Delete, "Delete", red = true) { actionMessage = null; deleteTarget = target; showDeleteDialog = true }
+                }
+            }
+        }
+        // v5.13: forward picker — conversations with multi-select
+        // (web: "Send to N chat(s)").
+        if (forwardOpen) {
+            ModalBottomSheet(onDismissRequest = { forwardOpen = false }) {
+                Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Text("Forward message", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                    HorizontalDivider(color = FrianzoBorder)
+                    if (!forwardLoaded) {
+                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
+                    } else if (forwardConversations.isEmpty()) {
+                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("No other chats yet", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    } else {
+                        forwardConversations.forEach { conv ->
+                            val other = conv.otherUser
+                            val selected = forwardSelected.contains(conv.id)
+                            Row(Modifier.fillMaxWidth().noRippleClickable { forwardSelected = if (selected) forwardSelected - conv.id else forwardSelected + conv.id }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                FrianzoAvatar(other?.profilePictureUrl, 40.dp)
+                                Spacer(Modifier.width(12.dp))
+                                Text(other?.displayName ?: other?.username ?: "User", Modifier.weight(1f), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Checkbox(checked = selected, onCheckedChange = { forwardSelected = if (it) forwardSelected + conv.id else forwardSelected - conv.id })
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { sendForward() }, enabled = forwardSelected.isNotEmpty() && !forwardBusy, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                        Text("Send to ${forwardSelected.size} chat(s)", maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+        }
+        // v5.13: delete dialog (web: no undo anywhere). "Delete for
+        // everyone" only on your own messages.
+        if (showDeleteDialog && deleteTarget != null) {
+            val target = deleteTarget!!
+            val targetMine = target.senderId == myId
+            AlertDialog(
+                onDismissRequest = { showDeleteDialog = false },
+                title = { Text("Delete message?") },
+                text = { Text(if (targetMine) "Delete this message for everyone, or just for you?" else "This will only delete the message for you.") },
+                confirmButton = {
+                    Column {
+                        if (targetMine) TextButton(onClick = { showDeleteDialog = false; deleteMessage(target, "everyone") }) { Text("Delete for everyone", color = Color.Red, maxLines = 1, softWrap = false) }
+                        TextButton(onClick = { showDeleteDialog = false; deleteMessage(target, "me") }) { Text("Delete for me", color = Color.Red, maxLines = 1, softWrap = false) }
+                    }
+                },
+                dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") } },
+            )
+        }
         loadError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
         sendError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
+        // v5.13: feedback pill (same pattern as the reel actionMsg).
+        if (actionMsg != null) {
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
+                Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(20.dp)) {
+                    Text(actionMsg!!, Modifier.padding(horizontal = 14.dp, vertical = 8.dp), color = Color.White, fontSize = 13.sp, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+        // v5.13: reply banner (web: green bar, "Replying to …").
+        if (replyTo != null) {
+            val rt = replyTo!!
+            Row(Modifier.fillMaxWidth().background(Color(0xFFF0FDF4)).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(3.dp).height(28.dp).background(FrianzoSuccess))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Replying to " + if (rt.senderId == myId) "yourself" else title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = FrianzoSuccess, maxLines = 1, softWrap = false)
+                    Text(messageLabel(rt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = { replyTo = null }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp)) }
+            }
+        }
+        // v5.13: edit banner (web: amber "Editing message").
+        if (editingMessage != null) {
+            Row(Modifier.fillMaxWidth().background(Color(0xFFFEF3C7)).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Editing message", Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF92400E), maxLines = 1, softWrap = false)
+                TextButton(onClick = { editingMessage = null; draft = "" }) { Text("Cancel", fontSize = 13.sp, color = Color(0xFF92400E), maxLines = 1, softWrap = false) }
+            }
+        }
         Row(Modifier.background(MaterialTheme.colorScheme.surface).padding(8.dp)) {
             // v3.4: no photo/mic send buttons — photo/voice sending is
             // socket-only (no REST endpoint), so they are not faked here.
@@ -3695,8 +4037,45 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 // message vanished with no error on success == false).
                 Button(shape = RoundedCornerShape(28.dp), onClick = {
                     sendError = null
-                    val text = draft; draft = ""
+                    val text = draft
+                    val editing = editingMessage
+                    val reply = replyTo
+                    // v5.13: edit own message (socket; web parity, no
+                    // optimistic update — waits for the ack/broadcast).
+                    if (editing != null) {
+                        val targetId = editing.id
+                        if (targetId == null) { editingMessage = null; return@Button }
+                        draft = ""
+                        val obj = org.json.JSONObject().put("messageId", targetId).put("content", text)
+                        ChatSocket.emitWithAck("message:edit", obj) { ack ->
+                            if (ack?.optBoolean("success") == true) { editingMessage = null; load() }
+                            else { draft = text; editingMessage = editing; sendError = "Could not edit message" }
+                        }
+                        return@Button
+                    }
+                    draft = ""
                     scope.launch {
+                        // v5.13: a reply goes over the socket (the REST
+                        // send has no replyToId field).
+                        if (reply != null) {
+                            val obj = org.json.JSONObject().put("conversationId", conversationId).put("content", text).put("replyToId", reply.id)
+                            ChatSocket.emitWithAck("message:send", obj) { ack ->
+                                if (ack?.optBoolean("success") == true) {
+                                    replyTo = null
+                                    val data = ack.optJSONObject("data")
+                                    val sent = data?.let { try { com.google.gson.Gson().fromJson(it.toString(), ConversationMessage::class.java) } catch (_: Exception) { null } }
+                                    if (sent != null && messages.none { it.id == sent.id }) mergeMessages(messages + sent) else load()
+                                } else if (!NetworkMonitor.isOnlineNow(context)) {
+                                    // Offline: queue the reply; the flush
+                                    // replays it over the socket so the
+                                    // reply link is not lost.
+                                    Outbox.enqueueJson(context, "MESSAGE", conversationId, mapOf("text" to text, "replyToId" to (reply.id ?: "")))
+                                    replyTo = null
+                                    sendError = "Waiting for connection…"
+                                } else { draft = text; sendError = "Could not send reply" }
+                            }
+                            return@launch
+                        }
                         try {
                             val r = api2.sendMessage(conversationId, SendMessageRequest(text))
                             if (r.success) load() else { draft = text; sendError = r.error?.message ?: "Couldn't send message" }

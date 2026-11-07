@@ -14,7 +14,9 @@ import java.util.UUID
  * Payload is a small JSON object per type:
  * - LIKE_POST / LIKE_REEL: {"reaction":"like"} (targetId = post/reel id)
  * - COMMENT_POST / COMMENT_REEL: {"text":"..."} (targetId = post/reel id)
- * - MESSAGE: {"text":"..."} (targetId = conversation id)
+ * - MESSAGE: {"text":"..."} (targetId = conversation id); a queued
+ *   reply / forward also carries "replyToId" and/or "isForwarded":"true"
+ *   (v5.13) and is replayed over the socket, since REST has no such fields.
  */
 object Outbox {
     private const val PREFS = "frianzo_outbox"

@@ -34,8 +34,8 @@ android {
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 45
-        versionName = "5.12"
+        versionCode = 46
+        versionName = "5.13"
     }
 
     buildFeatures { compose = true }
@@ -85,6 +85,12 @@ dependencies {
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+    // v5.13: Socket.IO client for chat per-message actions (reply / react /
+    // edit / delete / pin / forward). The backend exposes those ONLY as
+    // Socket.IO events (server is socket.io 4.7.5); the 2.x Java client
+    // speaks its protocol. Plain text sends stay on REST (v5.12 outbox).
+    implementation("io.socket:socket.io-client:2.0.1")
 
     // Images in feed cards.
     implementation("io.coil-kt:coil-compose:2.7.0")

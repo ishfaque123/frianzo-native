@@ -93,7 +93,13 @@ data class ConversationUser(val id: String?, val username: String?, val displayN
 // B-B39: read ticks. isRead/deliveredAt/readAt are populated by the
 // backend when it sends them (nullable until then); the thread also
 // reads otherLastReadAt/DeliveredAt from MessagesData below.
-data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?, val mediaUrl: String? = null, val mediaType: String? = null, val voiceDuration: Int? = null, val isDeleted: Boolean = false, val isRead: Boolean? = null, val deliveredAt: String? = null, val readAt: String? = null)
+// v5.13: per-message actions (web parity). The backend returns these
+// on every message (getMessages + socket events); Gson leaves a missing
+// field null/false, so the list field is nullable and read via orEmpty().
+data class MessageReaction(val userId: String?, val emoji: String?)
+data class ReplyRefSender(val displayName: String?, val username: String?)
+data class ReplyRef(val id: String?, val content: String?, val mediaType: String? = null, val sender: ReplyRefSender? = null, val deletedAt: String? = null)
+data class ConversationMessage(val id: String?, val content: String?, val senderId: String?, val createdAt: String?, val mediaUrl: String? = null, val mediaType: String? = null, val voiceDuration: Int? = null, val isDeleted: Boolean = false, val isRead: Boolean? = null, val deliveredAt: String? = null, val readAt: String? = null, val replyToId: String? = null, val replyTo: ReplyRef? = null, val reactions: List<MessageReaction>? = null, val isForwarded: Boolean = false, val pinnedAt: String? = null, val pinnedById: String? = null, val editedAt: String? = null)
 data class Conversation(
     val id: String,
     val otherUser: ConversationUser?,

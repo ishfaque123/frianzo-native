@@ -12,6 +12,9 @@ object OutboxFlusher {
     data class FlushResult(val sent: Int, val dropped: Int, val stoppedOffline: Boolean)
 
     suspend fun flush(context: android.content.Context, api2: FrianzoApi2): FlushResult {
+        // v5.13: the flusher may run with no chat thread open, so the
+        // socket needs its cookie jar here (a thread open inits it too).
+        ChatSocket.init(PersistentCookieJar(context))
         val items = Outbox.list(context)
         var sent = 0
         var dropped = 0
@@ -45,9 +48,33 @@ object OutboxFlusher {
             "LIKE_REEL" -> api2.toggleReelLike(item.targetId).success
             "COMMENT_POST" -> api2.addPostComment(item.targetId, CommentCreateRequest(payload["text"] ?: "", payload["parent"]?.takeIf { it.isNotBlank() })).success
             "COMMENT_REEL" -> api2.addReelComment(item.targetId, CommentCreateRequest(payload["text"] ?: "", payload["parent"]?.takeIf { it.isNotBlank() })).success
-            "MESSAGE" -> api2.sendMessage(item.targetId, SendMessageRequest(payload["text"] ?: "")).success
+            "MESSAGE" -> replayMessage(item.targetId, payload)
             else -> true
         }
+    }
+
+    /**
+     * v5.13: a queued reply / forward MUST keep its reply link — the
+     * REST send has no replyToId / isForwarded fields, so such items go
+     * over the socket. A null ack (socket down / no auth) throws so the
+     * flusher stops and the item stays queued instead of being sent as
+     * a degraded plain message. A server rejection (success == false)
+     * returns false so it is dropped, never retried forever.
+     */
+    private suspend fun replayMessage(conversationId: String, payload: Map<String, String>): Boolean {
+        val replyToId = payload["replyToId"]?.takeIf { it.isNotBlank() }
+        val isForwarded = payload["isForwarded"] == "true"
+        if (replyToId == null && !isForwarded) {
+            return api2.sendMessage(conversationId, SendMessageRequest(payload["text"] ?: "")).success
+        }
+        val obj = org.json.JSONObject()
+        obj.put("conversationId", conversationId)
+        obj.put("content", payload["text"] ?: "")
+        if (replyToId != null) obj.put("replyToId", replyToId)
+        if (isForwarded) obj.put("isForwarded", true)
+        val ack = ChatSocket.emitAck("message:send", obj)
+            ?: throw java.io.IOException("chat socket ack timeout")
+        return ack.optBoolean("success")
     }
 
     private fun parsePayload(json: String): Map<String, String> {
