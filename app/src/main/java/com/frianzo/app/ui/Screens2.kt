@@ -10,6 +10,7 @@ import android.provider.MediaStore
 import android.media.MediaPlayer
 import android.net.Uri
 import android.widget.VideoView
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -56,6 +58,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.item
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -786,6 +789,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         }
     }
     var reportOpen by remember { mutableStateOf(false) }
+    var reportBusy by remember { mutableStateOf(false) }
     var reportReason by remember { mutableStateOf("other") }
     var showDeleteReel by remember { mutableStateOf(false) }
     fun showMsg(m: String) { actionMsg = m; scope.launch { delay(2500); if (actionMsg == m) actionMsg = null } }
@@ -1198,18 +1202,26 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Text("More", color = Color.White, fontSize = 12.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
         }
-        // v4.0 (audit #2/#3): the More sheet is a white bottom sheet,
-        // "More options", with the web rows — NOT a small dropdown menu.
-        // "Saved reels" stays (the only entry to the saved list, owner
-        // rule: no star icon) and "Delete reel" stays for own reels.
+        // v5.15 (owner: web menus A-to-Z): the More sheet header is
+        // 14sp semibold + an 11sp subtitle with a divider below it.
+        // Rows are true 48dp with 20dp icons; Interested uses a
+        // checkmark (web); exactly ONE destructive row — Delete for
+        // the owner, Report otherwise. "Saved reels" and "Don't
+        // recommend this category" are gone (the web has neither).
         if (moreOpen) {
-            ModalBottomSheet(onDismissRequest = { moreOpen = false }) {
+            ModalBottomSheet(
+                onDismissRequest = { moreOpen = false },
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
                 Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        Text("More options", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("More options", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+                        Text("Reel actions", fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
                     }
                     HorizontalDivider(color = FrianzoBorder)
-                    if (!reel.category.isNullOrBlank()) MoreSheetRow(Icons.Filled.ThumbUp, "Interested") {
+                    Spacer(Modifier.height(4.dp))
+                    if (!reel.category.isNullOrBlank()) MoreSheetRow(Icons.Filled.Check, "Interested") {
                         moreOpen = false
                         scope.launch {
                             try {
@@ -1218,7 +1230,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                             } catch (_: Exception) { showMsg("Couldn't save — try again") }
                         }
                     }
-                    MoreSheetRow(Icons.Filled.ThumbDown, "Not interested") {
+                    MoreSheetRow(Icons.Filled.Block, "Not interested") {
                         moreOpen = false
                         val aid = reel.author?.id
                         scope.launch {
@@ -1229,7 +1241,6 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         }
                     }
                     MoreSheetRow(Icons.Filled.Bookmark, if (fav) "Remove from saved" else "Save reel") { moreOpen = false; toggleFav() }
-                    MoreSheetRow(Icons.Filled.Bookmark, "Saved reels") { moreOpen = false; onOpenSaved() }
                     MoreSheetRow(Icons.Filled.Download, "Save video") {
                         moreOpen = false
                         scope.launch {
@@ -1274,17 +1285,8 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         }
                     }
                     MoreSheetRow(Icons.Filled.Link, "Copy link") { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", reelLink)); showMsg("Link copied") }
-                    if (!reel.category.isNullOrBlank()) MoreSheetRow(Icons.Filled.Block, "Don't recommend this category") {
-                        moreOpen = false
-                        scope.launch {
-                            try {
-                                val r = api2.notInterested(mapOf("type" to "category", "value" to (reel.category ?: "")))
-                                if (r.success) { onHidden(); onNotice("You won't see this again") } else showMsg("Couldn't hide — try again")
-                            } catch (_: Exception) { showMsg("Couldn't hide — try again") }
-                        }
-                    }
-                    MoreSheetRow(Icons.Filled.Flag, "Report", red = true) { moreOpen = false; reportOpen = true }
                     if (reel.author?.id == myId) MoreSheetRow(Icons.Filled.Delete, "Delete reel", red = true) { moreOpen = false; showDeleteReel = true }
+                    else MoreSheetRow(Icons.Filled.Flag, "Report reel", red = true) { moreOpen = false; reportOpen = true }
                 }
             }
         }
@@ -1413,31 +1415,37 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        reportOpen = false
-                        scope.launch {
-                            try {
-                                val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
-                                if (api2.reportReel(reel.id, body).success) { reportDetails = ""; showMsg("Reported. Thanks for letting us know.") } else showMsg("Couldn't report — try again")
-                            } catch (_: Exception) { showMsg("Couldn't report — try again") }
-                        }
-                    }) { Text("Report", color = Color.Red) }
+                    Button(
+                        onClick = {
+                            if (reportBusy) return@Button
+                            reportBusy = true
+                            scope.launch {
+                                try {
+                                    val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
+                                    if (api2.reportReel(reel.id, body).success) { reportDetails = ""; reportOpen = false; showMsg("Reported. Thanks for letting us know.") } else showMsg("Couldn't report — try again")
+                                } catch (_: Exception) { showMsg("Couldn't report — try again") }
+                                finally { reportBusy = false }
+                            }
+                        },
+                        enabled = !reportBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
+                        shape = RoundedCornerShape(28.dp),
+                    ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
                 },
                 dismissButton = { TextButton(onClick = { reportOpen = false }) { Text("Cancel") } },
             )
         }
         if (showDeleteReel) {
-            AlertDialog(
-                onDismissRequest = { showDeleteReel = false },
-                title = { Text("Delete reel?") },
-                text = { Text("This can't be undone.") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showDeleteReel = false
-                        scope.launch { try { if (api2.deleteReel(reel.id).success) onDeleted() else showMsg("Couldn't delete — try again") } catch (_: Exception) { showMsg("Couldn't delete — try again") } }
-                    }) { Text("Delete", color = Color.Red) }
+            FrianzoConfirmDialog(
+                title = "Confirm action",
+                message = "Delete this reel? This can't be undone.",
+                confirmLabel = "Delete",
+                showLogo = true,
+                onConfirm = {
+                    showDeleteReel = false
+                    scope.launch { try { if (api2.deleteReel(reel.id).success) onDeleted() else showMsg("Couldn't delete — try again") } catch (_: Exception) { showMsg("Couldn't delete — try again") } }
                 },
-                dismissButton = { TextButton(onClick = { showDeleteReel = false }) { Text("Cancel") } },
+                onDismiss = { showDeleteReel = false },
             )
         }
     }
@@ -1445,17 +1453,175 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
 
 // v4.0: one row of the More bottom sheet — 18dp icon, 15sp label,
 // ~48dp pitch, like the web sheet (audit #1).
+// v5.15: one row of the More bottom sheet — TRUE 48dp, 20dp icon,
+// 15sp label, rounded corners, clickable WITH ripple (web sheet).
 @Composable
 private fun MoreSheetRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, red: Boolean = false, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().noRippleClickable { onClick() }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, tint = if (red) Color.Red else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+    Row(Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(8.dp)).clickable { onClick() }.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, tint = if (red) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(12.dp))
-        Text(label, fontSize = 15.sp, color = if (red) Color.Red else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        Text(label, fontSize = 15.sp, color = if (red) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
     }
 }
 
-// ---------- REEL SHARE (v3.5, R11): same sheet as posts — link box + Copy,
-// Frianzo DM, WhatsApp, WA Status, Messenger, Facebook, FB Story, Text.
+// v5.15: chat action-sheet row — 40dp grey circle icon + 15sp
+// font-medium label. Delete gets a light-red circle + red icon.
+@Composable
+private fun ChatActionRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, red: Boolean = false, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(8.dp)).clickable { onClick() }.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(if (red) FrianzoBadgeRed.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = if (red) FrianzoBadgeRed else Color(0xFF334155), modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(label, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (red) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// v5.15: delete-sheet row — title 15sp + sublabel 12sp secondary.
+@Composable
+private fun ChatDeleteRow(title: String, sublabel: String, red: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(8.dp)).clickable { onClick() }.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(if (red) FrianzoBadgeRed.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+            Icon(Icons.Filled.Delete, contentDescription = null, tint = if (red) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(title, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (red) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+            Text(sublabel, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+// v5.15: full-width grey Cancel pill (rounded-full, surfaceVariant).
+@Composable
+private fun GreyCancelPill(label: String = "Cancel", modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().height(48.dp),
+        shape = RoundedCornerShape(50),
+        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurface),
+    ) { Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+}
+
+// v5.15: centred confirm modal (web ReelNotice style) — Cancel is a
+// plain outlined button, the confirm is slate-900 filled, or RED filled
+// when confirmRed. The logo is the blue "F" mark (same letter mark as
+// the share tiles — no logo asset is bundled in the app).
+@Composable
+private fun FrianzoConfirmDialog(title: String, message: String, confirmLabel: String, confirmRed: Boolean = false, showLogo: Boolean = false, confirmEnabled: Boolean = true, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (showLogo) {
+                    Box(Modifier.size(48.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) {
+                        Text("F", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+                Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(8.dp))
+                Text(message, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(20.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(28.dp)) { Text("Cancel", maxLines = 1, softWrap = false) }
+                    Button(
+                        onClick = onConfirm,
+                        enabled = confirmEnabled,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (confirmRed) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurface,
+                            contentColor = if (confirmRed) Color.White else MaterialTheme.colorScheme.inverseOnSurface,
+                        ),
+                    ) { Text(confirmLabel, maxLines = 1, softWrap = false) }
+                }
+            }
+        }
+    }
+}
+
+// v5.15: Block confirm bottom sheet, shared by the chat header menu
+// and the profile menu. onBlock runs the existing block call.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BlockConfirmSheet(name: String, onBlock: () -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Block $name?", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text("They won't be able to message you anymore. You can unblock them anytime.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(20.dp))
+            Button(
+                onClick = { onBlock(); onDismiss() },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
+            ) { Text("Block", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+            Spacer(Modifier.height(12.dp))
+            GreyCancelPill(onClick = onDismiss)
+        }
+    }
+}
+
+// v5.15: chat wallpaper swatches (local-only; persisted per
+// conversation in SharedPreferences "frianzo_chat").
+private val ChatWallpapers = listOf(
+    "Default" to Color(0xFFF8FAFC),
+    "Beige" to Color(0xFFE9DFD0),
+    "Mint" to Color(0xFFD8E8D2),
+    "Sky" to Color(0xFFD5E2F2),
+    "Rose" to Color(0xFFF2DDE4),
+    "Dark" to Color(0xFF232A33),
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatWallpaperSheet(selected: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Chat wallpaper", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center, maxLines = 1, softWrap = false)
+            Spacer(Modifier.height(16.dp))
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.fillMaxWidth().height(176.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                userScrollEnabled = false,
+            ) {
+                items(ChatWallpapers) { (name, color) ->
+                    val isSel = name == selected
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onPick(name) }) {
+                        Box(
+                            Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)).background(color)
+                                .border(if (isSel) 3.dp else 1.dp, if (isSel) Color(0xFF22C55E) else FrianzoBorder, RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (isSel) Icon(Icons.Filled.Check, contentDescription = null, tint = Color(0xFF22C55E), modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(name, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            GreyCancelPill(onClick = onDismiss)
+        }
+    }
+}
+
+// ---------- REEL SHARE (v3.5, R11; v5.15 owner screenshots): clean
+// sheet, NO URL text — only a full-width Copy link button — then the
+// 7 LETTER tiles in brand colours (the web tiles are letters, not
+// brand logos). Frianzo DM, WhatsApp, WA Status, Messenger, Facebook,
+// FB Story, Text.
 // The rail count moves only when a channel is really tapped (R6).
 // No Repost row: the backend has no reel-repost endpoint, so none is faked.
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1478,51 +1644,65 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
         }
     }
     fun openUrl(url: String, channel: String) { record(channel); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {}; onClose() }
-    ModalBottomSheet(onDismissRequest = onClose) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White).border(1.dp, FrianzoBorder, RoundedCornerShape(8.dp)).padding(10.dp)) {
-                Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); scope.launch { delay(2000); copied = false } },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
-                    modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight),
-                ) { Text(if (copied) "Copied!" else "Copy link") }
-            }
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
             Spacer(Modifier.height(12.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            // v5.15 (owner): NO URL text in the sheet — only a full-width
+            // Copy link button. The link is still copied (existing
+            // logic) + a "Link copied!" toast.
+            Button(
+                onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); Toast.makeText(context, "Link copied!", Toast.LENGTH_SHORT).show(); scope.launch { delay(2000); copied = false } },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) { Text(if (copied) "Copied!" else "Copy link", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+            Spacer(Modifier.height(12.dp))
+            // v5.15 (owner): letter tiles in brand colours (the web
+            // tiles are letters, not brand logos — screenshot 1).
+            // 4-column grid, 56dp circles, 11sp labels.
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(4),
+                modifier = Modifier.fillMaxWidth().height(168.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                userScrollEnabled = false,
+            ) {
                 // B-D5: the DM tile is hidden when the reel has no author
                 // id — it used to sit there and do nothing when tapped.
-                if (reel.author?.id != null) ReelShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
-                    val authorId = reel.author?.id
-                    if (authorId != null && !dmBusy) {
-                        dmBusy = true
-                        scope.launch {
-                            try {
-                                val res = api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId))
-                                val convId = res.data?.id
-                                if (convId != null) {
-                                    // v3.7 (C8): record the DM share ONLY
-                                    // after the conversation really exists.
-                                    record("dm")
-                                    onClose(); onOpenChat(convId, reel.author?.displayName ?: reel.author?.username ?: "User")
+                if (reel.author?.id != null) {
+                    item {
+                        ReelShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
+                            val authorId = reel.author?.id
+                            if (authorId != null && !dmBusy) {
+                                dmBusy = true
+                                scope.launch {
+                                    try {
+                                        val res = api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId))
+                                        val convId = res.data?.id
+                                        if (convId != null) {
+                                            // v3.7 (C8): record the DM share ONLY
+                                            // after the conversation really exists.
+                                            record("dm")
+                                            onClose(); onOpenChat(convId, reel.author?.displayName ?: reel.author?.username ?: "User")
+                                        }
+                                    } catch (_: Exception) {}
+                                    dmBusy = false
                                 }
-                            } catch (_: Exception) {}
-                            dmBusy = false
+                            }
                         }
                     }
                 }
-                ReelShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") }
-                ReelShareTile("WA Status", Color(0xFF25D366), "W") { openUrl("whatsapp://send?text=" + android.net.Uri.encode(link), "whatsapp_status") }
-                ReelShareTile("Messenger", Color(0xFF0084FF), "M") { openUrl("fb-messenger://share?link=" + android.net.Uri.encode(link), "messenger") }
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                ReelShareTile("Facebook", Color(0xFF1877F2), "f") { openUrl("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link), "facebook") }
-                ReelShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") }
-                ReelShareTile("Text message", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") }
+                item { ReelShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") } }
+                item { ReelShareTile("WA Status", Color(0xFF25D366), "W") { openUrl("whatsapp://send?text=" + android.net.Uri.encode(link), "whatsapp_status") } }
+                item { ReelShareTile("Messenger", Color(0xFF0084FF), "M") { openUrl("fb-messenger://share?link=" + android.net.Uri.encode(link), "messenger") } }
+                item { ReelShareTile("Facebook", Color(0xFF1877F2), "f") { openUrl("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link), "facebook") } }
+                item { ReelShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") } }
+                item { ReelShareTile("Text message", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") } }
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -1990,13 +2170,13 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                     TextButton(onClick = { onReply(c) }, contentPadding = PaddingValues(0.dp)) { Text("Reply", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                     Spacer(Modifier.weight(1f))
                     Box {
-                        IconButton(onClick = { if (!popupBlocked) openMenu() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        if (!isReply) IconButton(onClick = { if (!popupBlocked) openMenu() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         DropdownMenu(expanded = menuOpen && !popupBlocked, onDismissRequest = { menuOpen = false; releasePopup() }) {
                             if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; releasePopup(); editDraft = c.content ?: ""; editing = true })
-                            if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; releasePopup(); showDelete = true })
                             DropdownMenuItem(text = { Text("Reply") }, onClick = { menuOpen = false; releasePopup(); onReply(c) })
                             DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; releasePopup(); clipboard.setText(AnnotatedString(c.content ?: "")); copied = true; scope.launch { delay(2000); copied = false } })
                             DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = { menuOpen = false; releasePopup(); showReport = true })
+                            if (canDelete) DropdownMenuItem(text = { Text("Delete", color = FrianzoBadgeRed) }, onClick = { menuOpen = false; releasePopup(); showDelete = true })
                         }
                     }
                 }
@@ -2023,40 +2203,41 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    showReport = false
-                    scope.launch {
-                        try {
-                            val r = api2.reportReelComment(c.id, mapOf("reason" to reportReason))
-                            if (r.success) { reported = true; reportError = null } else reportError = friendlyReelsError(r.error?.message, "Could not report comment")
-                        } catch (e: Exception) { reportError = friendlyReelsError(e, "Could not report comment") }
-                    }
-                }) { Text("Report", color = Color.Red) }
+                Button(
+                    onClick = {
+                        showReport = false
+                        scope.launch {
+                            try {
+                                val r = api2.reportReelComment(c.id, mapOf("reason" to reportReason))
+                                if (r.success) { reported = true; reportError = null } else reportError = friendlyReelsError(r.error?.message, "Could not report comment")
+                            } catch (e: Exception) { reportError = friendlyReelsError(e, "Could not report comment") }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
+                    shape = RoundedCornerShape(28.dp),
+                ) { Text("Report", maxLines = 1, softWrap = false) }
             },
             dismissButton = { TextButton(onClick = { showReport = false }) { Text("Cancel") } },
         )
     }
     if (showDelete) {
-        AlertDialog(
-            onDismissRequest = { showDelete = false },
-            title = { Text("Delete comment?") },
-            text = { Text("This can't be undone.") },
-            confirmButton = {
-                TextButton(
-                    enabled = !deleting,
-                    onClick = {
-                        deleting = true
-                        scope.launch {
-                            try {
-                                val r = api2.deleteReelComment(c.id)
-                                if (r.success) { showDelete = false; deleting = false; onChanged(); onDeleted() }
-                                else { showDelete = false; deleting = false; deleteError = friendlyReelsError(r.error?.message, "Could not delete comment") }
-                            } catch (e: Exception) { showDelete = false; deleting = false; deleteError = friendlyReelsError(e, "Could not delete comment") }
-                        }
-                    },
-                ) { Text(if (deleting) "Deleting..." else "Delete", color = Color.Red) }
+        FrianzoConfirmDialog(
+            title = "Delete comment?",
+            message = "This can't be undone.",
+            confirmLabel = if (deleting) "Deleting..." else "Delete",
+            confirmRed = true,
+            confirmEnabled = !deleting,
+            onConfirm = {
+                deleting = true
+                scope.launch {
+                    try {
+                        val r = api2.deleteReelComment(c.id)
+                        if (r.success) { showDelete = false; deleting = false; onChanged(); onDeleted() }
+                        else { showDelete = false; deleting = false; deleteError = friendlyReelsError(r.error?.message, "Could not delete comment") }
+                    } catch (e: Exception) { showDelete = false; deleting = false; deleteError = friendlyReelsError(e, "Could not delete comment") }
+                }
             },
-            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
+            onDismiss = { showDelete = false },
         )
     }
 }
@@ -3118,15 +3299,39 @@ fun CreatePostScreen(api2: FrianzoApi2, initialUri: android.net.Uri? = null, onP
             Box {
                 OutlinedButton(onClick = { audienceMenu = true }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (visibility == "public") "Public" else "Only me", fontSize = 13.sp, maxLines = 1, softWrap = false) }
                 DropdownMenu(expanded = audienceMenu, onDismissRequest = { audienceMenu = false }) {
-                    DropdownMenuItem(text = { Text("Public") }, onClick = { visibility = "public"; audienceMenu = false })
-                    DropdownMenuItem(text = { Text("Only me") }, onClick = { visibility = "private"; audienceMenu = false })
+                    DropdownMenuItem(
+                        text = {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Public", modifier = Modifier.weight(1f))
+                                if (visibility == "public") Icon(Icons.Filled.Check, contentDescription = null, tint = FrianzoBlue, modifier = Modifier.size(18.dp))
+                            }
+                        },
+                        onClick = { visibility = "public"; audienceMenu = false },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Only me", modifier = Modifier.weight(1f))
+                                if (visibility == "private") Icon(Icons.Filled.Check, contentDescription = null, tint = FrianzoBlue, modifier = Modifier.size(18.dp))
+                            }
+                        },
+                        onClick = { visibility = "private"; audienceMenu = false },
+                    )
                 }
             }
             Box {
                 OutlinedButton(onClick = { commentsMenu = true }, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Comments: " + when (commentAudience) { "followers" -> "Followers"; "only_me" -> "Only me"; else -> "Everyone" }, fontSize = 13.sp, maxLines = 1, softWrap = false) }
                 DropdownMenu(expanded = commentsMenu, onDismissRequest = { commentsMenu = false }) {
                     listOf("everyone" to "Everyone", "followers" to "Followers", "only_me" to "Only me").forEach { (v, label) ->
-                        DropdownMenuItem(text = { Text(label) }, onClick = { commentAudience = v; commentsMenu = false })
+                        DropdownMenuItem(
+                            text = {
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(label, modifier = Modifier.weight(1f))
+                                    if (commentAudience == v) Icon(Icons.Filled.Check, contentDescription = null, tint = FrianzoBlue, modifier = Modifier.size(18.dp))
+                                }
+                            },
+                            onClick = { commentAudience = v; commentsMenu = false },
+                        )
                     }
                 }
             }
@@ -3464,9 +3669,13 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
     var isBlocked by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var showTimer by remember { mutableStateOf(false) }
+    var showWallpaper by remember { mutableStateOf(false) }
+    var showBlockConfirm by remember { mutableStateOf(false) }
+    val chatPrefs = remember { context.getSharedPreferences("frianzo_chat", android.content.Context.MODE_PRIVATE) }
+    var wallpaperName by remember(conversationId) { mutableStateOf(chatPrefs.getString("wallpaper_$conversationId", "Default") ?: "Default") }
     var timerLabel by remember { mutableStateOf("Off") }
     var showReport by remember { mutableStateOf(false) }
-    var reportReason by remember { mutableStateOf("other") }
+    var reportReason by remember { mutableStateOf("") }
     var reportDetails by rememberSaveable { mutableStateOf("") }
     var reportDone by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -3652,7 +3861,9 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         otherLastActiveAt != null -> "Last seen ${lastSeenText(otherLastActiveAt)}"
         else -> ""
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // v5.15: chat wallpaper (local-only) is the thread background.
+    val wallpaperColor = ChatWallpapers.firstOrNull { it.first == wallpaperName }?.second ?: Color(0xFFF8FAFC)
+    Column(Modifier.fillMaxSize().background(wallpaperColor)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Back", maxLines = 1, softWrap = false) }
             FrianzoAvatar(otherAvatar, 40.dp)
@@ -3664,23 +3875,55 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             if (timerLabel != "Off") Text(timerLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
             Box {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Chat options") }
+                // v5.15 (web order): View profile, Block/Unblock,
+                // Report, Wallpaper, Disappearing messages. NO Delete
+                // chat row (it deleted immediately, no confirmation;
+                // the web has no such item).
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    if (otherUsername != null) DropdownMenuItem(text = { Text("View profile") }, onClick = { menuOpen = false; onOpenProfile?.invoke(otherUsername!!) })
-                    DropdownMenuItem(text = { Text("Disappearing messages: $timerLabel") }, onClick = { menuOpen = false; showTimer = true })
-                    if (otherUserId != null) DropdownMenuItem(text = { Text("Report user") }, onClick = { menuOpen = false; reportDone = false; showReport = true })
-                    if (otherUserId != null) DropdownMenuItem(text = { Text(if (isBlocked) "Unblock" else "Block") }, onClick = {
-                        menuOpen = false
-                        scope.launch {
-                            try {
-                                if (isBlocked) { if (api2.unblockUser(otherUserId!!).success) isBlocked = false }
-                                else if (api2.blockUser(otherUserId!!).success) isBlocked = true
-                            } catch (_: Exception) {}
-                        }
-                    })
-                    DropdownMenuItem(text = { Text("Delete chat", color = Color.Red) }, onClick = {
-                        menuOpen = false
-                        scope.launch { try { if (api2.deleteConversation(conversationId).success) onBack() } catch (_: Exception) {} }
-                    })
+                    if (otherUsername != null) DropdownMenuItem(
+                        text = { Text("View profile") },
+                        leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                        onClick = { menuOpen = false; onOpenProfile?.invoke(otherUsername!!) },
+                    )
+                    if (otherUserId != null) DropdownMenuItem(
+                        text = { Text(if (isBlocked) "Unblock" else "Block", color = if (isBlocked) MaterialTheme.colorScheme.onSurface else FrianzoBadgeRed) },
+                        leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null, tint = if (isBlocked) MaterialTheme.colorScheme.onSurfaceVariant else FrianzoBadgeRed, modifier = Modifier.size(18.dp)) },
+                        onClick = {
+                            menuOpen = false
+                            if (isBlocked) {
+                                scope.launch {
+                                    try { if (api2.unblockUser(otherUserId!!).success) isBlocked = false } catch (_: Exception) {}
+                                }
+                            } else showBlockConfirm = true
+                        },
+                    )
+                    if (otherUserId != null) DropdownMenuItem(
+                        text = { Text("Report user") },
+                        leadingIcon = { Icon(Icons.Filled.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                        onClick = { menuOpen = false; reportDone = false; reportReason = ""; showReport = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Wallpaper") },
+                        leadingIcon = { Icon(Icons.Filled.Wallpaper, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                        onClick = { menuOpen = false; showWallpaper = true },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Disappearing messages", modifier = Modifier.weight(1f))
+                                if (timerLabel != "Off") {
+                                    Spacer(Modifier.width(8.dp))
+                                    Row(Modifier.clip(RoundedCornerShape(12.dp)).background(Color(0xFFFFFBEB)).padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.AccessTime, contentDescription = null, tint = Color(0xFFD97706), modifier = Modifier.size(12.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("On", fontSize = 12.sp, color = Color(0xFFD97706), fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                    }
+                                }
+                            }
+                        },
+                        leadingIcon = { Icon(Icons.Filled.Timer, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                        onClick = { menuOpen = false; showTimer = true },
+                    )
                 }
             }
         }
@@ -3721,16 +3964,37 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             Spacer(Modifier.height(8.dp))
         }
         if (showTimer) {
-            AlertDialog(onDismissRequest = { showTimer = false }, title = { Text("Disappearing messages") },
-                text = { Column { listOf(null to "Off", 3600 to "1 hour", 86400 to "1 day", 604800 to "1 week").forEach { (secs, label) ->
-                    // B-B2: Off sends an explicit {"duration":null} — the
-                    // backend accepts null = Off (0 would be rejected 400),
-                    // and default Gson drops nulls from a Map, so the body
-                    // is built as raw JSON. The optimistic UI reverts on
-                    // failure instead of lying about the timer.
-                    TextButton(onClick = { showTimer = false; val prevLabel = timerLabel; val prevDuration = disappearingDuration; timerLabel = label; disappearingDuration = secs; scope.launch { try { val body = (if (secs == null) "{\"duration\":null}" else "{\"duration\":$secs}").toRequestBody("application/json".toMediaTypeOrNull()); val r = api2.setDisappearing(conversationId, body); if (!r.success) { timerLabel = prevLabel; disappearingDuration = prevDuration; sendError = r.error?.message ?: "Couldn't change disappearing timer" } } catch (e: Exception) { timerLabel = prevLabel; disappearingDuration = prevDuration; sendError = e.message } } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false) }
-                } } },
-                confirmButton = {}, dismissButton = { TextButton(onClick = { showTimer = false }) { Text("Cancel") } })
+            // v5.15 (web): disappearing time is a bottom sheet — the
+            // current option is amber-50 + amber-700 with a 16dp check;
+            // tapping applies immediately; no Cancel, scrim closes.
+            ModalBottomSheet(
+                onDismissRequest = { showTimer = false },
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Disappearing messages", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center, maxLines = 1, softWrap = false)
+                    Spacer(Modifier.height(4.dp))
+                    Text("New messages disappear after the selected time.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(12.dp))
+                    listOf(null to "Off", 3600 to "1 hour", 86400 to "24 hours", 604800 to "7 days", 7776000 to "90 days").forEach { (secs, label) ->
+                        // B-B2: Off sends an explicit {"duration":null} —
+                        // the backend accepts null = Off (0 would be
+                        // rejected 400), and default Gson drops nulls
+                        // from a Map, so the body is built as raw JSON.
+                        // The optimistic UI reverts on failure instead of
+                        // lying about the timer.
+                        val selected = disappearingDuration == secs
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(if (selected) Color(0xFFFFFBEB) else Color.Transparent).clickable { showTimer = false; val prevLabel = timerLabel; val prevDuration = disappearingDuration; timerLabel = label; disappearingDuration = secs; scope.launch { try { val body = (if (secs == null) "{\"duration\":null}" else "{\"duration\":$secs}").toRequestBody("application/json".toMediaTypeOrNull()); val r = api2.setDisappearing(conversationId, body); if (!r.success) { timerLabel = prevLabel; disappearingDuration = prevDuration; sendError = r.error?.message ?: "Couldn't change disappearing timer" } } catch (e: Exception) { timerLabel = prevLabel; disappearingDuration = prevDuration; sendError = e.message } } }.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(label, fontSize = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) Color(0xFFB45309) else MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                            if (selected) Icon(Icons.Filled.Check, contentDescription = null, tint = Color(0xFFB45309), modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
         }
         if (showReport) {
             AlertDialog(onDismissRequest = { showReport = false }, title = { Text("Report user") },
@@ -3739,9 +4003,9 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                         Text("Why are you reporting this user?", fontSize = 14.sp)
                         Spacer(Modifier.height(8.dp))
                         listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "Misinformation", "other" to "Other").forEach { (v, label) ->
-                            Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                RadioButton(selected = reportReason == v, onClick = { reportReason = v })
-                                Text(label, fontSize = 14.sp)
+                            Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(label, fontSize = 15.sp, fontWeight = if (reportReason == v) FontWeight.SemiBold else FontWeight.Normal, color = if (reportReason == v) FrianzoBlue else MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                                if (reportReason == v) Icon(Icons.Filled.Check, contentDescription = null, tint = FrianzoBlue, modifier = Modifier.size(18.dp))
                             }
                         }
                         Spacer(Modifier.height(8.dp))
@@ -3750,18 +4014,44 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        val uid = otherUserId
-                        if (uid != null) scope.launch {
-                            try {
-                                val body = mutableMapOf("reason" to reportReason)
-                                if (reportDetails.isNotBlank()) body["details"] = reportDetails
-                                if (api2.reportUser(uid, body).success) reportDone = true else sendError = "Could not send report"
-                            } catch (e: Exception) { sendError = e.message }
-                        }
-                    }) { Text("Send report") }
+                    Button(
+                        onClick = {
+                            val uid = otherUserId
+                            if (uid != null) scope.launch {
+                                try {
+                                    val body = mutableMapOf("reason" to reportReason)
+                                    if (reportDetails.isNotBlank()) body["details"] = reportDetails
+                                    if (api2.reportUser(uid, body).success) reportDone = true else sendError = "Could not send report"
+                                } catch (e: Exception) { sendError = e.message }
+                            }
+                        },
+                        enabled = reportReason.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
+                        shape = RoundedCornerShape(28.dp),
+                    ) { Text("Submit", maxLines = 1, softWrap = false) }
                 },
                 dismissButton = { TextButton(onClick = { showReport = false }) { Text("Cancel") } })
+        }
+        if (showBlockConfirm) {
+            BlockConfirmSheet(
+                name = title,
+                onBlock = {
+                    scope.launch {
+                        try { if (otherUserId != null && api2.blockUser(otherUserId!!).success) isBlocked = true } catch (_: Exception) {}
+                    }
+                },
+                onDismiss = { showBlockConfirm = false },
+            )
+        }
+        if (showWallpaper) {
+            ChatWallpaperSheet(
+                selected = wallpaperName,
+                onPick = { name ->
+                    wallpaperName = name
+                    chatPrefs.edit().putString("wallpaper_$conversationId", name).apply()
+                },
+                onDismiss = { showWallpaper = false },
+            )
         }
         // v5.13: delete one message (web: no undo anywhere). mode "me"
         // removes it locally only; "everyone" applies the tombstone.
@@ -3834,6 +4124,17 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                         border = if (m.pinnedAt != null && !m.isDeleted) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B)) else null,
                         modifier = Modifier.graphicsLayer { alpha = if (isDeleting) 0.6f else 1f }.pointerInput(m.id) {
                             detectTapGestures(onLongPress = { if (canAct) actionMessage = m })
+                        }.pointerInput(m.id) {
+                            // v5.15: swipe right on a bubble replies (web) —
+                            // a horizontal drag past 55dp triggers the same
+                            // reply flow as the Reply row. Long-press is
+                            // untouched (separate detector above).
+                            var totalDx = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { totalDx = 0f },
+                                onHorizontalDrag = { _, dragAmount -> totalDx += dragAmount },
+                                onDragEnd = { if (totalDx > 55.dp.toPx() && canAct) { replyTo = m; editingMessage = null } },
+                            )
                         }
                     ) {
                         Column(Modifier.padding(12.dp)) {
@@ -3899,60 +4200,76 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 }
             }
         }
-        // v5.13: long-press action sheet (web: Reply / React / Forward /
-        // Copy / Edit / Delete / Pin). The emoji row shows only on other
-        // people's messages (web rule); tapping the same emoji again
-        // toggles the reaction off server-side.
+        // v5.15 (web): no drag handle, no "Message options" title.
+        // Reaction strip is 7 emoji in 40dp grey circles (others'
+        // messages only); rows are Reply → Copy → Edit → Pin/Unpin
+        // → Forward → Delete, with a grey Cancel pill at the bottom.
         if (actionMessage != null) {
             val target = actionMessage!!
             val targetMine = target.senderId == myId
             val hasText = (target.content ?: "").isNotBlank()
-            ModalBottomSheet(onDismissRequest = { actionMessage = null }) {
+            ModalBottomSheet(
+                onDismissRequest = { actionMessage = null },
+                dragHandle = null,
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
                 Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        Text("Message options", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                    }
-                    HorizontalDivider(color = FrianzoBorder)
                     if (!targetMine) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                             listOf("❤️", "😂", "😮", "😢", "😡", "👍", "👎").forEach { emoji ->
-                                Text(emoji, fontSize = 28.sp, modifier = Modifier.noRippleClickable {
+                                Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant).clickable {
                                     actionMessage = null
                                     val obj = org.json.JSONObject().put("messageId", target.id).put("emoji", emoji)
                                     ChatSocket.emitWithAck("message:reaction", obj) { ack ->
                                         if (ack?.optBoolean("success") == true) load() else showMsg("Couldn't react — try again")
                                     }
-                                })
+                                }, contentAlignment = Alignment.Center) {
+                                    Text(emoji, fontSize = 22.sp, maxLines = 1, softWrap = false)
+                                }
                             }
                         }
                         HorizontalDivider(color = FrianzoBorder)
                     }
-                    MoreSheetRow(Icons.Filled.Reply, "Reply") { actionMessage = null; replyTo = target; editingMessage = null }
-                    MoreSheetRow(Icons.Filled.Forward, "Forward") { actionMessage = null; forwardMessage = target; forwardSelected = emptySet(); forwardConversations = emptyList(); forwardOpen = true }
-                    if (hasText) MoreSheetRow(Icons.Filled.ContentCopy, "Copy") {
+                    ChatActionRow(Icons.Filled.Reply, "Reply") { actionMessage = null; replyTo = target; editingMessage = null }
+                    if (hasText) ChatActionRow(Icons.Filled.ContentCopy, "Copy") {
                         actionMessage = null
                         clipboard.setText(AnnotatedString(target.content ?: ""))
                         showMsg("Copied")
                     }
-                    if (targetMine && hasText) MoreSheetRow(Icons.Filled.Edit, "Edit") { actionMessage = null; editingMessage = target; draft = target.content ?: ""; replyTo = null }
-                    MoreSheetRow(Icons.Filled.Bookmark, if (target.pinnedAt != null) "Unpin" else "Pin") {
+                    if (targetMine && hasText) ChatActionRow(Icons.Filled.Edit, "Edit") { actionMessage = null; editingMessage = target; draft = target.content ?: ""; replyTo = null }
+                    ChatActionRow(Icons.Filled.PushPin, if (target.pinnedAt != null) "Unpin" else "Pin") {
                         actionMessage = null
                         val obj = org.json.JSONObject().put("messageId", target.id)
                         ChatSocket.emitWithAck("message:pin", obj) { ack ->
                             if (ack?.optBoolean("success") == true) load() else showMsg("Couldn't pin — try again")
                         }
                     }
-                    MoreSheetRow(Icons.Filled.Delete, "Delete", red = true) { actionMessage = null; deleteTarget = target; showDeleteDialog = true }
+                    ChatActionRow(Icons.Filled.Forward, "Forward") { actionMessage = null; forwardMessage = target; forwardSelected = emptySet(); forwardConversations = emptyList(); forwardOpen = true }
+                    ChatActionRow(Icons.Filled.Delete, "Delete", red = true) { actionMessage = null; deleteTarget = target; showDeleteDialog = true }
+                    Spacer(Modifier.height(12.dp))
+                    GreyCancelPill(modifier = Modifier.padding(horizontal = 16.dp), onClick = { actionMessage = null })
                 }
             }
         }
-        // v5.13: forward picker — conversations with multi-select
-        // (web: "Send to N chat(s)").
+        // v5.15 (web selection sheet): "Forward message" + count +
+        // Cancel top-right; 40dp avatars, 14sp names, 20dp check
+        // circles; selected rows tinted; full-width slate-900 pill.
         if (forwardOpen) {
-            ModalBottomSheet(onDismissRequest = { forwardOpen = false }) {
+            ModalBottomSheet(
+                onDismissRequest = { forwardOpen = false },
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
                 Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        Text("Forward message", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Forward message", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+                        if (forwardSelected.isNotEmpty()) {
+                            Spacer(Modifier.width(8.dp))
+                            Text("${forwardSelected.size} selected", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = { forwardOpen = false }, contentPadding = PaddingValues(0.dp)) { Text("Cancel", fontSize = 14.sp, color = FrianzoBlue, maxLines = 1, softWrap = false) }
                     }
                     HorizontalDivider(color = FrianzoBorder)
                     if (!forwardLoaded) {
@@ -3963,17 +4280,28 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                         forwardConversations.forEach { conv ->
                             val other = conv.otherUser
                             val selected = forwardSelected.contains(conv.id)
-                            Row(Modifier.fillMaxWidth().noRippleClickable { forwardSelected = if (selected) forwardSelected - conv.id else forwardSelected + conv.id }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                Modifier.fillMaxWidth().background(if (selected) FrianzoBlueTint else Color.Transparent).clickable { forwardSelected = if (selected) forwardSelected - conv.id else forwardSelected + conv.id }.padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 FrianzoAvatar(other?.profilePictureUrl, 40.dp)
                                 Spacer(Modifier.width(12.dp))
-                                Text(other?.displayName ?: other?.username ?: "User", Modifier.weight(1f), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Checkbox(checked = selected, onCheckedChange = { forwardSelected = if (it) forwardSelected + conv.id else forwardSelected - conv.id })
+                                Text(other?.displayName ?: other?.username ?: "User", Modifier.weight(1f), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Box(Modifier.size(20.dp).clip(CircleShape).background(if (selected) FrianzoBlue else Color.Transparent).border(if (selected) 0.dp else 1.dp, if (selected) Color.Transparent else FrianzoBorder, CircleShape), contentAlignment = Alignment.Center) {
+                                    if (selected) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                                }
                             }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = { sendForward() }, enabled = forwardSelected.isNotEmpty() && !forwardBusy, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                        Text("Send to ${forwardSelected.size} chat(s)", maxLines = 1, softWrap = false)
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { sendForward() },
+                        enabled = forwardSelected.isNotEmpty() && !forwardBusy,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp),
+                        shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
+                    ) {
+                        Text(if (forwardBusy) "Sending…" else "Send to ${forwardSelected.size} chat(s)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                     }
                 }
             }
@@ -3983,18 +4311,32 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
         if (showDeleteDialog && deleteTarget != null) {
             val target = deleteTarget!!
             val targetMine = target.senderId == myId
-            AlertDialog(
+            // v5.15 (web): delete is a SHEET, not a dialog — same
+            // deleteMessage logic (including the socket ack path).
+            ModalBottomSheet(
                 onDismissRequest = { showDeleteDialog = false },
-                title = { Text("Delete message?") },
-                text = { Text(if (targetMine) "Delete this message for everyone, or just for you?" else "This will only delete the message for you.") },
-                confirmButton = {
-                    Column {
-                        if (targetMine) TextButton(onClick = { showDeleteDialog = false; deleteMessage(target, "everyone") }) { Text("Delete for everyone", color = Color.Red, maxLines = 1, softWrap = false) }
-                        TextButton(onClick = { showDeleteDialog = false; deleteMessage(target, "me") }) { Text("Delete for me", color = Color.Red, maxLines = 1, softWrap = false) }
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                    if (targetMine) {
+                        ChatDeleteRow(
+                            title = "Delete for everyone",
+                            sublabel = "No one in this chat will see it anymore",
+                            red = true,
+                            onClick = { showDeleteDialog = false; deleteMessage(target, "everyone") },
+                        )
                     }
-                },
-                dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") } },
-            )
+                    ChatDeleteRow(
+                        title = "Delete for me",
+                        sublabel = "Only removed from your chat",
+                        red = false,
+                        onClick = { showDeleteDialog = false; deleteMessage(target, "me") },
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    GreyCancelPill(modifier = Modifier.padding(horizontal = 16.dp), onClick = { showDeleteDialog = false })
+                }
+            }
         }
         loadError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
         sendError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
@@ -4430,6 +4772,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var blockedByMe by remember { mutableStateOf(false) }
     var blockedByOther by remember { mutableStateOf(false) }
     var moreOpen by remember { mutableStateOf(false) }
+    var showBlockConfirm by remember { mutableStateOf(false) }
     var showUnfollowConfirm by remember { mutableStateOf(false) }
     // v3.3: strikes banner on own profile (GET /api/users/me/strikes,
     // same endpoint the Dashboard screen already uses).
@@ -4594,17 +4937,35 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 Box {
                                     IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More options", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
-                                        DropdownMenuItem(text = { Text("Copy link") }, onClick = { moreOpen = false; copyProfileLink(p.username) })
-                                        DropdownMenuItem(text = { Text(if (blockedByMe) "Unblock" else "Block", color = if (blockedByMe) MaterialTheme.colorScheme.onSurface else FrianzoBadgeRed) }, onClick = {
-                                            moreOpen = false
-                                            scope.launch {
-                                                try {
-                                                    if (blockedByMe) { if (api2.unblockUser(p.id ?: "").success) blockedByMe = false }
-                                                    else if (api2.blockUser(p.id ?: "").success) { blockedByMe = true; following = false; followStatus = "none" }
-                                                } catch (_: Exception) {}
-                                            }
-                                        })
+                                        DropdownMenuItem(
+                                            text = { Text("Copy link") },
+                                            leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                                            onClick = { moreOpen = false; copyProfileLink(p.username) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(if (blockedByMe) "Unblock" else "Block", color = if (blockedByMe) MaterialTheme.colorScheme.onSurface else FrianzoBadgeRed) },
+                                            leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null, tint = if (blockedByMe) MaterialTheme.colorScheme.onSurfaceVariant else FrianzoBadgeRed, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                moreOpen = false
+                                                if (blockedByMe) {
+                                                    scope.launch {
+                                                        try { if (api2.unblockUser(p.id ?: "").success) blockedByMe = false } catch (_: Exception) {}
+                                                    }
+                                                } else showBlockConfirm = true
+                                            },
+                                        )
                                     }
+                                }
+                                if (showBlockConfirm) {
+                                    BlockConfirmSheet(
+                                        name = p.displayName ?: p.username ?: "User",
+                                        onBlock = {
+                                            scope.launch {
+                                                try { if (api2.blockUser(p.id ?: "").success) { blockedByMe = true; following = false; followStatus = "none" } } catch (_: Exception) {}
+                                            }
+                                        },
+                                        onDismiss = { showBlockConfirm = false },
+                                    )
                                 }
                                 if (onOpenChat != null && !blockedByOther) {
                                     IconButton(onClick = {

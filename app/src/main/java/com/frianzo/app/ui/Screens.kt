@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.media.MediaPlayer
 import android.widget.VideoView
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -1255,6 +1256,7 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
     var shareError by remember { mutableStateOf<String?>(null) }
     // A-B13: Repost in-flight guard.
     var repostBusy by remember { mutableStateOf(false) }
+    var repostError by remember { mutableStateOf<String?>(null) }
     // Web: the feed's permanent share code is used first, no API call.
     var link by remember { mutableStateOf(if (!post.shareCode.isNullOrBlank()) "https://frianzo.online/s/${post.shareCode}" else "https://frianzo.online/post/${post.id}") }
     LaunchedEffect(post.id) {
@@ -1292,65 +1294,76 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
             shareError = "Couldn't open that app. Try again."
         }
     }
-    ModalBottomSheet(onDismissRequest = onClose) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+    // v5.15 (owner order, his screenshots): clean sheet like the profile
+    // system-share look. NO visible URL anywhere — only a full-width
+    // Copy link button; the link itself is only copied / passed to the
+    // share intents, never displayed.
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        modifier = Modifier.fillMaxHeight(0.85f),
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        dragHandle = { Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) { Box(Modifier.size(40.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(FrianzoBorder)) } },
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
             Text("Share", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            // Web link box: bordered box with the URL, then a dark Copy link button.
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White).border(1.dp, FrianzoBorder, RoundedCornerShape(8.dp)).padding(10.dp)) {
-                Text(link, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); onShared(); scope.launch { kotlinx.coroutines.delay(2000); copied = false } },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A), contentColor = Color.White),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(if (copied) "Copied!" else "Copy link") }
-            }
             Spacer(Modifier.height(12.dp))
-            // Web grid order, 4 per row, no "More" tile on web. Brand logos
-            // are web SVGs; native keeps its letter circles (no logo assets).
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                // A-D8: disabled while a DM is already being created.
-                ShareTile("Frianzo DM", Color(0xFF0F172A), "F", enabled = !dmBusy) {
-                    // A-B13: double-tap guard — a second tap while the
-                    // first createConversation is in flight is ignored.
-                    if (dmBusy) return@ShareTile
-                    val authorId2 = post.author?.id
-                    // A-D4: no author id — say so instead of doing nothing.
-                    if (authorId2 == null) { shareError = "Can't message this post's author."; return@ShareTile }
-                    dmBusy = true; shareError = null
-                    scope.launch {
-                        try {
-                            val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId2))
-                            val convId = res.data?.id
-                            if (res.success && convId != null) { record("dm"); onShared(); onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
-                            else shareError = res.error?.message ?: "Couldn't start the chat. Try again."
-                        } catch (e: Exception) { shareError = e.message ?: "Couldn't start the chat. Try again." }
-                        finally { dmBusy = false }
+            Button(
+                onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); onShared(); Toast.makeText(context, "Link copied!", Toast.LENGTH_SHORT).show(); scope.launch { kotlinx.coroutines.delay(2000); copied = false } },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (copied) "Copied!" else "Copy link") }
+            Spacer(Modifier.height(16.dp))
+            // Web grid order, 4 per row. The web tiles are LETTER circles
+            // (owner's screenshot 1), not brand logos — clean letters in
+            // brand colours, 56dp circles, 11sp labels (ShareTile).
+            Row(Modifier.fillMaxWidth()) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    // A-D8: disabled while a DM is already being created.
+                    ShareTile("Frianzo DM", Color(0xFF0F172A), "F", enabled = !dmBusy) {
+                        // A-B13: double-tap guard — a second tap while the
+                        // first createConversation is in flight is ignored.
+                        if (dmBusy) return@ShareTile
+                        val authorId2 = post.author?.id
+                        // A-D4: no author id — say so instead of doing nothing.
+                        if (authorId2 == null) { shareError = "Can't message this post's author."; return@ShareTile }
+                        dmBusy = true; shareError = null
+                        scope.launch {
+                            try {
+                                val res = vm.api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId2))
+                                val convId = res.data?.id
+                                if (res.success && convId != null) { record("dm"); onShared(); onClose(); onOpenChat(convId, post.author?.displayName ?: post.author?.username ?: "User") }
+                                else shareError = res.error?.message ?: "Couldn't start the chat. Try again."
+                            } catch (e: Exception) { shareError = e.message ?: "Couldn't start the chat. Try again." }
+                            finally { dmBusy = false }
+                        }
                     }
                 }
-                ShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") }
-                ShareTile("WA Status", Color(0xFF25D366), "W") { openUrl("whatsapp://send?text=" + android.net.Uri.encode(link), "whatsapp_status") }
-                ShareTile("Messenger", Color(0xFF0084FF), "M") { openUrl("fb-messenger://share?link=" + android.net.Uri.encode(link), "messenger") }
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") } }
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("WA Status", Color(0xFF25D366), "W") { openUrl("whatsapp://send?text=" + android.net.Uri.encode(link), "whatsapp_status") } }
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("Messenger", Color(0xFF0084FF), "M") { openUrl("fb-messenger://share?link=" + android.net.Uri.encode(link), "messenger") } }
             }
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                ShareTile("Facebook", Color(0xFF1877F2), "f") { openUrl("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link), "facebook") }
-                ShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") }
-                ShareTile("Text message", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") }
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth()) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("Facebook", Color(0xFF1877F2), "f") { openUrl("https://www.facebook.com/sharer/sharer.php?u=" + android.net.Uri.encode(link), "facebook") } }
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") } }
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { ShareTile("Text message", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") } }
+                Spacer(Modifier.weight(1f))
             }
             if (shareError != null) { Spacer(Modifier.height(8.dp)); Text(shareError!!, fontSize = 13.sp, color = Color.Red) }
+            if (repostError != null) { Spacer(Modifier.height(8.dp)); Text(repostError!!, fontSize = 13.sp, color = Color.Red) }
             Spacer(Modifier.height(12.dp))
             // Web: reposts are counted server-side and must NOT also be
             // recorded as a share event (that would double-count them).
             // On success the sheet closes (web: onClose + reload).
-            var repostError by remember { mutableStateOf<String?>(null) }
-            if (repostError != null) { Spacer(Modifier.height(8.dp)); Text(repostError!!, fontSize = 13.sp, color = Color.Red) }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            TextButton(enabled = !repostBusy, onClick = {
+            // v5.15 (owner order): Repost is a proper full-width button,
+            // same slate-900 style as Copy link — not blue text.
+            Button(enabled = !repostBusy, onClick = {
                 // A-B13: double-tap guard — a second tap while the first
                 // repost is in flight is ignored, so no duplicate repost.
-                if (repostBusy) return@TextButton
+                if (repostBusy) return@Button
                 repostBusy = true
                 scope.launch {
                     try {
@@ -1362,8 +1375,9 @@ private fun PostShareSheet(vm: FeedViewModel, post: Post, onClose: () -> Unit, o
                     } catch (e: Exception) { repostError = e.message }
                     finally { repostBusy = false }
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text(if (repostBusy) "Reposting…" else "Repost to your feed") }
-            Spacer(Modifier.height(24.dp))
+            }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Filled.Repeat, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (repostBusy) "Reposting…" else "Repost to your feed")
+            }
         }
     }
 }
@@ -1796,6 +1810,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
 @Composable
 private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId: String?, depth: Int, parentAuthor: Author?, followStatus: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, onReply: (Comment) -> Unit, onChanged: () -> Unit, onDeleted: () -> Unit = {}) {
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf(false) }
     // A-B15: key all per-comment state to the comment id / server values,
@@ -1809,6 +1824,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     var reported by remember { mutableStateOf(false) }
     var reportError by remember { mutableStateOf<String?>(null) }
     var deleteError by remember { mutableStateOf<String?>(null) }
+    var deleteBusy by remember { mutableStateOf(false) }
     val isReply = depth > 0
     val isOwner = myId != null && c.author?.id == myId
     val canDelete = isOwner || (myId != null && postOwnerId != null && myId == postOwnerId)
@@ -1894,7 +1910,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                     Text(commentTimeAgo(c.createdAt), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(8.dp))
                     Box {
-                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; editDraft = c.content ?: ""; editing = true })
                             if (canDelete) DropdownMenuItem(text = { Text("Delete", color = Color.Red) }, onClick = { menuOpen = false; showDelete = true })
@@ -1903,7 +1919,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                                 menuOpen = false
                                 // A-D11: a failed report used to close the
                                 // menu with no confirmation and no error.
-                                scope.launch { try { val r = api2.reportComment(c.id, mapOf("reason" to "other")); if (r.success) { reported = true; reportError = null } else reportError = r.error?.message ?: "Could not report comment" } catch (e: Exception) { reportError = e.message ?: "Could not report comment" } }
+                                scope.launch { try { val r = api2.reportComment(c.id, mapOf("reason" to "other")); if (r.success) { reported = true; reportError = null; Toast.makeText(context, "Reported", Toast.LENGTH_SHORT).show() } else reportError = r.error?.message ?: "Could not report comment" } catch (e: Exception) { reportError = e.message ?: "Could not report comment" } }
                             })
                         }
                     }
@@ -1915,21 +1931,27 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
         }
     }
     if (showDelete) {
+        // v5.15: red FILLED Delete button (was red text); the dialog stays
+        // open on failure so the error is visible — it only closes when
+        // the server actually deleted the comment.
         AlertDialog(
-            onDismissRequest = { showDelete = false },
+            onDismissRequest = { if (!deleteBusy) showDelete = false },
+            shape = RoundedCornerShape(16.dp),
             title = { Text("Delete comment?") },
-            text = { Text("This can't be undone.") },
+            text = { Column { Text("This can't be undone."); if (deleteError != null) { Spacer(Modifier.height(8.dp)); Text(deleteError!!, fontSize = 13.sp, color = Color.Red) } } },
             confirmButton = {
-                TextButton(onClick = {
-                    showDelete = false
+                Button(enabled = !deleteBusy, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White), onClick = {
+                    if (deleteBusy) return@Button
+                    deleteBusy = true; deleteError = null
                     scope.launch {
                         try {
                             val r = api2.deleteComment(c.id)
-                            if (r.success) { onChanged(); onDeleted() }
+                            if (r.success) { showDelete = false; onChanged(); onDeleted() }
                             else deleteError = r.error?.message ?: "Could not delete comment"
                         } catch (e: Exception) { deleteError = e.message ?: "Could not delete comment" }
+                        finally { deleteBusy = false }
                     }
-                }) { Text("Delete", color = Color.Red) }
+                }) { Text(if (deleteBusy) "Deleting…" else "Delete") }
             },
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
         )
@@ -1977,15 +1999,28 @@ private fun PostPhoto(url: String, onClick: () -> Unit = {}) {
     }
 }
 
+// v5.15: web-style menu row — 18dp icon + 14sp label, 12dp gap, 14dp/16dp
+// padding, min 48dp height, ripple click. No dividers, no title.
+@Composable
+private fun MenuRow(icon: ImageVector, label: String, destructive: Boolean = false, onClick: () -> Unit) {
+    val textColor = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+    val iconTint = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onClick() }.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = iconTint)
+        Spacer(Modifier.width(12.dp))
+        Text(label, fontSize = 14.sp, color = textColor)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followStatus: String?, onClose: () -> Unit, onAuthor: (String) -> Unit, onShare: () -> Unit, onComments: () -> Unit, onDetail: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var notice by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
     var showEdit by remember { mutableStateOf(false) }
     var editText by rememberSaveable { mutableStateOf(post.content ?: "") }
     var showDelete by remember { mutableStateOf(false) }
-    var showAudience by remember { mutableStateOf(false) }
+    var audienceExpanded by remember { mutableStateOf(false) }
     // A-B7: in-flight guards + visible errors for Edit/Delete.
     var editBusy by remember { mutableStateOf(false) }
     var editError by remember { mutableStateOf<String?>(null) }
@@ -1994,86 +2029,98 @@ private fun PostMenuSheet(vm: FeedViewModel, post: Post, myId: String?, followSt
     var audienceError by remember { mutableStateOf<String?>(null) }
     val isOwner = post.author?.id != null && post.author?.id == myId
     val clipboard = LocalClipboardManager.current
+    // v5.15: feedback is a Toast, never the old inline blue notice text.
+    fun toast(msg: String) { Toast.makeText(context, msg, Toast.LENGTH_SHORT).show() }
     // A-B6: run returns null on success or an error message on failure.
-    // The success notice ("Reported", "Pinned", ...) is shown ONLY when
-    // the server actually accepted the action — the old version showed
+    // The Toast ("Reported", "Pinned", ...) is shown ONLY when the
+    // server actually accepted the action — the old version showed
     // it even when the server rejected the call.
     fun act(label: String, run: suspend () -> String?) {
-        scope.launch { try { val err = run(); notice = err ?: label } catch (e: Exception) { notice = e.message ?: "Failed" } }
+        scope.launch { try { val err = run(); if (err == null) toast(label) else toast(err) } catch (e: Exception) { toast(e.message ?: "Failed") } }
     }
-    ModalBottomSheet(onDismissRequest = onClose) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text("Post options", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
-            if (post.author?.username != null) TextButton(onClick = { onClose(); onAuthor(post.author!!.username!!) }, modifier = Modifier.fillMaxWidth()) { Text("View profile", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { onClose(); onDetail() }, modifier = Modifier.fillMaxWidth()) { Text("View post", modifier = Modifier.fillMaxWidth()) }
-            // v3.4: copy the SHORT /s/<code> link like the share sheet
-            // (POST /api/share); direct /post/{id} only if that call fails.
-            TextButton(onClick = {
-                scope.launch {
-                    var url = "https://frianzo.online/post/${post.id}"
-                    try {
-                        val code = post.shareCode?.takeIf { it.isNotBlank() }
-                            ?: vm.api2.createShareLink(mapOf("type" to "post", "id" to post.id)).data?.code
-                        if (!code.isNullOrBlank()) url = "https://frianzo.online/s/$code"
-                    } catch (_: Exception) {}
-                    clipboard.setText(AnnotatedString(url)); notice = "Link copied"
-                }
-            }, modifier = Modifier.fillMaxWidth()) { Text("Copy link", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { onClose(); onShare() }, modifier = Modifier.fillMaxWidth()) { Text("Share", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { onClose(); onComments() }, modifier = Modifier.fillMaxWidth()) { Text("Comments", modifier = Modifier.fillMaxWidth()) }
-            // v5.14 (#5 Save post): everyone, not owner-only. Optimistic
-            // flip (same pattern as the reel rail toggleFav), reverted on
-            // server failure; the notice shows only on server success
-            // (act), with the reel-side wording ("Saved" /
-            // "Removed from saved").
-            TextButton(onClick = { val prevSaved = post.isSaved; vm.updateSaved(post.id, !prevSaved); act(if (!prevSaved) "Saved" else "Removed from saved") { try { val r = vm.api2.togglePostFavorite(post.id); if (r.success && r.data != null) { vm.updateSaved(post.id, r.data.favorited); null } else { vm.updateSaved(post.id, prevSaved); r.error?.message ?: "Couldn't save — try again" } } catch (e: Exception) { vm.updateSaved(post.id, prevSaved); e.message ?: "Couldn't save — try again" } } }, modifier = Modifier.fillMaxWidth()) { Text(if (post.isSaved) "Unsave" else "Save", modifier = Modifier.fillMaxWidth()) }
-            // A-B5 (menu): hide locally only on server success.
-            TextButton(onClick = { act("Hidden") { val r = vm.api2.hidePost(post.id); if (r.success) { vm.hidePost(post.id); onClose(); null } else r.error?.message ?: "Could not hide post" } }, modifier = Modifier.fillMaxWidth()) { Text("Hide post", modifier = Modifier.fillMaxWidth()) }
-            // v2.9: "Not interested" records creator feedback
-            // (POST /api/users/me/not-interested { type: "creator",
-            // value: authorId }) and hides the post locally. It is NOT
-            // the same as "Hide post" any more.
-            TextButton(onClick = { act("Not interested") { val aid = post.author?.id ?: return@act "Could not mark not interested"; val r = vm.api2.notInterested(mapOf("type" to "creator", "value" to aid)); if (r.success) { vm.hidePost(post.id); onClose(); null } else r.error?.message ?: "Could not mark not interested" } }, modifier = Modifier.fillMaxWidth()) { Text("Not interested", modifier = Modifier.fillMaxWidth()) }
-            TextButton(onClick = { act("Reported") { val r = vm.api2.reportPost(post.id, mapOf("reason" to "other")); if (r.success) null else r.error?.message ?: "Could not report post" } }, modifier = Modifier.fillMaxWidth()) { Text("Report post", modifier = Modifier.fillMaxWidth()) }
-            if (followStatus == "following" || followStatus == "friends") {
-                TextButton(onClick = { act("Unfollowed") { val aid = post.author?.id ?: return@act "Could not unfollow"; val r = vm.api2.toggleFollow(aid); if (r.success) null else r.error?.message ?: "Could not unfollow" } }, modifier = Modifier.fillMaxWidth()) { Text("Unfollow", modifier = Modifier.fillMaxWidth()) }
-            }
+    // v3.4: copy the SHORT /s/<code> link like the share sheet
+    // (POST /api/share); direct /post/{id} only if that call fails.
+    fun copyPostLink() {
+        scope.launch {
+            var url = "https://frianzo.online/post/${post.id}"
+            try {
+                val code = post.shareCode?.takeIf { it.isNotBlank() }
+                    ?: vm.api2.createShareLink(mapOf("type" to "post", "id" to post.id)).data?.code
+                if (!code.isNullOrBlank()) url = "https://frianzo.online/s/$code"
+            } catch (_: Exception) {}
+            clipboard.setText(AnnotatedString(url)); toast("Link copied!")
+        }
+    }
+    // v5.15: web's 5 owner rows / 4 non-owner rows ONLY — View profile,
+    // View post, Share, Comments, Save, Hide post removed (owner order).
+    // No "Post options" title, no dividers, no Cancel row, no X.
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        dragHandle = { Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) { Box(Modifier.size(40.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(FrianzoBorder)) } },
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
             if (isOwner) {
-                TextButton(onClick = { showEdit = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit post", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = { act(if (post.isPinned) "Unpinned" else "Pinned") { val r = vm.api2.togglePin(post.id); if (r.success) null else r.error?.message ?: "Could not change pin" } }, modifier = Modifier.fillMaxWidth()) { Text(if (post.isPinned) "Unpin from profile" else "Pin to profile", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = { showAudience = true }, modifier = Modifier.fillMaxWidth()) { Text("Who can comment", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete post", color = Color.Red, modifier = Modifier.fillMaxWidth()) }
+                MenuRow(Icons.Filled.Edit, "Edit post") { showEdit = true }
+                MenuRow(Icons.Filled.Link, "Copy link") { copyPostLink() }
+                MenuRow(Icons.Filled.PushPin, if (post.isPinned) "Unpin from profile" else "Pin to profile") {
+                    act(if (post.isPinned) "Unpinned" else "Pinned") { val r = vm.api2.togglePin(post.id); if (r.success) null else r.error?.message ?: "Could not change pin" }
+                }
+                MenuRow(Icons.Filled.ChatBubble, "Who can comment") { audienceExpanded = !audienceExpanded }
+                if (audienceExpanded) {
+                    // v5.15: inline sub-menu inside the sheet (web parity),
+                    // NOT a separate dialog. Tapping an option saves
+                    // immediately and closes the sheet; a server rejection
+                    // shows the error inline and keeps the sheet open.
+                    // The feed copy is updated locally on success so the
+                    // detail/comment screens do not keep showing the old
+                    // audience. Current option = semibold, 12sp.
+                    val currentAudience = post.commentAudience ?: "everyone"
+                    Column(Modifier.fillMaxWidth().padding(start = 46.dp, end = 16.dp, bottom = 4.dp)) {
+                        listOf("everyone" to "Everyone", "followers" to "Followers", "only_me" to "Only me").forEach { (v, label) ->
+                            Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).clickable {
+                                scope.launch { try { val r = vm.api2.updatePost(post.id, mapOf("commentAudience" to v)); if (r.success) { audienceError = null; vm.updateCommentAudience(post.id, v); onClose() } else audienceError = r.error?.message ?: "Could not change who can comment" } catch (e: Exception) { audienceError = e.message ?: "Could not change who can comment" } }
+                            }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(label, fontSize = 12.sp, fontWeight = if (currentAudience == v) FontWeight.SemiBold else FontWeight.Normal, color = MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                        if (audienceError != null) Text(audienceError!!, fontSize = 12.sp, color = Color.Red)
+                    }
+                }
+                MenuRow(Icons.Filled.Delete, "Delete post", destructive = true) { showDelete = true }
+            } else {
+                MenuRow(Icons.Filled.Link, "Copy link") { copyPostLink() }
+                MenuRow(Icons.Filled.Flag, "Report post") {
+                    act("Reported") { val r = vm.api2.reportPost(post.id, mapOf("reason" to "other")); if (r.success) null else r.error?.message ?: "Could not report post" }
+                }
+                if (followStatus == "following" || followStatus == "friends") {
+                    MenuRow(Icons.Filled.PersonRemove, "Unfollow") {
+                        act("Unfollowed") { val aid = post.author?.id ?: return@act "Could not unfollow"; val r = vm.api2.toggleFollow(aid); if (r.success) null else r.error?.message ?: "Could not unfollow" }
+                    }
+                }
+                // v2.9: "Not interested" records creator feedback
+                // (POST /api/users/me/not-interested { type: "creator",
+                // value: authorId }) and hides the post locally.
+                MenuRow(Icons.Filled.Block, "Not interested") {
+                    act("Not interested") { val aid = post.author?.id ?: return@act "Could not mark not interested"; val r = vm.api2.notInterested(mapOf("type" to "creator", "value" to aid)); if (r.success) { vm.hidePost(post.id); onClose(); null } else r.error?.message ?: "Could not mark not interested" }
+                }
             }
-            Spacer(Modifier.height(24.dp))
         }
     }
     if (showEdit) {
         // A-B7: Save is disabled while saving (no double submit); a
         // server rejection or network failure shows the error in the
         // dialog instead of silently leaving it open.
-        AlertDialog(onDismissRequest = { if (!editBusy) showEdit = false }, title = { Text("Edit post") }, text = { Column { OutlinedTextField(value = editText, onValueChange = { editText = it }, modifier = Modifier.fillMaxWidth()); if (editError != null) { Spacer(Modifier.height(8.dp)); Text(editError!!, fontSize = 13.sp, color = Color.Red) } } },
-            confirmButton = { Button(enabled = !editBusy, onClick = { if (editBusy) return@Button; editBusy = true; editError = null; scope.launch { try { val r = vm.api2.updatePost(post.id, mapOf("content" to editText)); if (r.success) { showEdit = false; onClose(); vm.refresh() } else editError = r.error?.message ?: "Could not save post" } catch (e: Exception) { editError = e.message ?: "Could not save post" } finally { editBusy = false } } }) { Text(if (editBusy) "Saving…" else "Save") } },
-            dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } })
+        AlertDialog(onDismissRequest = { if (!editBusy) showEdit = false }, shape = RoundedCornerShape(16.dp), title = { Text("Edit post") }, text = { Column { OutlinedTextField(value = editText, onValueChange = { editText = it }, modifier = Modifier.fillMaxWidth()); if (editError != null) { Spacer(Modifier.height(8.dp)); Text(editError!!, fontSize = 13.sp, color = Color.Red) } } },
+            confirmButton = { Button(enabled = !editBusy, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface), onClick = { if (editBusy) return@Button; editBusy = true; editError = null; scope.launch { try { val r = vm.api2.updatePost(post.id, mapOf("content" to editText)); if (r.success) { showEdit = false; onClose(); vm.refresh() } else editError = r.error?.message ?: "Could not save post" } catch (e: Exception) { editError = e.message ?: "Could not save post" } finally { editBusy = false } } }) { Text(if (editBusy) "Saving…" else "Save") } },
+            dismissButton = { OutlinedButton(onClick = { showEdit = false }) { Text("Cancel") } })
     }
     if (showDelete) {
         // A-B7: same guard + error for Delete.
-        AlertDialog(onDismissRequest = { if (!deleteBusy) showDelete = false }, title = { Text("Delete this post?") }, text = { Column { Text("This can't be undone."); if (deleteError != null) { Spacer(Modifier.height(8.dp)); Text(deleteError!!, fontSize = 13.sp, color = Color.Red) } } },
-            confirmButton = { Button(enabled = !deleteBusy, onClick = { if (deleteBusy) return@Button; deleteBusy = true; deleteError = null; scope.launch { try { val r = vm.api2.deletePost(post.id); if (r.success) { vm.hidePost(post.id); showDelete = false; onClose() } else deleteError = r.error?.message ?: "Could not delete post" } catch (e: Exception) { deleteError = e.message ?: "Could not delete post" } finally { deleteBusy = false } } }) { Text(if (deleteBusy) "Deleting…" else "Delete") } },
-            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } })
-    }
-    if (showAudience) {
-        // A-B8: the dialog only closes when the server accepts the
-        // change; a rejection shows the error and stays open. The feed
-        // copy is also updated locally on success so the detail/comment
-        // screens do not keep showing the old audience.
-        AlertDialog(onDismissRequest = { showAudience = false }, title = { Text("Who can comment") }, text = { Column {
-            if (audienceError != null) { Text(audienceError!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(8.dp)) }
-            listOf("everyone" to "Everyone", "followers" to "Followers", "only_me" to "Only me").forEach { (v, label) ->
-                TextButton(onClick = { scope.launch { try { val r = vm.api2.updatePost(post.id, mapOf("commentAudience" to v)); if (r.success) { audienceError = null; vm.updateCommentAudience(post.id, v); showAudience = false } else audienceError = r.error?.message ?: "Could not change who can comment" } catch (e: Exception) { audienceError = e.message ?: "Could not change who can comment" } } }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth()) }
-            }
-        } }, confirmButton = {}, dismissButton = { TextButton(onClick = { showAudience = false }) { Text("Cancel") } })
+        AlertDialog(onDismissRequest = { if (!deleteBusy) showDelete = false }, shape = RoundedCornerShape(16.dp), title = { Text("Delete this post?") }, text = { Column { Text("This can't be undone."); if (deleteError != null) { Spacer(Modifier.height(8.dp)); Text(deleteError!!, fontSize = 13.sp, color = Color.Red) } } },
+            confirmButton = { Button(enabled = !deleteBusy, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White), onClick = { if (deleteBusy) return@Button; deleteBusy = true; deleteError = null; scope.launch { try { val r = vm.api2.deletePost(post.id); if (r.success) { vm.hidePost(post.id); showDelete = false; onClose() } else deleteError = r.error?.message ?: "Could not delete post" } catch (e: Exception) { deleteError = e.message ?: "Could not delete post" } finally { deleteBusy = false } } }) { Text(if (deleteBusy) "Deleting…" else "Delete") } },
+            dismissButton = { OutlinedButton(onClick = { showDelete = false }) { Text("Cancel") } })
     }
 }
 
@@ -2365,9 +2412,13 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                     if (isVideo) IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
                     if (!isOwn) {
                         Box {
-                            IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White) }
-                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                                DropdownMenuItem(text = { Text(if (isMuted) "Unmute stories" else "Mute stories") }, onClick = { menuOpen = false; scope.launch { try { val uid = group.user?.id ?: group.userId; val r = if (isMuted) api2.unmuteStories(uid) else api2.muteStories(uid); if (r.success) { isMuted = !isMuted; notice = if (isMuted) "Stories muted" else "Stories unmuted" } else notice = r.error?.message ?: "Could not change mute setting" } catch (e: Exception) { notice = e.message } } })
+                            IconButton(onClick = { menuOpen = true; paused = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White) }
+                            // v5.15: playback pauses while the menu is open
+                            // (the progress ticker and the VideoView both
+                            // honour `paused`); Cancel row added (web parity).
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false; paused = false }) {
+                                DropdownMenuItem(text = { Text(if (isMuted) "Unmute stories" else "Mute stories") }, onClick = { menuOpen = false; paused = false; scope.launch { try { val uid = group.user?.id ?: group.userId; val r = if (isMuted) api2.unmuteStories(uid) else api2.muteStories(uid); if (r.success) { isMuted = !isMuted; notice = if (isMuted) "Stories muted" else "Stories unmuted" } else notice = r.error?.message ?: "Could not change mute setting" } catch (e: Exception) { notice = e.message } } })
+                                DropdownMenuItem(text = { Text("Cancel") }, onClick = { menuOpen = false; paused = false })
                             }
                         }
                     }
@@ -2411,8 +2462,8 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                 confirmButton = { TextButton(onClick = { showViewers = false }) { Text("Close") } })
         }
         if (showDelete) {
-            AlertDialog(onDismissRequest = { showDelete = false }, title = { Text("Delete story?") }, text = { Text("This can't be undone.") },
-                confirmButton = { TextButton(onClick = { showDelete = false; scope.launch { try { if (item != null && api2.deleteStatus(item.id).success) onDeleted() else notice = "Could not delete story" } catch (e: Exception) { notice = e.message } } }) { Text("Delete", color = Color.Red) } },
+            AlertDialog(onDismissRequest = { showDelete = false }, shape = RoundedCornerShape(16.dp), title = { Text("Delete story?") }, text = { Text("This can't be undone.") },
+                confirmButton = { Button(colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White), onClick = { showDelete = false; scope.launch { try { if (item != null && api2.deleteStatus(item.id).success) onDeleted() else notice = "Could not delete story" } catch (e: Exception) { notice = e.message } } }) { Text("Delete") } },
                 dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } })
         }
     }

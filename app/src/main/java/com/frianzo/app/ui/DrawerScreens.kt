@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import java.net.URL
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,9 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
@@ -65,9 +64,9 @@ import kotlinx.coroutines.launch
 private val accountOpsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
 @Composable
-fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null) {
+fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null, onOpenDrawerScreen: ((String) -> Unit)? = null) {
     when (label) {
-        "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched)
+        "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen)
         "Your Activity" -> ActivityScreen(api2, onBack)
         "Professional Dashboard" -> DashboardScreen(api2, onBack)
         "Close Friends" -> CloseFriendsScreen(api2, onBack)
@@ -97,6 +96,64 @@ private fun ErrorText(error: String?) {
     }
 }
 
+// ---------- v5.15: grouped-cards Settings rows (web settings-menu) ----------
+// Card = rounded 12dp, 1dp outline, surface background; rows = 20dp icon
+// + 16sp label, 12dp gap, 12dp/16dp padding, min 48dp tall, ripple on tap.
+// Icon tint is onSurfaceVariant, which IS FrianzoTextSecondary (#64748B)
+// in the light scheme (Theme.kt) and the dark equivalent in dark mode;
+// error IS FrianzoBadgeRed (#DC2626) in the light scheme.
+
+@Composable
+private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = Modifier.fillMaxWidth(),
+    ) { Column(content = content) }
+}
+
+@Composable
+private fun SettingsCardDivider() {
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+}
+
+@Composable
+private fun SettingsRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    labelColor: Color = MaterialTheme.colorScheme.onSurface,
+    iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, fontSize = 16.sp, color = labelColor, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun SettingsSubRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    labelColor: Color = MaterialTheme.colorScheme.onSurface,
+    iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 32.dp, end = 16.dp, top = 12.dp, bottom = 12.dp).heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, fontSize = 14.sp, color = labelColor, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+    }
+}
+
 private fun formatMinutes(mins: Int): String {
     val h = mins / 60
     val m = mins % 60
@@ -122,7 +179,7 @@ private fun formatMinutes(mins: Int): String {
 // screen (or a real dialog/action) — nothing here is a placeholder.
 
 @Composable
-fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}) {
+fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onOpenDrawerScreen: ((String) -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // v2.9: in-settings sub-screens (My Interests, Verification).
@@ -152,6 +209,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
     var bio by rememberSaveable { mutableStateOf("") }
     var isPrivate by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    var showLogout by remember { mutableStateOf(false) }
     var showAddAccount by remember { mutableStateOf(false) }
     var showEdit by remember { mutableStateOf(false) }
     var editError by remember { mutableStateOf<String?>(null) }
@@ -247,93 +305,135 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             Spacer(Modifier.height(16.dp))
-            // v3.4: Login & Security — expandable, groups the account rows.
-            Row(Modifier.fillMaxWidth().clickable { loginSecurityExpanded = !loginSecurityExpanded }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Login & Security", fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                Text(if (loginSecurityExpanded) "Hide" else "Show", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false)
-            }
-            if (loginSecurityExpanded) {
-                TextButton(onClick = { subScreen = "privacy" }, modifier = Modifier.fillMaxWidth()) { Text("Account Privacy", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                TextButton(onClick = { showEdit = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit Profile", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                TextButton(onClick = { subScreen = "blocked" }, modifier = Modifier.fillMaxWidth()) { Text("Blocked Accounts", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                TextButton(onClick = { subScreen = "devices" }, modifier = Modifier.fillMaxWidth()) { Text("Devices", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                Spacer(Modifier.height(8.dp))
-                Text("Theme", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                listOf(THEME_MODE_SYSTEM to "System", THEME_MODE_LIGHT to "Light", THEME_MODE_DARK to "Dark").forEach { (v, label) ->
-                    Row(Modifier.fillMaxWidth().clickable { themeMode = v; saveThemeMode(context, v) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = themeMode == v, onClick = { themeMode = v; saveThemeMode(context, v) })
-                        Text(label, fontSize = 14.sp)
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Data Saver", fontSize = 14.sp)
-                        Text("Use less mobile data.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(checked = dataSaver, onCheckedChange = { dataSaver = it; saveDataSaver(context, it) })
-                }
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = { subScreen = "interests" }, modifier = Modifier.fillMaxWidth()) { Text("My Interests", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                TextButton(onClick = { subScreen = "notifprefs" }, modifier = Modifier.fillMaxWidth()) { Text("Notifications", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                TextButton(enabled = !deleteBusy, onClick = { showDelete = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete Account", color = Color.Red, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("Preferences", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = { subScreen = "interests" }, modifier = Modifier.fillMaxWidth()) { Text("My Interests", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            TextButton(onClick = { subScreen = "verification" }, modifier = Modifier.fillMaxWidth()) { Text("Verification", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            TextButton(onClick = { subScreen = "muted" }, modifier = Modifier.fillMaxWidth()) { Text("Muted Stories", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            Spacer(Modifier.height(16.dp))
-            // v2.9: switch between accounts saved on this device
-            // (POST /api/auth/switch). The new auth cookie is set by the
-            // server; onSwitched refreshes the session to the new user.
-            Text("Switch account", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            if (savedAccounts.isEmpty()) { Text("No saved accounts on this device yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            savedAccounts.forEach { acc ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FrianzoAvatar(acc.profilePictureUrl, 40.dp)
+            // v5.15: grouped cards (web settings-menu/page.tsx). Card 1 =
+            // the account rows + the Login & Security accordion + the
+            // saved-account switcher. Card 2 = Logout. Card 3 = the legal
+            // pages. Only the layout changed: every row below keeps its
+            // original destination / action.
+            // NOTE (verified 2026-11-07): there is NO Admin row and NO
+            // Monetization screen in this build — PublicProfile has no
+            // role/admin field and no Monetization screen exists (the
+            // missing-features review lists both as missing), so no Admin
+            // row is shown and Monetization opens the Professional
+            // Dashboard, which is where the monetization status lives.
+            // Fingerprint Login is also NOT shown: no biometric bridge
+            // exists in the app to report on, so a toggle would be fake.
+            SettingsCard {
+                SettingsRow(Icons.Filled.BarChart, "Professional Dashboard") { onOpenDrawerScreen?.invoke("Professional Dashboard") }
+                SettingsCardDivider()
+                SettingsRow(Icons.Filled.MonetizationOn, "Monetization") { onOpenDrawerScreen?.invoke("Professional Dashboard") }
+                SettingsCardDivider()
+                SettingsRow(Icons.Filled.Verified, "Verification") { subScreen = "verification" }
+                SettingsCardDivider()
+                SettingsRow(Icons.Filled.History, "Your Activity") { onOpenDrawerScreen?.invoke("Your Activity") }
+                SettingsCardDivider()
+                SettingsRow(Icons.Filled.Star, "Close Friends") { onOpenDrawerScreen?.invoke("Close Friends") }
+                SettingsCardDivider()
+                SettingsRow(Icons.Filled.VisibilityOff, "Muted Stories") { subScreen = "muted" }
+                SettingsCardDivider()
+                // v3.4: Login & Security — expandable, groups the account rows.
+                Row(Modifier.fillMaxWidth().clickable { loginSecurityExpanded = !loginSecurityExpanded }.padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Security, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(acc.displayName ?: acc.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                        Text("@${acc.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                    }
-                    val isCurrent = acc.id != null && acc.id == profile?.id
-                    if (isCurrent) Text("Current", fontSize = 12.sp, color = FrianzoBlue, maxLines = 1, softWrap = false)
-                    else if (acc.id != null) TextButton(enabled = switchingId != acc.id, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), onClick = {
-                        switchingId = acc.id
-                        // C-B16: the switch runs on the app scope, so
-                        // leaving Settings mid-switch cannot cancel it
-                        // with an ambiguous outcome.
-                        accountOpsScope.launch {
-                            try {
-                                val r = api2.switchAccount(mapOf("accountId" to acc.id))
-                                if (r.success) onSwitched() else error = r.error?.message ?: "Could not switch account"
-                            } catch (e: Exception) { error = e.message }
-                            switchingId = null
+                    Text("Login & Security", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Icon(if (loginSecurityExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = if (loginSecurityExpanded) "Collapse" else "Expand", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                }
+                if (loginSecurityExpanded) {
+                    // Indented sub-list on a surfaceVariant background.
+                    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)) {
+                        SettingsSubRow(Icons.Filled.Lock, "Account Privacy") { subScreen = "privacy" }
+                        SettingsCardDivider()
+                        SettingsSubRow(Icons.Filled.Edit, "Edit Profile") { showEdit = true }
+                        SettingsCardDivider()
+                        SettingsSubRow(Icons.Filled.Block, "Blocked Accounts") { subScreen = "blocked" }
+                        SettingsCardDivider()
+                        SettingsSubRow(Icons.Filled.Devices, "Devices") { subScreen = "devices" }
+                        SettingsCardDivider()
+                        Text("Theme", fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.fillMaxWidth().padding(start = 32.dp, end = 16.dp, top = 12.dp))
+                        listOf(THEME_MODE_SYSTEM to "System", THEME_MODE_LIGHT to "Light", THEME_MODE_DARK to "Dark").forEach { (v, label) ->
+                            Row(Modifier.fillMaxWidth().clickable { themeMode = v; saveThemeMode(context, v) }.padding(start = 32.dp, end = 16.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(selected = themeMode == v, onClick = { themeMode = v; saveThemeMode(context, v) })
+                                Text(label, fontSize = 14.sp)
+                            }
                         }
-                    }) { Text("Switch", maxLines = 1, softWrap = false) }
-                    // C-D1: a saved account with no id cannot be switched
-                    // to — say so instead of showing a dead row.
-                    else Text("Can't switch", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        SettingsCardDivider()
+                        Row(Modifier.fillMaxWidth().padding(start = 32.dp, end = 16.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Data Saver", fontSize = 14.sp)
+                                Text("Use less mobile data.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = dataSaver, onCheckedChange = { dataSaver = it; saveDataSaver(context, it) })
+                        }
+                        SettingsCardDivider()
+                        SettingsSubRow(Icons.Filled.Interests, "My Interests") { subScreen = "interests" }
+                        SettingsCardDivider()
+                        SettingsSubRow(Icons.Filled.Notifications, "Notifications") { subScreen = "notifprefs" }
+                        SettingsCardDivider()
+                        SettingsSubRow(Icons.Filled.Delete, "Delete Account", labelColor = MaterialTheme.colorScheme.error, iconTint = MaterialTheme.colorScheme.error) { if (!deleteBusy) showDelete = true }
+                    }
+                }
+                SettingsCardDivider()
+                // v2.9: switch between accounts saved on this device
+                // (POST /api/auth/switch). The new auth cookie is set by the
+                // server; onSwitched refreshes the session to the new user.
+                if (savedAccounts.isEmpty()) {
+                    Text("No saved accounts on this device yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp))
+                }
+                savedAccounts.forEachIndexed { index, acc ->
+                    if (index > 0) SettingsCardDivider()
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                        FrianzoAvatar(acc.profilePictureUrl, 40.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(acc.displayName ?: acc.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            Text("@${acc.username ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        }
+                        val isCurrent = acc.id != null && acc.id == profile?.id
+                        if (isCurrent) Text("Current", fontSize = 12.sp, color = FrianzoBlue, maxLines = 1, softWrap = false)
+                        else if (acc.id != null) TextButton(enabled = switchingId != acc.id, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), onClick = {
+                            switchingId = acc.id
+                            // C-B16: the switch runs on the app scope, so
+                            // leaving Settings mid-switch cannot cancel it
+                            // with an ambiguous outcome.
+                            accountOpsScope.launch {
+                                try {
+                                    val r = api2.switchAccount(mapOf("accountId" to acc.id))
+                                    if (r.success) onSwitched() else error = r.error?.message ?: "Could not switch account"
+                                } catch (e: Exception) { error = e.message }
+                                switchingId = null
+                            }
+                        }) { Text("Switch", maxLines = 1, softWrap = false) }
+                        // C-D1: a saved account with no id cannot be switched
+                        // to — say so instead of showing a dead row.
+                        else Text("Can't switch", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    }
+                }
+                if (savedAccounts.isNotEmpty()) SettingsCardDivider()
+                SettingsRow(Icons.Filled.PersonAdd, "Add Account") { showAddAccount = true }
+            }
+            Spacer(Modifier.height(16.dp))
+            // Card 2: Logout (opens the confirm modal below).
+            SettingsCard {
+                SettingsRow(Icons.Filled.PowerSettingsNew, "Logout", labelColor = MaterialTheme.colorScheme.error, iconTint = MaterialTheme.colorScheme.error) { showLogout = true }
+            }
+            Spacer(Modifier.height(16.dp))
+            // Card 3: legal pages (opened in the browser, as on the web).
+            SettingsCard {
+                SettingsRow(Icons.Filled.PrivacyTip, "Privacy Policy") {
+                    // C-B20: no browser on the device must not crash the app.
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/privacy"))
+                        context.startActivity(intent)
+                    } catch (e: Exception) { error = "Could not open Privacy Policy — no browser found on this device." }
+                }
+                SettingsCardDivider()
+                SettingsRow(Icons.Filled.Description, "Terms of Service") {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/terms"))
+                        context.startActivity(intent)
+                    } catch (e: Exception) { error = "Could not open Terms of Service — no browser found on this device." }
                 }
             }
-            TextButton(onClick = { showAddAccount = true }, modifier = Modifier.fillMaxWidth()) { Text("Add Account", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            Spacer(Modifier.height(16.dp))
-            TextButton(onClick = {
-                // C-B20: no browser on the device must not crash the app.
-                try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/privacy"))
-                    context.startActivity(intent)
-                } catch (e: Exception) { error = "Could not open Privacy Policy — no browser found on this device." }
-            }, modifier = Modifier.fillMaxWidth()) { Text("Privacy Policy", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            TextButton(onClick = {
-                try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/terms"))
-                    context.startActivity(intent)
-                } catch (e: Exception) { error = "Could not open Terms of Service — no browser found on this device." }
-            }, modifier = Modifier.fillMaxWidth()) { Text("Terms of Service", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) { Text("Logout", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         }
         }
       }
@@ -424,6 +524,22 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                 }) { Text("Delete", color = Color.Red, maxLines = 1, softWrap = false) }
             },
             dismissButton = { TextButton(onClick = { showDelete = false }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Cancel") } },
+        )
+    }
+    // v5.15: Logout confirm — centred modal, RED FILLED "Log out" button
+    // + bordered Cancel. (No such confirm existed before in Settings;
+    // the drawer keeps logging out directly, with no confirm, as now.)
+    if (showLogout) {
+        AlertDialog(
+            onDismissRequest = { showLogout = false },
+            title = { Text("Log out", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+            text = { Text("Are you sure you want to log out?") },
+            confirmButton = {
+                Button(onClick = { showLogout = false; onLogout() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = Color.White), shape = RoundedCornerShape(12.dp)) { Text("Log out", maxLines = 1, softWrap = false) }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showLogout = false }, shape = RoundedCornerShape(12.dp)) { Text("Cancel", maxLines = 1, softWrap = false) }
+            },
         )
     }
 }

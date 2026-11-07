@@ -11,6 +11,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -183,7 +185,8 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var pendingMedia by remember { mutableStateOf<android.net.Uri?>(null) }
     var unread by remember { mutableStateOf(0) }
     var unreadMessages by remember { mutableStateOf(0) }
-    var drawerOpen by remember { mutableStateOf(false) }
+    // v5.15: real drawer state (replaces the old boolean + dialog).
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     var drawerScreen by rememberSaveable { mutableStateOf<String?>(null) }
     // v2.9: notification deep-links + AI Video "Post as Reel" handoff.
     var openPostId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -291,6 +294,86 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         session.markLoggedOut()
     }
 
+    // v5.15: real left slide-in drawer (web Shell.tsx) — replaces the
+    // centred "Frianzo" AlertDialog. Scrim black/40, panel 300dp wide
+    // (max 85% of the screen width), surface background; closes on
+    // scrim tap, X, Back, item tap or route change (ModalNavigationDrawer
+    // handles scrim + Back; every row below closes it explicitly).
+    // Icon tint uses onSurfaceVariant, which IS FrianzoTextSecondary
+    // (#64748B) in the light scheme and the dark equivalent in dark mode;
+    // error IS FrianzoBadgeRed (#DC2626) in the light scheme (Theme.kt).
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        scrimColor = Color.Black.copy(alpha = 0.4f),
+        drawerContent = {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.fillMaxHeight().fillMaxWidth(0.85f).widthIn(max = 300.dp),
+            ) {
+                Column(Modifier.fillMaxSize()) {
+                    // Header: blue wordmark + X, with a bottom divider.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Frianzo", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        IconButton(onClick = { scope.launch { drawerState.close() } }) { Icon(Icons.Filled.Close, contentDescription = "Close menu", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    // Profile row: avatar + name + @username + View Profile.
+                    Row(Modifier.fillMaxWidth().clickable { scope.launch { drawerState.close() }; tab = Tab.PROFILE; openChat = null; openProfile = null }.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        FrianzoAvatar(myProfile?.profilePictureUrl, 48.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(myProfile?.displayName ?: myProfile?.username ?: "Frianzo", fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            Text("@${myProfile?.username ?: ""}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            Text("View Profile", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = FrianzoBlue, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    // Nav list (web Shell.tsx drawerLinks order), one
+                    // hairline divider between rows; Share last, then the
+                    // footer Logout row below the scrollable list.
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                        val navItems = listOf(
+                            "Settings" to Icons.Filled.Settings,
+                            "Your Activity" to Icons.Filled.History,
+                            "Professional Dashboard" to Icons.Filled.BarChart,
+                            "Close Friends" to Icons.Filled.Star,
+                            "AI Video Generator" to Icons.Filled.AutoAwesome,
+                            "ISAI Assistant" to Icons.Filled.ChatBubble,
+                        )
+                        navItems.forEachIndexed { index, (label, icon) ->
+                            if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                            Row(Modifier.fillMaxWidth().clickable { scope.launch { drawerState.close() }; drawerScreen = label }.padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text(label, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                        Row(Modifier.fillMaxWidth().clickable {
+                            scope.launch { drawerState.close() }
+                            val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Frianzo - share posts, videos and connect with people. Download: https://play.google.com/store/apps/details?id=com.frianzo.nativeapp") }
+                            // C-B20: no share handler on the device must
+                            // not crash the app — show a message instead.
+                            try { context.startActivity(Intent.createChooser(intent, "Share Frianzo")) } catch (_: Exception) {
+                                Toast.makeText(context, "No app available to share with.", Toast.LENGTH_LONG).show()
+                            }
+                        }.padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Share, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Text("Share Frianzo", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    // Footer: Logout (web has NO confirm dialog here).
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    Row(Modifier.fillMaxWidth().clickable { scope.launch { drawerState.close() }; logout() }.padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Text("Logout", fontSize = 16.sp, color = MaterialTheme.colorScheme.error, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        },
+    ) {
     Scaffold(
         // LIVE CHROME (Shell.tsx): header row + second nav row, NO bottom bar.
         // Header: left = 3-lines menu + blue "Frianzo" TEXT wordmark (live has
@@ -310,7 +393,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 TopAppBar(
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { drawerOpen = true }) { Icon(Icons.Outlined.Menu, contentDescription = "Menu", tint = Color(0xFF0F172A), modifier = Modifier.size(24.dp)) }
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Outlined.Menu, contentDescription = "Menu", tint = Color(0xFF0F172A), modifier = Modifier.size(24.dp)) }
                             Text("Frianzo", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, maxLines = 1, softWrap = false)
                         }
                     },
@@ -410,7 +493,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS })
+                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS }, onOpenDrawerScreen = { drawerScreen = it })
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
@@ -422,53 +505,9 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 tab == Tab.SEARCH -> SearchScreen(api2) { username -> openProfile = username }
                 tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it }, onDashboard = { drawerScreen = "Professional Dashboard" }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
             }
-        if (drawerOpen) {
-            // LIVE DRAWER (Shell.tsx drawerLinks, in order): profile row, then
-            // Settings / Your Activity / Professional Dashboard / Close Friends
-            // / AI Video Generator / ISAI Assistant, then Share Frianzo, then
-            // Logout in the footer. Items with no native screen yet open a
-            // Each item opens a real native screen (DrawerScreens.kt), never a placeholder.
-            AlertDialog(
-                onDismissRequest = { drawerOpen = false },
-                title = { Text("Frianzo", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
-                text = {
-                    Column {
-                        // v2.9: real profile row (avatar + name + @username).
-                        Row(Modifier.fillMaxWidth().clickable { drawerOpen = false; tab = Tab.PROFILE; openChat = null; openProfile = null }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            FrianzoAvatar(myProfile?.profilePictureUrl, 48.dp)
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(myProfile?.displayName ?: myProfile?.username ?: "Frianzo", fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                                Text("@${myProfile?.username ?: ""}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                            }
-                            Text("View Profile", fontSize = 13.sp, color = FrianzoBlue, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                        }
-                        HorizontalDivider()
-                        HorizontalDivider()
-                        val items = listOf("Settings", "Your Activity", "Professional Dashboard", "Close Friends", "AI Video Generator", "ISAI Assistant")
-                        items.forEach { label ->
-                            TextButton(onClick = { drawerOpen = false; drawerScreen = label }, modifier = Modifier.fillMaxWidth()) { Text(label, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                        }
-                        HorizontalDivider()
-                        TextButton(onClick = {
-                            drawerOpen = false
-                            val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Frianzo - share posts, videos and connect with people. Download: https://play.google.com/store/apps/details?id=com.frianzo.nativeapp") }
-                            // C-B20: no share handler on the device must
-                            // not crash the app — show a message instead.
-                            try { context.startActivity(Intent.createChooser(intent, "Share Frianzo")) } catch (_: Exception) {
-                                Toast.makeText(context, "No app available to share with.", Toast.LENGTH_LONG).show()
-                            }
-                        }, modifier = Modifier.fillMaxWidth()) { Text("Share Frianzo", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                        HorizontalDivider()
-                        TextButton(onClick = { drawerOpen = false; logout() }, modifier = Modifier.fillMaxWidth()) { Text("Logout", color = Color.Red, modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                    }
-                },
-                confirmButton = { TextButton(onClick = { drawerOpen = false }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Close", maxLines = 1, softWrap = false) } },
-            )
-        }
-
         }
         }
+    }
     }
 }
 
