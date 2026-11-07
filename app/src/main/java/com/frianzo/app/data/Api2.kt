@@ -190,13 +190,11 @@ data class UploadChatData(val url: String? = null, val mediaType: String? = null
 // The tag reel DTO lacks viewCount/shareCount/category/friendStatus —
 // Gson defaults on Reel cover them, no adapter change needed.
 data class TagData(val tag: String = "", val posts: List<Post> = emptyList(), val reels: List<Reel> = emptyList(), val hasMore: Boolean = false)
-// v5.18: GET /api/search (backend staged, NOT deployed yet — see
-// SEARCH_API_READY below). Response {q, posts, reels, hasMore}.
+// v5.18: GET /api/search (deployed live 2026-11-07, verified). Response {q, posts, reels, hasMore}.
 data class SearchAllData(val q: String = "", val posts: List<Post> = emptyList(), val reels: List<Reel> = emptyList(), val hasMore: Boolean = false)
-/** v5.18: flip to true ONLY after the GET /api/search backend endpoint is
- * deployed live. Until then the Posts/Reels search tabs stay hidden so
- * nothing calls an endpoint that 404s. */
-const val SEARCH_API_READY = false
+/** v5.18.2: backend GET /api/search is LIVE (deployed + verified 2026-11-07),
+ * so the Posts/Reels search tabs are shown. */
+const val SEARCH_API_READY = true
 data class FollowData(val following: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String?)
 /** Backend GET /api/follows/{id}/status returns { status: "none"|"following"|"follow_back"|"friends"|"self" }. */
 data class FollowStatusData(val status: String?)
