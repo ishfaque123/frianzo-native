@@ -491,9 +491,13 @@ fun ReelCameraScreen(
             }
 
             // Duration pill (web: bottom-236dp, black/40 pill, 13sp semibold).
+            // v5.3 (owner): the pill was sitting almost on top of the effects
+            // row (only ~6dp gap) so it read as sinking into the effects.
+            // Lifted to bottom-248dp for a clear gap above the effects row,
+            // so the pill stays above the effects and the design cannot crowd.
             if (!recording && !effectsOpen) {
                 Row(
-                    Modifier.align(Alignment.BottomCenter).padding(bottom = 236.dp)
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 248.dp)
                         .clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.4f)).padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
