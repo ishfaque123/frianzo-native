@@ -301,15 +301,9 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         } catch (_: Exception) {}
     }
     reelComment?.let { reel -> ReelCommentsDialog(api2, reel, myId, myAvatar = myAvatar, initialTotal = reelCommentCounts[reel.id] ?: reel.commentCount, onClose = { reelComment = null }, onCommentAdded = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) + 1)) }, onCommentDeleted = { reelCommentCounts = reelCommentCounts + (reel.id to ((reelCommentCounts[reel.id] ?: reel.commentCount) - 1).coerceAtLeast(0)) }) }
-    if (showCamera) {
-        ReelCameraScreen(
-            onVideoRecorded = { uri, filter, speed -> showCamera = false; camVideoUri = uri; pendingCamFilter = filter; pendingCamSpeed = speed; showUpload = true },
-            onPhotoCaptured = { uri -> showCamera = false; pendingCoverUri = uri; showUpload = true },
-            onClose = { showCamera = false },
-        )
-    }
-    if (showUpload) { ReelUploadScreen(api2, initialVideoUri = camVideoUri ?: uploadUri, initialCoverUri = pendingCoverUri, initialFilter = pendingCamFilter, initialSpeed = pendingCamSpeed, onOpenCamera = { showUpload = false; showCamera = true }, onDone = { newReelId -> showUpload = false; onUploadUriConsumed(); camVideoUri = null; pendingCoverUri = null; pendingCamFilter = null; pendingCamSpeed = null; if (newReelId != null) { scope.launch { try { val r = api2.reelById(newReelId); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } else { reels = emptyList(); offset = 0; hasMore = true; load() } } catch (_: Exception) { reels = emptyList(); offset = 0; hasMore = true; load() } } } else { reels = emptyList(); offset = 0; hasMore = true; load() } }, onClose = { showUpload = false; onUploadUriConsumed(); camVideoUri = null; pendingCoverUri = null; pendingCamFilter = null; pendingCamSpeed = null }) }
-    if (showSaved) { SavedReelsScreen(api2, onClose = { showSaved = false }, onOpenReel = { id -> showSaved = false; scope.launch { try { val r = api2.reelById(id); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } } catch (_: Exception) {} } }) }
+    // v4.8: the camera / upload / saved overlays moved to the end of this
+    // function — emitted before the main Column they were drawn UNDER its
+    // opaque black background and invisible (the + button "did nothing").
     LaunchedEffect(uploadUri) { if (uploadUri != null) showUpload = true }
     // v3.8 (F10): tab switches go through switchFeed() (cached restore);
     // this only loads the first tab on first composition.
@@ -513,6 +507,22 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         }
         }
     }
+
+    // v4.8 (owner): the + button did nothing — these three overlays were
+    // emitted BEFORE the main Column, so the opaque black full-size Column
+    // drew on top of them and hid them completely. Emitted after the Column
+    // they draw on top, so the upload screen (and camera / saved screens)
+    // open. The tap itself always worked (showUpload = true fired); the
+    // screen was just invisible underneath.
+    if (showCamera) {
+        ReelCameraScreen(
+            onVideoRecorded = { uri, filter, speed -> showCamera = false; camVideoUri = uri; pendingCamFilter = filter; pendingCamSpeed = speed; showUpload = true },
+            onPhotoCaptured = { uri -> showCamera = false; pendingCoverUri = uri; showUpload = true },
+            onClose = { showCamera = false },
+        )
+    }
+    if (showUpload) { ReelUploadScreen(api2, initialVideoUri = camVideoUri ?: uploadUri, initialCoverUri = pendingCoverUri, initialFilter = pendingCamFilter, initialSpeed = pendingCamSpeed, onOpenCamera = { showUpload = false; showCamera = true }, onDone = { newReelId -> showUpload = false; onUploadUriConsumed(); camVideoUri = null; pendingCoverUri = null; pendingCamFilter = null; pendingCamSpeed = null; if (newReelId != null) { scope.launch { try { val r = api2.reelById(newReelId); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } else { reels = emptyList(); offset = 0; hasMore = true; load() } } catch (_: Exception) { reels = emptyList(); offset = 0; hasMore = true; load() } } } else { reels = emptyList(); offset = 0; hasMore = true; load() } }, onClose = { showUpload = false; onUploadUriConsumed(); camVideoUri = null; pendingCoverUri = null; pendingCamFilter = null; pendingCamSpeed = null }) }
+    if (showSaved) { SavedReelsScreen(api2, onClose = { showSaved = false }, onOpenReel = { id -> showSaved = false; scope.launch { try { val r = api2.reelById(id); val nr = r.data?.reel; if (r.success && nr != null) { reels = listOf(nr) + reels.filter { it.id != nr.id }; listState.scrollToItem(0) } } catch (_: Exception) {} } }) }
 }
 
 // v2.9: relative time for reel comments (commentTimeAgo is private to Screens.kt).
@@ -1206,14 +1216,25 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 if (reel.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
                 if (!reel.createdAt.isNullOrBlank()) { Spacer(Modifier.width(4.dp)); Text("· ${reelTimeAgo(reel.createdAt)}", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, softWrap = false) }
                 val authorId = reel.author?.id
-                // v3.7 (C10): web rule — the pill shows ONLY while not
-                // following (Follow / Follow Back); it never offers
-                // unfollow. The status fans out to every reel by this
-                // author via onFollowChange (hoisted in ReelsScreen).
+                // v4.8 (owner, Facebook rule): the pill STAYS after a
+                // follow and shows the new state in place — Follow ->
+                // Following, Follow Back -> Friend. It hides only for
+                // your own reel, while the status is still loading
+                // (null), or for "self". (The web hides the pill once
+                // following; the owner explicitly ordered the Facebook
+                // behaviour instead.) Tapping toggles: Following ->
+                // Follow, Friend -> Follow Back. The status fans out to
+                // every reel by this author via onFollowChange (hoisted
+                // in ReelsScreen).
                 val effectiveFollow = followOverride ?: authorFollow
-                if (authorId != null && authorId != myId && effectiveFollow != null && effectiveFollow != "self" && effectiveFollow != "following" && effectiveFollow != "friends") {
+                if (authorId != null && authorId != myId && effectiveFollow != null && effectiveFollow != "self") {
                     Spacer(Modifier.width(8.dp))
-                    val label = if (effectiveFollow == "follow_back") "Follow Back" else "Follow"
+                    val label = when (effectiveFollow) {
+                        "follow_back", "follower" -> "Follow Back"
+                        "following" -> "Following"
+                        "friends" -> "Friend"
+                        else -> "Follow"
+                    }
                     // v4.0 (audit #3 + web code): black fill, 1dp white
                     // border, white text — BESIDE the name on the SAME
                     // row (owner rule, final word: never below the
@@ -1221,13 +1242,30 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     // so the pill never wraps).
                     Box(Modifier.height(34.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black).border(1.dp, Color.White, RoundedCornerShape(28.dp)).noRippleClickable {
                         val prev = effectiveFollow
-                        authorFollow = "following"
-                        onFollowChange(authorId, "following")
+                        // Optimistic new state, from prev + the toggle
+                        // direction: following from "none" -> "following",
+                        // from "follow_back"/"follower" -> "friends"
+                        // (mutual); unfollowing from "following" -> "none",
+                        // from "friends" -> "follow_back" (they still
+                        // follow me). The backend toggle returns only
+                        // { following: Boolean } — no friendStatus — so
+                        // the same table reconciles the server response.
+                        val optimistic = if (prev == "following" || prev == "friends") {
+                            if (prev == "friends") "follow_back" else "none"
+                        } else {
+                            if (prev == "follow_back" || prev == "follower") "friends" else "following"
+                        }
+                        authorFollow = optimistic
+                        onFollowChange(authorId, optimistic)
                         scope.launch {
                             try {
                                 val r = api2.toggleFollow(authorId)
                                 if (r.success && r.data != null) {
-                                    val st = r.data.friendStatus ?: if (r.data.following || r.data.isFollowing) "following" else "none"
+                                    val st = r.data.friendStatus ?: if (r.data.following || r.data.isFollowing) {
+                                        if (prev == "follow_back" || prev == "follower") "friends" else "following"
+                                    } else {
+                                        if (prev == "friends") "follow_back" else "none"
+                                    }
                                     authorFollow = st
                                     onFollowChange(authorId, st)
                                 } else { authorFollow = prev; onFollowChange(authorId, prev) }
@@ -1537,7 +1575,12 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
     }
     ModalBottomSheet(onDismissRequest = onClose) {
         // Same 0.85f sheet height as the post comments sheet: one shared UI.
-        Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).padding(horizontal = 16.dp)) {
+        // v4.8 (owner): the comment input went behind the keyboard —
+        // nothing in this sheet handled IME insets (no imePadding
+        // anywhere in the app, no windowSoftInputMode in the
+        // manifest, activity is not edge-to-edge). imePadding lifts
+        // the input above the keyboard while typing.
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).imePadding().padding(horizontal = 16.dp)) {
             // v4.0 (audit #2): web header is "Comments" with the
             // count ("N comments" / "Join the conversation") below
             // it as a subtitle — not the count alone.

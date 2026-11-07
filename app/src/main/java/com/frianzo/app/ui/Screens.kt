@@ -13,8 +13,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.frianzo.app.R
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -26,7 +29,6 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -50,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.outlined.ThumbUp
@@ -57,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
@@ -88,24 +93,19 @@ import java.util.TimeZone
  *  No posting, liking, commenting, reels or chat yet — those are later steps. */
 
 
-/** Multicolour Google "G" (drawn, no asset in repo): four coloured arcs
- * plus a blue bar, in Google's blue/red/yellow/green. */
+/** Real Google "G" (canonical brand asset, res/drawable/ic_google_g.xml).
+ * v4.8: the WEB's own G SVG is broken (its blue path is corrupted and
+ * renders a distorted G with a blue blob on the live web login page), so
+ * the app uses the canonical G paths, NOT the web's exact paths. The four
+ * canonical paths were render-verified (own SVG rasterizer) and draw a
+ * perfect G. Shown at 20dp, like the web's 20px G. */
 @Composable
 private fun GoogleGIcon() {
-    Canvas(modifier = Modifier.size(24.dp)) {
-        val stroke = 3.dp.toPx()
-        val style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke)
-        drawArc(Color(0xFF4285F4), 300f, 90f, false, style = style)
-        drawArc(Color(0xFF34A853), 30f, 90f, false, style = style)
-        drawArc(Color(0xFFFBBC05), 120f, 90f, false, style = style)
-        drawArc(Color(0xFFEA4335), 210f, 90f, false, style = style)
-        drawLine(
-            Color(0xFF4285F4),
-            start = androidx.compose.ui.geometry.Offset(center.x, center.y),
-            end = androidx.compose.ui.geometry.Offset(size.width, center.y),
-            strokeWidth = stroke,
-        )
-    }
+    Image(
+        painter = painterResource(R.drawable.ic_google_g),
+        contentDescription = "Google",
+        modifier = Modifier.size(20.dp),
+    )
 }
 
 @Composable
@@ -146,7 +146,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     // phone system theme. Other screens still follow the system theme.
     val loginBg = Color(0xFFF8FAFC)
     val loginFieldBg = Color.White
-    val loginBorder = Color(0xFFCBD5E1)
+    val loginBorder = Color(0xFFE2E8F0)
     val loginGrey = Color(0xFF64748B)
     val loginDark = Color(0xFF0F172A)
     // Logged-out: no user country is known yet, so the live site's
@@ -161,12 +161,12 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
     }
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedTextColor = loginDark,
-        unfocusedTextColor = loginDark,
+        focusedTextColor = Color(0xFF334155),
+        unfocusedTextColor = Color(0xFF334155),
         focusedContainerColor = loginFieldBg,
         unfocusedContainerColor = loginFieldBg,
         disabledContainerColor = loginFieldBg,
-        focusedBorderColor = loginBorder,
+        focusedBorderColor = Color(0xFF94A3B8),
         unfocusedBorderColor = loginBorder,
         focusedPlaceholderColor = loginGrey,
         unfocusedPlaceholderColor = loginGrey,
@@ -182,13 +182,14 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Official blue-F logo, bold white wordmark, grey tagline (web login).
-        FrianzoLogo(96.dp)
+        FrianzoLogo(80.dp)
         Spacer(Modifier.height(20.dp))
         Text(
             "Frianzo",
             style = MaterialTheme.typography.displayMedium,
-            color = Color.Black,
+            color = loginDark,
             fontWeight = FontWeight.Bold,
+            fontSize = 30.sp,
         )
         Spacer(Modifier.height(6.dp))
         Text(
@@ -258,8 +259,8 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                     } finally { busy = false }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = Color.White,
                 contentColor = loginDark,
@@ -267,15 +268,15 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             border = androidx.compose.foundation.BorderStroke(1.dp, loginBorder),
         ) {
             GoogleGIcon()
-            Spacer(Modifier.width(10.dp))
-            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = loginDark, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.width(12.dp))
+            Text("Continue with Google", style = MaterialTheme.typography.titleMedium, color = loginDark, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
         }
 
         Spacer(Modifier.height(24.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(color = loginBorder, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(12.dp))
-            Text("OR", style = MaterialTheme.typography.bodySmall, color = loginGrey)
+            Text("OR", style = MaterialTheme.typography.bodySmall, color = Color(0xFF94A3B8), fontSize = 12.sp)
             Spacer(Modifier.width(12.dp))
             HorizontalDivider(color = loginBorder, modifier = Modifier.weight(1f))
         }
@@ -283,19 +284,28 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
 
         OutlinedTextField(
             value = email, onValueChange = { email = it },
-            placeholder = { Text("Enter your email") },
+            placeholder = { Text("Enter your email", fontSize = 14.sp) },
             modifier = Modifier.fillMaxWidth(), singleLine = true,
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(12.dp),
             colors = fieldColors,
+            enabled = !codeSent,
+            textStyle = TextStyle(fontSize = 14.sp),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
         )
         if (codeSent) {
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
-                value = code, onValueChange = { code = it },
-                placeholder = { Text("Enter 6-digit verification code") },
+                value = code, onValueChange = { code = it.filter { c -> c.isDigit() }.take(6) },
+                placeholder = { Text("Enter 6-digit verification code", fontSize = 14.sp) },
                 modifier = Modifier.fillMaxWidth(), singleLine = true,
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = fieldColors,
+                // OTP field: numeric keyboard, centred, 18sp, 0.35em letter
+                // spacing (6.3sp) like the web's tracking-[0.35em]. No OTP
+                // autofill hint: Compose 1.7 has no public API for it (the
+                // semantics ContentType API is 1.8+; see REPORT.md).
+                textStyle = TextStyle(fontSize = 18.sp, textAlign = TextAlign.Center, letterSpacing = 6.3.sp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
             )
         }
         if (!codeSent && email.isNotBlank() && !emailValid) {
@@ -317,7 +327,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                         if (!codeSent) {
                             // A-B26: never send a malformed email address.
                             if (!emailValid) throw Exception("Enter a valid email address.")
-                            val res = api.requestEmailCode(EmailCodeRequest(email.trim()))
+                            val res = api.requestEmailCode(EmailCodeRequest(email.trim().lowercase()))
                             if (!res.success) throw Exception(res.error?.message ?: "Could not send code")
                             codeSent = true
                             resendWait = 30
@@ -326,7 +336,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                             // A-B26: never send a blank/non-6-digit code.
                             if (!codeValid) throw Exception("Enter the 6-digit code from your email.")
                             val res = api.verifyEmailCode(
-                                EmailVerifyRequest(email.trim(), code.trim(), deviceToken(context))
+                                EmailVerifyRequest(email.trim().lowercase(), code.trim(), deviceToken(context))
                             )
                             if (!res.success) throw Exception(res.error?.message ?: "Wrong code")
                             // A-B22: navigate only if /api/auth/me proves the
@@ -337,13 +347,13 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                     finally { busy = false }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = Color(0xFF0F172A),
                 contentColor = androidx.compose.ui.graphics.Color.White,
             ),
-        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+        ) { Text(if (codeSent) "Verify & Continue" else "Continue with Email", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         if (codeSent) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
@@ -351,7 +361,7 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
                     busy = true
                     scope.launch {
                         try {
-                            val res = api.requestEmailCode(EmailCodeRequest(email.trim()))
+                            val res = api.requestEmailCode(EmailCodeRequest(email.trim().lowercase()))
                             if (!res.success) throw Exception(res.error?.message ?: "Could not resend code")
                             resendWait = 30
                             message = "Code sent again to your email."

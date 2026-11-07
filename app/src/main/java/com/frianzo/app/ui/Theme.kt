@@ -1,5 +1,6 @@
 package com.frianzo.app.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -14,10 +15,10 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import coil.request.ImageRequest
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.frianzo.app.R
 
 /**
  * Frianzo web-app branding, matched to frianzo.online (see the web audit):
@@ -206,27 +208,23 @@ fun FrianzoTheme(content: @Composable () -> Unit) {
     )
 }
 
-/** Blue-F logo tile drawn in code (NOT the launcher icon resource):
- * R.mipmap.ic_launcher is an adaptive-icon XML on API 26+, and Compose
+/** Real Frianzo logo (the glossy 3D "F" from frianzo.online/logo.png),
+ * shown on the login screen at the web's 80dp size. The asset is a plain
+ * PNG in res/drawable/, so painterResource draws a BitmapDrawable — safe
+ * at composition time. Do NOT point this at R.mipmap.ic_launcher: the
+ * launcher icon is an adaptive-icon XML on API 26+, and Compose
  * painterResource cannot draw an AdaptiveIconDrawable — it throws at
- * composition time, which crashed startup on both the login screen and
- * the app header. Drawing the tile here keeps the launcher icon untouched
- * (home-screen icon and app name are unchanged) while startup can never
- * crash on the logo resource again. */
+ * composition time, which crashed startup on the login screen. The
+ * launcher icon itself is untouched (home-screen icon and app name are
+ * unchanged). */
 @Composable
 fun FrianzoLogo(size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.size(size).clip(RoundedCornerShape((size.value * 0.22f).dp))
-            .background(FrianzoBlue),
-        contentAlignment = Alignment.Center,
-    ) {
-        androidx.compose.material3.Text(
-            "F",
-            color = androidx.compose.ui.graphics.Color.White,
-            fontWeight = FontWeight.ExtraBold,
-            fontSize = (size.value * 0.55f).sp,
-        )
-    }
+    Image(
+        painter = painterResource(R.drawable.logo),
+        contentDescription = "Frianzo",
+        modifier = modifier.size(size),
+        contentScale = ContentScale.Fit,
+    )
 }
 
 /** Circular avatar like the web feed: photo if present, light-blue circle otherwise. */
