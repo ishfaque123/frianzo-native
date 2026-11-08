@@ -127,26 +127,39 @@ private val FrianzoShapes = Shapes(
     extraLarge = RoundedCornerShape(28.dp),
 )
 
-private val FrianzoTypography = Typography(
+// v5.18.5 dark-mode fix: the text colours are theme-aware. Light branch
+// returns exactly the old constants (FrianzoTextDark #0F172A /
+// FrianzoTextSecondary #64748B — the light scheme's onSurface /
+// onSurfaceVariant), so light mode is pixel-identical. Dark branch uses
+// the dark scheme's onSurface (White) / onSurfaceVariant (#94A3B8), so
+// title/body text is visible on the dark (#0F172A) background. A plain
+// colour-strip was NOT safe: bodySmall without a colour would have become
+// onSurface (#0F172A) in light mode instead of secondary grey.
+// displayMedium (FrianzoBlue) and labelLarge (no colour) are untouched.
+private fun frianzoTypography(darkTheme: Boolean) = Typography(
     displayMedium = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.ExtraBold,
         fontSize = 36.sp, lineHeight = 40.sp, color = FrianzoBlue,
     ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Bold,
-        fontSize = 20.sp, lineHeight = 26.sp, color = FrianzoTextDark,
+        fontSize = 20.sp, lineHeight = 26.sp,
+        color = if (darkTheme) FrianzoDarkColorScheme.onSurface else FrianzoTextDark,
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Bold,
-        fontSize = 16.sp, lineHeight = 22.sp, color = FrianzoTextDark,
+        fontSize = 16.sp, lineHeight = 22.sp,
+        color = if (darkTheme) FrianzoDarkColorScheme.onSurface else FrianzoTextDark,
     ),
     bodyMedium = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
-        fontSize = 15.sp, lineHeight = 21.sp, color = FrianzoTextDark,
+        fontSize = 15.sp, lineHeight = 21.sp,
+        color = if (darkTheme) FrianzoDarkColorScheme.onSurface else FrianzoTextDark,
     ),
     bodySmall = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
-        fontSize = 13.sp, lineHeight = 18.sp, color = FrianzoTextSecondary,
+        fontSize = 13.sp, lineHeight = 18.sp,
+        color = if (darkTheme) FrianzoDarkColorScheme.onSurfaceVariant else FrianzoTextSecondary,
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold,
@@ -204,7 +217,7 @@ fun FrianzoTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (darkTheme) FrianzoDarkColorScheme else FrianzoColorScheme,
         shapes = FrianzoShapes,
-        typography = FrianzoTypography,
+        typography = frianzoTypography(darkTheme),
         content = content,
     )
 }

@@ -207,13 +207,13 @@ private fun TagPostCard(api2: FrianzoApi2, post: Post, onOpenProfile: (String) -
                     } catch (_: Exception) { myReaction = prevReaction; likeCount = prevCount }
                     finally { likeBusy = false }
                 }
-            }.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            }.padding(horizontal = 8.dp, vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (myReaction != null) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "Like", tint = if (myReaction != null) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("$likeCount", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.width(16.dp))
-            Row(Modifier.clickable { onOpenPost(post.id) }.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.clickable { onOpenPost(post.id) }.padding(horizontal = 8.dp, vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Comments", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("${post.commentCount}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

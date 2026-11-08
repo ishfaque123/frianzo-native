@@ -14,6 +14,7 @@ import java.net.URL
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -74,6 +75,25 @@ import kotlin.math.roundToInt
 // which left the outcome unknowable. Only these two operations use it;
 // everything else stays on the composition scope.
 private val accountOpsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+// v5.18.5: theme-aware warning / success / trend colours. Amber-700
+// (#B45309), emerald-700 (#047857), blue-600 (#2563EB) and red-500
+// (#EF4444) are readable on a light surface but too dark on a dark one,
+// so dark mode uses the 400-scale shades. (DashboardPill is NOT changed:
+// its text sits on a light pill background in both themes, so the dark
+// shades stay readable there.)
+@Composable
+private fun warningAmber(): Color = if (isSystemInDarkTheme()) Color(0xFFFBBF24) else Color(0xFFB45309)
+
+@Composable
+private fun earningGreen(): Color = if (isSystemInDarkTheme()) Color(0xFF34D399) else Color(0xFF047857)
+
+@Composable
+private fun trendColor(positive: Boolean): Color = if (isSystemInDarkTheme()) {
+    if (positive) Color(0xFF60A5FA) else Color(0xFFF87171)
+} else {
+    if (positive) Color(0xFF2563EB) else Color(0xFFEF4444)
+}
 
 @Composable
 fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null, onOpenDrawerScreen: ((String) -> Unit)? = null) {
@@ -299,7 +319,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                 // C-B12: the toggle saves immediately (like the comments
                 // switch) and rolls back on failure — it is no longer
                 // silently lost when leaving without pressing Save.
-                Switch(checked = isPrivate, enabled = !privateSaving, onCheckedChange = { checked ->
+                Switch(modifier = Modifier.padding(vertical = 8.dp), checked = isPrivate, enabled = !privateSaving, onCheckedChange = { checked ->
                     val prev = isPrivate
                     isPrivate = checked
                     privateSaving = true
@@ -385,7 +405,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                                 Text("Data Saver", fontSize = 14.sp)
                                 Text("Use less mobile data.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Switch(checked = dataSaver, onCheckedChange = { dataSaver = it; saveDataSaver(context, it) })
+                            Switch(modifier = Modifier.padding(vertical = 8.dp), checked = dataSaver, onCheckedChange = { dataSaver = it; saveDataSaver(context, it) })
                         }
                         SettingsCardDivider()
                         SettingsSubRow(Icons.Filled.Interests, "My Interests") { subScreen = "interests" }
@@ -994,7 +1014,7 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         if (loadedSelected) {
             Text("Your current interests are selected below — change them and save.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            Text("Your saved interests could not be loaded, so Save is turned off. Saving now would erase the interests you saved before. This needs a server fix before it can work.", fontSize = 13.sp, color = Color(0xFFB45309))
+            Text("Your saved interests could not be loaded, so Save is turned off. Saving now would erase the interests you saved before. This needs a server fix before it can work.", fontSize = 13.sp, color = warningAmber())
         }
         Spacer(Modifier.height(12.dp))
         if (loading) { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() } }
@@ -1008,7 +1028,7 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         chunk.forEach { interest ->
                             val sel = interest in selected
-                            Box(Modifier.weight(1f, fill = false).clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { selected = if (sel) selected - interest else selected + interest }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                            Box(Modifier.weight(1f, fill = false).clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { selected = if (sel) selected - interest else selected + interest }.padding(horizontal = 14.dp, vertical = 8.dp).heightIn(min = 48.dp)) {
                                 Text(interest.replaceFirstChar { it.uppercase() }, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
@@ -1279,7 +1299,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                 Row(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     listOf(7, 30, 90).forEach { d ->
                         val selected = d == range
-                        Box(Modifier.clip(RoundedCornerShape(6.dp)).background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent).clickable { range = d }.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        Box(Modifier.clip(RoundedCornerShape(6.dp)).background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent).clickable { range = d }.padding(horizontal = 12.dp, vertical = 12.dp).heightIn(min = 48.dp)) {
                             Text("${d}d", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                         }
                     }
@@ -1314,7 +1334,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                                 DashboardPill("Warning", emerald = false)
                             }
                             if (totalStrikes >= 3) {
-                                Text("Your profile is at risk of being suspended because it repeatedly didn't follow the rules.", fontSize = 12.sp, color = Color(0xFFB45309))
+                                Text("Your profile is at risk of being suspended because it repeatedly didn't follow the rules.", fontSize = 12.sp, color = warningAmber())
                             }
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 strikes?.strikes?.forEach { s ->
@@ -1616,7 +1636,7 @@ fun MonetizationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                             recent.take(5).forEach { e ->
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Text("${if (e.type == "views") "Views" else "Referral"} · ${e.createdAt?.take(10) ?: ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                                    Text("+$${"%.2f".format(e.amount)}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF047857), maxLines = 1, softWrap = false)
+                                    Text("+$${"%.2f".format(e.amount)}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = earningGreen(), maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -1643,7 +1663,7 @@ fun MonetizationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf("followers" to "Followers", "likers" to "Likers", "commenters" to "Commenters").forEach { (key, label) ->
                             val tabSelected = key == activeTab
-                            Box(Modifier.clip(RoundedCornerShape(999.dp)).background(if (tabSelected) Color(0xFF0F172A) else MaterialTheme.colorScheme.surfaceVariant).clickable { activeTab = key }.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                            Box(Modifier.clip(RoundedCornerShape(999.dp)).background(if (tabSelected) Color(0xFF0F172A) else MaterialTheme.colorScheme.surfaceVariant).clickable { activeTab = key }.padding(horizontal = 12.dp, vertical = 12.dp).heightIn(min = 48.dp)) {
                                 Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (tabSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                             }
                         }
@@ -1661,7 +1681,7 @@ fun MonetizationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 entries.forEach { e ->
                                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        Text("${e.rank}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = when (e.rank) { 1 -> Color(0xFFF59E0B); 2 -> Color(0xFF94A3B8); 3 -> Color(0xFFB45309); else -> MaterialTheme.colorScheme.onSurfaceVariant }, modifier = Modifier.width(24.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                                        Text("${e.rank}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = when (e.rank) { 1 -> Color(0xFFF59E0B); 2 -> Color(0xFF94A3B8); 3 -> warningAmber(); else -> MaterialTheme.colorScheme.onSurfaceVariant }, modifier = Modifier.width(24.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                                         FrianzoAvatar(e.avatar, 36.dp)
                                         Column(Modifier.weight(1f)) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1732,7 +1752,7 @@ fun MonetizationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                         Text("Add payout method", fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         val countryMethods = country?.let { allowed[it] } ?: emptyList()
                         if (country == null) {
-                            Text("Please set your country in your profile first.", fontSize = 13.sp, color = Color(0xFFB45309))
+                            Text("Please set your country in your profile first.", fontSize = 13.sp, color = warningAmber())
                         } else if (countryMethods.isEmpty()) {
                             Text("No payout methods are available for your country yet.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         } else {
@@ -1741,7 +1761,7 @@ fun MonetizationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                                 countryMethods.forEach { opt ->
                                     val code = opt.code ?: ""
                                     val optSelected = code == addMethodType
-                                    Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (optSelected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { addMethodType = code }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                    Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if (optSelected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { addMethodType = code }.padding(vertical = 8.dp).heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
                                         Text(opt.label ?: code, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (optSelected) Color.White else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                     }
                                 }
@@ -1842,7 +1862,7 @@ private fun StatCard(label: String, value: Int, trendPct: Double?, modifier: Mod
     Column(modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(formatThousands(value), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-        trendPct?.let { Text(formatTrend(it), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (it >= 0) Color(0xFF2563EB) else Color(0xFFEF4444), maxLines = 1, softWrap = false) }
+        trendPct?.let { Text(formatTrend(it), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = trendColor(it >= 0), maxLines = 1, softWrap = false) }
         breakdown?.let { b ->
             Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)

@@ -570,15 +570,15 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
         }
         // v4.6: header overlay — transparent, on the video (no black bar,
         // no underline; see the note at the top of this function).
-        Box(Modifier.fillMaxWidth().height(42.dp).align(Alignment.TopCenter)) {
-            Row(Modifier.align(Alignment.TopCenter).padding(top = 17.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+        Box(Modifier.fillMaxWidth().height(56.dp).align(Alignment.TopCenter)) {
+            Row(Modifier.align(Alignment.TopCenter).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) {
                 listOf("following" to "Following", "foryou" to "For You").forEach { (v, label) ->
                     val sel = feed == v
-                    Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false, modifier = Modifier.noRippleClickable { switchFeed(v) })
+                    Text(label, fontSize = 16.sp, lineHeight = 18.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium, color = if (sel) Color.White else Color.White.copy(alpha = 0.6f), maxLines = 1, softWrap = false, modifier = Modifier.noRippleClickable { switchFeed(v) }.padding(horizontal = 8.dp, vertical = 12.dp))
                 }
             }
-            Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 17.dp).size(40.dp).clip(CircleShape).background(Color(0xFF333333)).noRippleClickable { onCreateReelTap() }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(12.dp))
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 17.dp).size(48.dp).clip(CircleShape).background(Color(0xFF333333)).noRippleClickable { onCreateReelTap() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Add, contentDescription = "Create reel", tint = Color.White, modifier = Modifier.size(24.dp))
             }
         }
         }
@@ -1154,7 +1154,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
         // The 40dp transparent Box is only the tap target; the glyph
         // sits at its TOP (TopCenter) so it lands exactly at y148.
         if (isActive) {
-            Box(Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 15.dp).size(40.dp).noRippleClickable { onToggleMute() }, contentAlignment = Alignment.TopCenter) {
+            Box(Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 15.dp).size(48.dp).noRippleClickable { onToggleMute() }, contentAlignment = Alignment.TopCenter) {
                 Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White, modifier = Modifier.size(20.dp))
             }
         }
@@ -1230,7 +1230,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("More options", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
-                        Text("Reel actions", fontSize = 11.sp, color = FrianzoTextSecondary, maxLines = 1, softWrap = false)
+                        Text("Reel actions", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                     }
                     HorizontalDivider(color = FrianzoBorder)
                     Spacer(Modifier.height(4.dp))
@@ -1397,7 +1397,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.35f)).border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(28.dp)).noRippleClickable { onComment() }.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.35f)).border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(28.dp)).noRippleClickable { onComment() }.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
                 // v3.8 (F18): the pill has a 20px speech-bubble icon (web rule).
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
@@ -1483,7 +1483,7 @@ private fun MoreSheetRow(icon: androidx.compose.ui.graphics.vector.ImageVector, 
 private fun ChatActionRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, red: Boolean = false, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(8.dp)).clickable { onClick() }.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(40.dp).clip(CircleShape).background(if (red) FrianzoBadgeRed.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = if (red) FrianzoBadgeRed else Color(0xFF334155), modifier = Modifier.size(20.dp))
+            Icon(icon, contentDescription = null, tint = if (red) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
         }
         Spacer(Modifier.width(12.dp))
         Text(label, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (red) FrianzoBadgeRed else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
@@ -1890,7 +1890,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
             Box(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Comments", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                    Text(if (total > 0) "$total comments" else "Join the conversation", fontSize = 11.sp, color = Color(0xFF94A3B8), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    Text(if (total > 0) "$total comments" else "Join the conversation", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
                 IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd)) { Icon(Icons.Filled.Close, contentDescription = "Close comments", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
@@ -1901,13 +1901,16 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                 else if (comments.isEmpty() && error == null) item {
                     // C-A6 (web rule): icon + bold title + grey subtitle.
                     Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFFF1F5F9)), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(22.dp), tint = Color(0xFF64748B))
+                        // v5.18.5: theme-aware — the old fixed light circle
+                        // + slate title (#1E293B) were invisible on a dark
+                        // sheet; surfaceVariant/onSurface match in light.
+                        Box(Modifier.size(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Spacer(Modifier.height(12.dp))
-                        Text("No comments yet", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E293B))
+                        Text("No comments yet", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                         Spacer(Modifier.height(4.dp))
-                        Text("Be the first to start the conversation.", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                        Text("Be the first to start the conversation.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 items(comments, key = { it.id }) { c ->
@@ -1949,16 +1952,19 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                 }
             }
             if (replyTo != null) {
+                // v5.18.5: the banner stays light in both themes, so the
+                // text is a fixed dark slate — onSurfaceVariant is light
+                // grey in dark mode and unreadable on the light tint.
                 Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFFF8FAFC)).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = androidx.compose.ui.text.buildAnnotatedString {
                             append("Replying to ")
                             withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append("@${replyTo!!.author?.username ?: "User"}") }
                         },
-                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f)
+                        fontSize = 13.sp, color = Color(0xFF334155), modifier = Modifier.weight(1f)
                     )
                     // v3.9 (live-web audit #2): web uses a "Cancel" TEXT button, not an x.
-                    TextButton(onClick = { replyTo = null; draft = "" }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    TextButton(onClick = { replyTo = null; draft = "" }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = Color(0xFF334155)) }
                 }
                 Spacer(Modifier.height(8.dp))
             }
@@ -1976,7 +1982,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
                     singleLine = false,
                     textStyle = TextStyle(fontSize = 14.sp),
                     shape = RoundedCornerShape(24.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color(0xFFF8FAFC), unfocusedContainerColor = Color(0xFFF8FAFC), focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder),
+                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface, focusedBorderColor = FrianzoBorder, unfocusedBorderColor = FrianzoBorder),
                 )
                 Spacer(Modifier.width(8.dp))
                 Button(
@@ -2017,7 +2023,7 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
             // U-B9: a failed send shows here, next to the input — not at
             // the bottom of the list. C-A4: x/500 counter near the limit.
             if (sendError != null) Text(sendError!!, fontSize = 12.sp, color = Color.Red, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
-            if (draft.length > 440) Text("${draft.length}/500", fontSize = 11.sp, color = Color(0xFF94A3B8), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+            if (draft.length > 440) Text("${draft.length}/500", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
             Spacer(Modifier.height(8.dp).navigationBarsPadding())
         }
         }
@@ -2121,7 +2127,7 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                             // U-B3 (web rule): the timestamp sits right
                             // after the name, 11sp grey (was: detached at
                             // the far right of the action row).
-                            Text(reelTimeAgo(c.createdAt), fontSize = 11.sp, color = Color(0xFF94A3B8), maxLines = 1, softWrap = false, modifier = Modifier.padding(start = 6.dp))
+                            Text(reelTimeAgo(c.createdAt), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, modifier = Modifier.padding(start = 6.dp))
                         }
                         if (editing) {
                             Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3704,11 +3710,11 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
                             // blue dot, not a number (web).
                             if (c.unreadCount > 1) Badge(containerColor = FrianzoBadgeRed) { Text(if (c.unreadCount > 99) "99+" else "${c.unreadCount}", maxLines = 1, softWrap = false) }
                             else if (c.unreadCount == 1) Box(Modifier.size(8.dp).clip(CircleShape).background(FrianzoBlue))
-                            if (!selecting) IconButton(onClick = { pendingDelete = c }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.Delete, contentDescription = "Delete chat", modifier = Modifier.size(20.dp)) }
+                            if (!selecting) IconButton(onClick = { pendingDelete = c }, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Delete, contentDescription = "Delete chat", modifier = Modifier.size(20.dp)) }
                         }
                     }
                 },
-                colors = ListItemDefaults.colors(containerColor = if (selected) FrianzoBlueTint else MaterialTheme.colorScheme.surface),
+                colors = ListItemDefaults.colors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),
                 // v5.18: long-press selects (web: 550ms); tap toggles while
                 // selecting, opens the chat otherwise.
                 modifier = Modifier.combinedClickable(
@@ -3737,7 +3743,7 @@ fun ChatListScreen(api2: FrianzoApi2, myId: String? = null, onOpen: (String, Str
                 Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
             }
         }
-        if (!loading && shown.isEmpty() && error == null) item { Text(if (list.isEmpty()) "No chats yet" else "No conversations match", Modifier.padding(16.dp)) }
+        if (!loading && shown.isEmpty() && error == null) item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(if (list.isEmpty()) "No chats yet" else "No conversations match", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
     }
     // v5.18: delete confirmation (web: "Delete conversation?" sheet).
     // The old code deleted immediately on tap — no confirmation.
@@ -4140,8 +4146,12 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             recordSeconds += 1
         }
     }
-    // v5.15: chat wallpaper (local-only) is the thread background.
-    val wallpaperColor = ChatWallpapers.firstOrNull { it.first == wallpaperName }?.second ?: Color(0xFFF8FAFC)
+    // v5.18: chat wallpaper (local-only) is the thread background.
+    // v5.18.5: "Default" follows the app theme — the old fixed pale
+    // #F8FAFC left white dark-mode header text on a light background,
+    // i.e. invisible. A wallpaper the user picked explicitly keeps its
+    // own colour (their choice).
+    val wallpaperColor = if (wallpaperName == "Default") MaterialTheme.colorScheme.background else ChatWallpapers.firstOrNull { it.first == wallpaperName }?.second ?: Color(0xFFF8FAFC)
     Column(Modifier.fillMaxSize().background(wallpaperColor)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Back", maxLines = 1, softWrap = false) }
@@ -4580,7 +4590,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                     // content up to 75%, so short messages stay small.
                     Column(horizontalAlignment = if (mine) Alignment.End else Alignment.Start, modifier = Modifier.fillMaxWidth(0.75f)) {
                     Surface(
-                        color = if (isSelected) FrianzoBlueTint else if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface,
+                        color = if (isSelected) (if (mine) FrianzoBlueDark else MaterialTheme.colorScheme.primaryContainer) else if (mine) FrianzoBlue else MaterialTheme.colorScheme.surface,
                         // v5.18: tails (web) — one corner square on the
                         // sender's side.
                         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = if (mine) 16.dp else 4.dp, bottomEnd = if (mine) 4.dp else 16.dp),
@@ -4633,13 +4643,13 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                                 )
                                 if ((m.content ?: "").isNotBlank()) {
                                     Spacer(Modifier.height(8.dp))
-                                    Text(m.content!!, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                                    Text(m.content!!, fontSize = 15.sp, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
                                 }
                             } else if (!m.isDeleted && m.mediaType == "voice" && m.mediaUrl != null) {
                                 VoiceMessagePlayer(url = m.mediaUrl, durationSec = m.voiceDuration, mine = mine)
                                 if ((m.content ?: "").isNotBlank()) {
                                     Spacer(Modifier.height(8.dp))
-                                    Text(m.content!!, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                                    Text(m.content!!, fontSize = 15.sp, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
                                 }
                             } else {
                                 val mediaLabel = when {
@@ -4649,7 +4659,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                                     else -> null
                                 }
                                 val shown = if ((m.content ?: "").isBlank()) mediaLabel ?: "" else m.content ?: ""
-                                Text(shown, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
+                                Text(shown, fontSize = 15.sp, color = if (mine) Color.White else MaterialTheme.colorScheme.onSurface)
                             }
                         }
                     }
@@ -4809,7 +4819,7 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                             val other = conv.otherUser
                             val selected = forwardSelected.contains(conv.id)
                             Row(
-                                Modifier.fillMaxWidth().background(if (selected) FrianzoBlueTint else Color.Transparent).clickable { forwardSelected = if (selected) forwardSelected - conv.id else forwardSelected + conv.id }.padding(horizontal = 16.dp, vertical = 10.dp),
+                                Modifier.fillMaxWidth().background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent).clickable { forwardSelected = if (selected) forwardSelected - conv.id else forwardSelected + conv.id }.padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 FrianzoAvatar(other?.profilePictureUrl, 40.dp)
@@ -4913,10 +4923,14 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                 Box(Modifier.width(3.dp).height(28.dp).background(FrianzoSuccess))
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Replying to " + if (rt.senderId == myId) "yourself" else title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = FrianzoSuccess, maxLines = 1, softWrap = false)
-                    Text(messageLabel(rt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // v5.18.5: the banner stays light green in both
+                    // themes, so both lines are fixed dark colours —
+                    // FrianzoSuccess green and onSurfaceVariant grey are
+                    // too light to read on it in dark mode.
+                    Text("Replying to " + if (rt.senderId == myId) "yourself" else title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF15803D), maxLines = 1, softWrap = false)
+                    Text(messageLabel(rt), fontSize = 12.sp, color = Color(0xFF334155), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                IconButton(onClick = { replyTo = null }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp)) }
+                IconButton(onClick = { replyTo = null }, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp)) }
             }
         }
         // v5.13: edit banner (web: amber "Editing message").
@@ -4947,10 +4961,10 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             // claimed media sending was "socket-only (no REST endpoint)"
             // — the upload endpoint + socket media fields both exist
             // (verified in the backend code), so the buttons are real.
-            IconButton(onClick = { photoGate() }, enabled = !photoBusy, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.Image, contentDescription = "Send photo", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) }
+            IconButton(onClick = { photoGate() }, enabled = !photoBusy, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Image, contentDescription = "Send photo", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) }
             // v5.18: max message length 2000 (web).
             OutlinedTextField(value = draft, onValueChange = { if (it.length <= 2000) draft = it }, placeholder = { Text("Message...") }, modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(28.dp))
-            IconButton(onClick = { micGate() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.Mic, contentDescription = "Record voice message", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) }
+            IconButton(onClick = { micGate() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Mic, contentDescription = "Record voice message", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp)) }
             // v3.4: Send appears only once text is typed.
             if (draft.isNotBlank()) {
                 Spacer(Modifier.width(8.dp))
@@ -5119,7 +5133,7 @@ private fun VoiceMessagePlayer(url: String, durationSec: Int?, mine: Boolean) {
                 playing = true
                 if (prepared) { try { mp.start() } catch (_: Exception) {} }
             }
-        }, modifier = Modifier.size(36.dp)) {
+        }, modifier = Modifier.size(48.dp)) {
             Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = if (mine) Color.White else FrianzoBlue, modifier = Modifier.size(24.dp))
         }
         Slider(
@@ -5229,7 +5243,7 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                     supportingContent = { Text(listOfNotNull(n.detail?.takeIf { it.isNotBlank() }, notifTimeAgo(n.createdAt).takeIf { it.isNotBlank() }).joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     trailingContent = { if (!n.read) Badge(containerColor = FrianzoBadgeRed) { Text("new", maxLines = 1, softWrap = false) } },
                     leadingContent = { if (selecting) Checkbox(checked = n.id in selected, onCheckedChange = { checked -> selected = if (checked) selected + n.id else selected - n.id }) else FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
-                    colors = ListItemDefaults.colors(containerColor = if (!n.read) FrianzoBlueTint else MaterialTheme.colorScheme.surface),
+                    colors = ListItemDefaults.colors(containerColor = if (!n.read) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),
                     modifier = Modifier.clickable {
                         if (selecting) { selected = if (n.id in selected) selected - n.id else selected + n.id }
                         else {
@@ -5352,7 +5366,7 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit, onTag: (String) ->
             val tabNames = buildList { add("People"); if (SEARCH_API_READY) { add("Posts"); add("Reels") }; add("Tags") }
             tabNames.forEach { name ->
                 val selected = tab == name
-                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (selected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { tab = name }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (selected) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { tab = name }.padding(horizontal = 14.dp, vertical = 12.dp).heightIn(min = 48.dp)) {
                     Text(name, style = MaterialTheme.typography.bodyMedium, color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
             }
@@ -5376,7 +5390,7 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit, onTag: (String) ->
                     Icon(Icons.Filled.History, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(12.dp))
                     Text(r, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    IconButton(onClick = { val u = recents - r; recents = u; saveRecents(u) }, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, contentDescription = "Remove", modifier = Modifier.size(16.dp)) }
+                    IconButton(onClick = { val u = recents - r; recents = u; saveRecents(u) }, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Close, contentDescription = "Remove", modifier = Modifier.size(16.dp)) }
                 }
                 HorizontalDivider()
             }
@@ -5398,17 +5412,19 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit, onTag: (String) ->
                 }
                 HorizontalDivider()
             } else if (q.isNotBlank()) {
-                Text("Type #tag to open a tag page.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("Type #tag to open a tag page.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
-                Text("Search tags — try #sunset, #travel or any hashtag you saw in a post.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("Search tags — try #sunset, #travel or any hashtag you saw in a post.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
         searchError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = FrianzoBadgeRed) }
-        if (tab == "People" && results.isEmpty() && searchError == null && q.isNotBlank() && !searching) Text("No people found", Modifier.padding(16.dp))
-        if (tab == "People" && results.isEmpty() && searchError == null && q.isBlank() && recents.isEmpty()) Text("Search for people by name or @username.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // v5.18.5: empty/hint states are centred (they were bare
+        // left-aligned text under the search field).
+        if (tab == "People" && results.isEmpty() && searchError == null && q.isNotBlank() && !searching) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("No people found", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (tab == "People" && results.isEmpty() && searchError == null && q.isBlank() && recents.isEmpty()) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("Search for people by name or @username.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if ((tab == "Posts" || tab == "Reels") && allResults != null && searchError == null && !allSearching) {
             val empty = if (tab == "Posts") allResults!!.posts.isEmpty() else allResults!!.reels.isEmpty()
-            if (empty && q.isNotBlank()) Text(if (tab == "Posts") "No posts found" else "No reels found", Modifier.padding(16.dp))
+            if (empty && q.isNotBlank()) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text(if (tab == "Posts") "No posts found" else "No reels found", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         LazyColumn {
             if (tab == "People") {
@@ -5856,117 +5872,120 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             Box(Modifier.align(Alignment.BottomEnd).size(16.dp).clip(CircleShape).background(FrianzoSuccess).border(2.dp, Color.White, CircleShape))
                         }
                     }
-                }
-                Column(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp)) {
-                        // v3.2 web parity: share + copy-link icons (own), and for
-                        // others also Message + a More menu (Copy link / Block).
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                            if (username != null) {
-                                Box {
-                                    IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More options", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                                    DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
-                                        DropdownMenuItem(
-                                            text = { Text("Copy link") },
-                                            leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
-                                            onClick = { moreOpen = false; copyProfileLink(p.username) },
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text(if (blockedByMe) "Unblock" else "Block", color = if (blockedByMe) MaterialTheme.colorScheme.onSurface else FrianzoBadgeRed) },
-                                            leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null, tint = if (blockedByMe) MaterialTheme.colorScheme.onSurfaceVariant else FrianzoBadgeRed, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                moreOpen = false
-                                                if (blockedByMe) {
-                                                    scope.launch {
-                                                        try { if (api2.unblockUser(p.id ?: "").success) blockedByMe = false } catch (_: Exception) {}
-                                                    }
-                                                } else showBlockConfirm = true
-                                            },
-                                        )
-                                    }
-                                }
-                                if (showBlockConfirm) {
-                                    BlockConfirmSheet(
-                                        name = p.displayName ?: p.username ?: "User",
-                                        onBlock = {
-                                            scope.launch {
-                                                try { if (api2.blockUser(p.id ?: "").success) { blockedByMe = true; following = false; followStatus = "none" } } catch (_: Exception) {}
-                                            }
+                    // v5.18.5: icon row sits beside the avatar, like the web
+                    // (-mt-10 row, icons bottom-aligned with the avatar) — was a
+                    // full-width row below the header, pushing the name ~48dp down.
+                    // v3.2 web parity: share + copy-link icons (own), and for
+                    // others also Message + a More menu (Copy link / Block).
+                    Row(Modifier.align(Alignment.BottomEnd).padding(end = 8.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                        if (username != null) {
+                            Box {
+                                IconButton(onClick = { moreOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More options", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("Copy link") },
+                                        leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                                        onClick = { moreOpen = false; copyProfileLink(p.username) },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(if (blockedByMe) "Unblock" else "Block", color = if (blockedByMe) MaterialTheme.colorScheme.onSurface else FrianzoBadgeRed) },
+                                        leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null, tint = if (blockedByMe) MaterialTheme.colorScheme.onSurfaceVariant else FrianzoBadgeRed, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            moreOpen = false
+                                            if (blockedByMe) {
+                                                scope.launch {
+                                                    try { if (api2.unblockUser(p.id ?: "").success) blockedByMe = false } catch (_: Exception) {}
+                                                }
+                                            } else showBlockConfirm = true
                                         },
-                                        onDismiss = { showBlockConfirm = false },
                                     )
                                 }
-                                if (onOpenChat != null && !blockedByOther) {
-                                    // v5.17: disabled when you blocked them, like the web
-                                    // (was: tappable, and the tap silently did nothing).
-                                    IconButton(enabled = !blockedByMe, onClick = {
-                                        scope.launch {
-                                            try {
-                                                val r = api2.createConversation(CreateConversationRequest(p.id ?: ""))
-                                                if (r.success && r.data != null) onOpenChat(r.data.id, p.displayName ?: p.username ?: "")
-                                            } catch (_: Exception) {}
-                                        }
-                                    }) { Icon(Icons.Filled.Chat, contentDescription = "Message", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                                }
                             }
-                            IconButton(onClick = {
-                                // v3.3: share the short /s/ link like web
-                                // (POST /api/share { type: "profile", id }),
-                                // direct /u/ URL only if that call fails.
-                                scope.launch {
-                                    var url = profileUrl(p.username)
-                                    try {
-                                        val r = api2.createShareLink(mapOf("type" to "profile", "id" to (p.id ?: p.username ?: "")))
-                                        val code = r.data?.code
-                                        if (r.success && !code.isNullOrBlank()) url = "https://frianzo.online/s/$code"
-                                    } catch (_: Exception) {}
-                                    val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, url) }
-                                    context.startActivity(Intent.createChooser(send, "Share profile"))
-                                }
-                            }) { Icon(Icons.Filled.Share, contentDescription = "Share profile", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            IconButton(onClick = { copyProfileLink(p.username) }) { Icon(Icons.Filled.Link, contentDescription = "Copy profile link", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            if (showBlockConfirm) {
+                                BlockConfirmSheet(
+                                    name = p.displayName ?: p.username ?: "User",
+                                    onBlock = {
+                                        scope.launch {
+                                            try { if (api2.blockUser(p.id ?: "").success) { blockedByMe = true; following = false; followStatus = "none" } } catch (_: Exception) {}
+                                        }
+                                    },
+                                    onDismiss = { showBlockConfirm = false },
+                                )
+                            }
+                            if (onOpenChat != null && !blockedByOther) {
+                                // v5.17: disabled when you blocked them, like the web
+                                // (was: tappable, and the tap silently did nothing).
+                                IconButton(enabled = !blockedByMe, onClick = {
+                                    scope.launch {
+                                        try {
+                                            val r = api2.createConversation(CreateConversationRequest(p.id ?: ""))
+                                            if (r.success && r.data != null) onOpenChat(r.data.id, p.displayName ?: p.username ?: "")
+                                        } catch (_: Exception) {}
+                                    }
+                                }) { Icon(Icons.Filled.Chat, contentDescription = "Message", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            }
                         }
+                        IconButton(onClick = {
+                            // v3.3: share the short /s/ link like web
+                            // (POST /api/share { type: "profile", id }),
+                            // direct /u/ URL only if that call fails.
+                            scope.launch {
+                                var url = profileUrl(p.username)
+                                try {
+                                    val r = api2.createShareLink(mapOf("type" to "profile", "id" to (p.id ?: p.username ?: "")))
+                                    val code = r.data?.code
+                                    if (r.success && !code.isNullOrBlank()) url = "https://frianzo.online/s/$code"
+                                } catch (_: Exception) {}
+                                val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, url) }
+                                context.startActivity(Intent.createChooser(send, "Share profile"))
+                            }
+                        }) { Icon(Icons.Filled.Share, contentDescription = "Share profile", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = { copyProfileLink(p.username) }) { Icon(Icons.Filled.Link, contentDescription = "Copy profile link", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+                Column(Modifier.padding(horizontal = 16.dp).padding(top = 8.dp)) {
                         if (linkMsg != null) Text(linkMsg!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
                         // v5.17: avatar/cover upload feedback (was set but never shown).
                         if (photoMsg != null) Text(photoMsg!!, style = MaterialTheme.typography.bodySmall, color = if (photoMsg!!.contains("fail", ignoreCase = true)) FrianzoBadgeRed else FrianzoBlue, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (p.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
+                            if (p.isVerified) { Spacer(Modifier.width(6.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
                         }
                         // v3.3: @username is tappable — copies it, like web.
                         // v5.17: grey like the web (was FrianzoBlue).
-                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable {
+                        Text("@${p.username ?: ""}", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable {
                             clipboard.setText(AnnotatedString("@${p.username ?: ""}"))
                             linkMsg = "Username copied"
                             scope.launch { delay(2000); linkMsg = null }
                         })
                         // v5.17: green dot + text, like the web (was text only).
-                        if (username != null && p.isOnline) Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (username != null && p.isOnline) Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(8.dp).clip(CircleShape).background(FrianzoSuccess))
                             Spacer(Modifier.width(6.dp))
-                            Text("Active now", style = MaterialTheme.typography.bodySmall, color = FrianzoSuccess, maxLines = 1, softWrap = false)
+                            Text("Active now", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = FrianzoSuccess, maxLines = 1, softWrap = false)
                         }
                         // v3.3: "Followed by X, Y and N others" — backend already
                         // returns mutualFollowers/mutualCount; names are tappable.
                         if (username != null && (p.mutualCount ?: 0) > 0) {
                             val shown = (p.mutualFollowers ?: emptyList()).take(2)
                             val rest = (p.mutualCount ?: 0) - shown.size
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Followed by ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Followed by ", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                                 shown.forEachIndexed { idx, mf ->
                                     if (idx > 0) Text(", ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(mf.displayName ?: mf.username ?: "", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable { if (mf.username != null) onUser?.invoke(mf.username!!) })
+                                    Text(mf.displayName ?: mf.username ?: "", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable { if (mf.username != null) onUser?.invoke(mf.username!!) })
                                 }
-                                if (rest > 0) Text(" and $rest others", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                if (rest > 0) Text(" and $rest others", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                             }
                         }
                         // v5.17: full bio, like the web (was clamped to 4 lines).
-                        p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                        p.bio?.let { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp)) }
                         // v2.9: website is a real link (was plain blue Text).
-                        p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBlue, modifier = Modifier.clickable { openWebUrl(context, it) }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        p.website?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = FrianzoBlue, modifier = Modifier.padding(top = 4.dp).clickable { openWebUrl(context, it) }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         // v5.17: web shows city + province only, never the country.
                         val loc = listOfNotNull(p.city?.takeIf { it.isNotBlank() }, p.province?.takeIf { it.isNotBlank() }).joinToString(", ")
-                        if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(8.dp))
+                        if (loc.isNotBlank()) Text(loc, style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(16.dp))
                         // v3.1: counts as a full-width row — three equal
                         // columns, bold number over grey label (was: three
                         // texts squeezed into the narrow side column).
@@ -5981,9 +6000,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             val fc = followCounts?.followers ?: (p.followerCount ?: p.followersCount)
                             val fg = followCounts?.following ?: (p.followingCount ?: p.followingsCount)
                             @Composable fun countCol(num: String, label: String, onClick: (() -> Unit)? = null) {
-                                Column(Modifier.weight(1f).then(if (onClick != null) Modifier.clickable { onClick() } else Modifier), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(num, style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                                    Text(label, style = MaterialTheme.typography.bodySmall, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                Column(Modifier.weight(1f).heightIn(min = 48.dp).then(if (onClick != null) Modifier.clickable { onClick() } else Modifier), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                    Text(num, style = MaterialTheme.typography.titleMedium, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                    Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                             // B-B21 (backend-verified): GET /api/posts/user/{u}
@@ -6003,9 +6022,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     // v3.3: amber strikes warning banner on own profile, like web.
                     val strikeList = strikes?.strikes ?: emptyList()
                     if (username == null && strikeList.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(12.dp))
                         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFFFEF3C7)).padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            Text("You have ${strikeList.size} strike${if (strikeList.size == 1) "" else "s"} — ${strikeList.firstOrNull()?.reason ?: "check your Dashboard."}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF92400E), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text("You have ${strikeList.size} strike${if (strikeList.size == 1) "" else "s"} — ${strikeList.firstOrNull()?.reason ?: "check your Dashboard."}", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color(0xFF92400E), maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 // v3.2 web parity: own profile = Edit Profile + Dashboard
@@ -6013,9 +6032,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                 // back in the drawer only — it no longer sits on the profile.
                 if (username == null) {
                     Row(Modifier.padding(horizontal = 16.dp)) {
-                        Button(onClick = { showEdit = true }, modifier = Modifier.weight(1f).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text("Edit Profile", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                        Button(onClick = { showEdit = true }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Text("Edit Profile", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         Spacer(Modifier.width(8.dp))
-                        OutlinedButton(onClick = { onDashboard?.invoke() }, modifier = Modifier.weight(1f).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Dashboard", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                        OutlinedButton(onClick = { onDashboard?.invoke() }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Dashboard", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                     }
                 }
                 // v3.2 web parity: others get ONE full-width Follow button
@@ -6043,7 +6062,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     } else if (blockedByMe) {
                         OutlinedButton(onClick = {
                             scope.launch { try { if (api2.unblockUser(p.id).success) blockedByMe = false } catch (_: Exception) {} }
-                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Unblock", maxLines = 1, softWrap = false) }
+                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Unblock", maxLines = 1, softWrap = false) }
                     } else {
                         Button(onClick = {
                             if (following) { showUnfollowConfirm = true; return@Button }
@@ -6053,63 +6072,67 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                     if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none"; bumpFollowers(if (following) 1 else -1) }
                                 } catch (_: Exception) {}
                             }
-                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = if (following) MaterialTheme.colorScheme.surfaceVariant else Color(0xFF0F172A), contentColor = if (following) MaterialTheme.colorScheme.onSurface else Color.White)) { Text(if (followStatus == "friends") "Friends" else if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow", maxLines = 1, softWrap = false) }
+                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = if (following) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.onSurface, contentColor = if (following) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.inverseOnSurface)) { Text(if (followStatus == "friends") "Friends" else if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow", maxLines = 1, softWrap = false) }
                     }
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(16.dp))
                 // v2.9: Highlights row (GET /api/highlights/user/{username}).
                 // v5.17: hidden on blocked views, like the web; "New" first.
                 if (!isBlockedView && (highlights.isNotEmpty() || username == null)) {
                     // v5.18.4: NO "Highlights" heading — current
                     // web main renders the row with no heading.
-                    LazyRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    LazyRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         if (username == null) {
                             item {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { showHighlightCreate = true }) {
                                     // v3.2 web parity: dashed-circle "New" button.
                                     Box(Modifier.size(64.dp).drawBehind {
-                                        drawCircle(color = androidx.compose.ui.graphics.Color(0xFF94A3B8), style = Stroke(width = 4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f), 0f)))
+                                        drawCircle(color = androidx.compose.ui.graphics.Color(0xFFCBD5E1), style = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f), 0f)))
                                     }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = "New highlight", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     Spacer(Modifier.height(4.dp))
-                                    Text("New", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                    Text("New", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
                         items(highlights, key = { it.id }) { h ->
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { highlightViewer = h }) {
-                                Box(Modifier.size(64.dp).clip(CircleShape).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(64.dp).clip(CircleShape).background(FrianzoBlueTint).border(2.dp, MaterialTheme.colorScheme.outline, CircleShape), contentAlignment = Alignment.Center) {
                                     val cover = h.coverUrl ?: h.items.firstOrNull { !it.mediaUrl.isNullOrBlank() }?.mediaUrl
-                                    if (cover != null) AsyncImage(model = cover, contentDescription = null, modifier = Modifier.size(64.dp).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                    if (cover != null) AsyncImage(model = cover, contentDescription = null, modifier = Modifier.size(60.dp).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                                     else Text((h.title ?: "H").take(1).uppercase(), color = FrianzoBlue, fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(Modifier.height(4.dp))
-                                Text(h.title ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                Text(h.title ?: "", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
                     highlightError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(16.dp))
                 }
                 // v5.17: blocked / private views show the web's icon panel
                 // instead of tabs + content.
                 if (isBlockedView) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Box(Modifier.size(56.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.onSurfaceVariant, CircleShape), contentAlignment = Alignment.Center) {
                             Icon(Icons.Filled.Block, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(26.dp))
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(if (blockedByMe) "You blocked this user" else "This user is unavailable", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                        if (blockedByMe) Text("Unblock them to see their posts and videos.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        if (blockedByMe) Text("Unblock them to see their posts and videos.", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                 } else if (isPrivateView) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Box(Modifier.size(56.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.onSurfaceVariant, CircleShape), contentAlignment = Alignment.Center) {
                             Icon(Icons.Filled.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(26.dp))
                         }
                         Spacer(Modifier.height(8.dp))
                         Text("This account is private", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                        Text("Follow to see their photos and videos.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Text("Follow to see their photos and videos.", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                 } else {
                     // v3.2 web parity: All / Reels / Photos tabs, selected tab
                     // underlined in slate-900, like the web.
@@ -6117,16 +6140,16 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     // bottom); the 1dp line below the row already
                     // existed, the top one was missing.
                     Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
-                    Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    Row(Modifier.fillMaxWidth()) {
                         // v5.14 (#5 Save post): "Saved" is the 4th tab, own
                         // profile only — /me/favorites has no per-user form.
                         (listOf("all" to "All", "reels" to "Reels", "photos" to "Photos") + if (username == null) listOf("saved" to "Saved") else emptyList()).forEach { (v, label) ->
                             val sel = activeTab == v
-                            Box(Modifier.weight(1f).clickable { activeTab = v }.padding(top = 10.dp), contentAlignment = Alignment.Center) {
+                            Box(Modifier.weight(1f).clickable { activeTab = v }.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(label, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
-                                    Spacer(Modifier.height(8.dp))
-                                    Box(Modifier.fillMaxWidth().height(2.dp).background(if (sel) Color(0xFF0F172A) else Color.Transparent))
+                                    Text(label, style = MaterialTheme.typography.bodyMedium, fontSize = 14.sp, color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal, maxLines = 1, softWrap = false)
+                                    Spacer(Modifier.height(10.dp))
+                                    Box(Modifier.fillMaxWidth().height(2.dp).background(if (sel) MaterialTheme.colorScheme.onSurface else Color.Transparent))
                                 }
                             }
                         }
@@ -6137,9 +6160,9 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             // v5.12: skeleton rows while the reels tab loads.
                             Column { repeat(3) { SkeletonRow() } }
                         }
-                        else if (userReels.isEmpty()) Text("No reels yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
+                        else if (userReels.isEmpty()) Text("No reels yet.", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 32.dp))
                     } else if (activeTab == "photos") {
-                        if (posts.filter { !it.imageUrl.isNullOrBlank() }.isEmpty()) Text("No photos yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
+                        if (posts.filter { !it.imageUrl.isNullOrBlank() }.isEmpty()) Text("No photos yet.", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 32.dp))
                     } else if (activeTab == "saved") {
                         // v5.14 (#5 Save post): mirror of SavedReelsScreen —
                         // skeleton cards while loading, error + Retry, empty
@@ -6150,15 +6173,15 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(savedPostsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed)
                                 Spacer(Modifier.height(12.dp))
-                                Button(onClick = { savedPostsError = null; loadSavedPosts() }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
+                                Button(onClick = { savedPostsError = null; loadSavedPosts() }, modifier = Modifier.height(48.dp), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Retry", maxLines = 1, softWrap = false) }
                             }
                         }
-                        else if (savedPosts.isEmpty()) Text("No saved posts yet. Save a post from its menu to see it here.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+                        else if (savedPosts.isEmpty()) Text("No saved posts yet. Save a post from its menu to see it here.", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
                     } else {
                         // v5.12: skeleton post cards while the posts tab loads.
                         if (postsLoading) Column { repeat(3) { SkeletonPostCard() } }
                         if (postsError != null) Text(postsError!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp))
-                        if (!postsLoading && !reelsLoading && postsError == null && posts.isEmpty() && userReels.isEmpty()) Text("No posts yet", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+                        if (!postsLoading && !reelsLoading && postsError == null && posts.isEmpty() && userReels.isEmpty()) Text("No posts yet", style = MaterialTheme.typography.bodySmall, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp))
                     }
                 }
             } ?: run {
@@ -6168,7 +6191,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(error!!, style = MaterialTheme.typography.bodySmall, color = FrianzoBadgeRed, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                         Spacer(Modifier.height(12.dp))
-                        Button(onClick = { error = null; retryKey++ }, modifier = Modifier.height(FrianzoUi.ButtonHeight), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Try again", maxLines = 1, softWrap = false) }
+                        Button(onClick = { error = null; retryKey++ }, modifier = Modifier.height(48.dp), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue, contentColor = Color.White), shape = RoundedCornerShape(28.dp)) { Text("Try again", maxLines = 1, softWrap = false) }
                     }
                 } else SkeletonProfileHeader()
             }
@@ -6187,7 +6210,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         Box(Modifier.weight(1f).aspectRatio(9f / 16f).background(Color(0xFFE2E8F0)).clickable { onOpenReel?.invoke(reel.id) }) {
                             if (reel.thumbnailUrl != null) AsyncImage(model = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                             else ReelTileVideoFrame(reel.videoUrl)
-                            Icon(Icons.Filled.PlayArrow, contentDescription = "Reel", tint = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(20.dp))
+                            Icon(Icons.Filled.PlayArrow, contentDescription = "Reel", tint = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(16.dp))
                         }
                     }
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -6394,14 +6417,14 @@ private fun ProfilePostCard(
     // white section + 8dp grey gap, exactly as web PostCard's
     // border-b-[8px] border-slate-100.
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (post.originalPost != null) {
                 // Web PostCard repost header (the feed card has none):
                 // "Name reposted · time", no avatar, no Follow button.
                 Icon(Icons.Filled.Repeat, contentDescription = "Reposted", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(8.dp))
-                Text(post.author?.displayName ?: post.author?.username ?: "User", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).clickable { post.author?.username?.let { onAuthor(it) } })
-                if (post.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(14.dp), tint = FrianzoBlue) }
+                Spacer(Modifier.width(4.dp))
+                Text(post.author?.displayName ?: post.author?.username ?: "User", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).clickable { post.author?.username?.let { onAuthor(it) } })
+                if (post.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
                 Spacer(Modifier.width(4.dp))
                 Text("reposted · " + reelTimeAgo(post.createdAt).ifBlank { "Just now" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.weight(1f))
@@ -6442,7 +6465,7 @@ private fun ProfilePostCard(
                                 finally { followBusy = false }
                             }
                         },
-                        modifier = Modifier.height(36.dp),
+                        modifier = Modifier.height(36.dp).minimumInteractiveComponentSize(),
                         shape = RoundedCornerShape(28.dp),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     ) { Text(ftext, fontSize = 13.sp, color = FrianzoBlue) }
@@ -6491,7 +6514,7 @@ private fun ProfilePostCard(
             ProfilePostPhoto(it, onClick = { onDetail(post.id) })
         }
         post.originalPost?.let { orig -> Spacer(Modifier.height(10.dp)); ProfileOriginalPostCard(orig, onAuthor = onAuthor, onDetail = { onDetail(orig.id) }) }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
         // ReactionSummary row (web PostCard.tsx L182-214): up to 3
         // overlapping reaction icons + total, "N comments", "N shares" pill.
         if (likeTotal > 0 || post.commentCount > 0 || post.shareCount > 0) {
@@ -6505,12 +6528,12 @@ private fun ProfilePostCard(
                             }
                         }
                     }
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("$likeTotal", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.weight(1f))
                 if (post.commentCount > 0) Text("${post.commentCount} comments", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (post.shareCount > 0) { Spacer(Modifier.width(8.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 2.dp)) { Text("${post.shareCount} shares", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                if (post.shareCount > 0) { Spacer(Modifier.width(12.dp)); Box(Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 2.dp)) { Text("${post.shareCount} shares", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -6536,8 +6559,8 @@ private fun ProfilePostCard(
                 contentAlignment = Alignment.Center,
             ) {
                 when (myReaction) {
-                    null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
+                    null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(24.dp), tint = FrianzoBlue)
                     else -> ReactionIcon(myReaction, 24.dp)
                 }
             }
@@ -6565,10 +6588,13 @@ private fun ProfileOriginalPostCard(original: Post, onAuthor: (String) -> Unit =
             .padding(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.clickable { original.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(original.author?.profilePictureUrl, 28.dp) }
-            Spacer(Modifier.width(8.dp))
+            Box(Modifier.clickable { original.author?.username?.let { onAuthor(it) } }) { FrianzoAvatar(original.author?.profilePictureUrl, 40.dp) }
+            Spacer(Modifier.width(6.dp))
             Column(Modifier.weight(1f)) {
-                Text(original.author?.displayName ?: original.author?.username ?: "User", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(original.author?.displayName ?: original.author?.username ?: "User", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (original.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+                }
                 Text(reelTimeAgo(original.createdAt).ifBlank { "Just now" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -6587,7 +6613,7 @@ private fun ProfilePostPhoto(url: String, onClick: () -> Unit = {}) {
             is AsyncImagePainter.State.Error -> Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Image failed to load", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { reload++ }) { Text("Retry") }
+                Button(onClick = { reload++ }, modifier = Modifier.minimumInteractiveComponentSize()) { Text("Retry") }
             }
             else -> Image(painter = painter, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().clickable { onClick() })
         }
@@ -6659,7 +6685,7 @@ private fun ProfilePostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, f
                     val currentAudience = post.commentAudience ?: "everyone"
                     Column(Modifier.fillMaxWidth().padding(start = 46.dp, end = 16.dp, bottom = 4.dp)) {
                         listOf("everyone" to "Everyone", "followers" to "Followers", "only_me" to "Only me").forEach { (v, label) ->
-                            Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).clickable {
+                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable {
                                 scope.launch { try { val r = api2.updatePost(post.id, mapOf("commentAudience" to v)); if (r.success) { audienceError = null; onPostUpdated(post.id, post.content ?: "", v, post.isPinned); onClose() } else audienceError = r.error?.message ?: "Could not change who can comment" } catch (e: Exception) { audienceError = e.message ?: "Could not change who can comment" } }
                             }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(label, fontSize = 12.sp, fontWeight = if (currentAudience == v) FontWeight.SemiBold else FontWeight.Normal, color = MaterialTheme.colorScheme.onSurface)
@@ -6704,7 +6730,7 @@ private fun ProfileShareTile(label: String, color: Color, letter: String, enable
             Text(letter, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
         }
         Spacer(Modifier.height(4.dp))
-        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -6802,7 +6828,7 @@ private fun ProfileShareSheet(api2: FrianzoApi2, post: Post, onClose: () -> Unit
                 onClick = { clipboard.setText(AnnotatedString(link)); copied = true; record("copy"); onShared(); Toast.makeText(context, "Link copied!", Toast.LENGTH_SHORT).show(); scope.launch { kotlinx.coroutines.delay(2000); copied = false } },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
             ) { Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (copied) "Copied!" else "Copy link") }
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth()) {
@@ -6832,7 +6858,7 @@ private fun ProfileShareSheet(api2: FrianzoApi2, post: Post, onClose: () -> Unit
                     } catch (e: Exception) { repostError = e.message }
                     finally { repostBusy = false }
                 }
-            }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+            }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().height(48.dp)) {
                 Icon(Icons.Filled.Repeat, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (repostBusy) "Reposting…" else "Repost to your feed")
             }
         }

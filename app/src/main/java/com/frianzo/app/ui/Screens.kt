@@ -964,7 +964,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     }
                     Spacer(Modifier.width(10.dp))
                     Box(
-                        Modifier.size(40.dp).clip(CircleShape).background(FrianzoBlueTint).clickable {
+                        Modifier.size(48.dp).clip(CircleShape).background(FrianzoBlueTint).clickable {
                             pickMedia()
                         },
                         contentAlignment = Alignment.Center,
@@ -991,7 +991,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                 }
                                 if (isOwn) { Box(Modifier.offset(y = (-16).dp).size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) } }
                                 Spacer(Modifier.height(4.dp))
-                                Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         if (statusGroups.none { it.userId == myId || it.user?.id == myId }) {
@@ -1002,7 +1002,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                         Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
                                     }
                                     Spacer(Modifier.height(4.dp))
-                                    Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                    Text("Your story", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
@@ -1022,7 +1022,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                     Box(Modifier.size(20.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) }
                                 }
                                 Spacer(Modifier.height(4.dp))
-                                Text("Your story", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                Text("Your story", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         // A-D9: the story load failed — offer a retry
@@ -1042,7 +1042,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                                 if (sf.success && sf.data != null) statusGroups = sf.data.feed ?: emptyList() else statusFailed = true
                                             } catch (_: Exception) { statusFailed = true }
                                         }
-                                    }, contentPadding = PaddingValues(0.dp)) { Text("Retry", fontSize = 11.sp, color = FrianzoBlue) }
+                                    }, contentPadding = PaddingValues(0.dp)) { Text("Retry", fontSize = 12.sp, color = FrianzoBlue) }
                                 }
                             }
                         }
@@ -1052,7 +1052,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
                                 Box(Modifier.size(60.dp).clip(CircleShape).background(FrianzoBlue), contentAlignment = Alignment.Center) { FrianzoAvatar(author.profilePictureUrl, 56.dp) }
                                 Spacer(Modifier.height(4.dp))
-                                Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                Text((author.displayName ?: author.username ?: "User").substringBefore(" "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -1082,7 +1082,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val time = feedTime(post.createdAt)
                             Text((if (time.isNotBlank()) time else "Just now") + (post.location?.let { " · $it" } ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                            if (post.isPinned) { Spacer(Modifier.width(6.dp)); Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("Pinned", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                            if (post.isPinned) { Spacer(Modifier.width(6.dp)); Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("Pinned", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                         }
                     }
                     val authorId = post.author?.id
@@ -1111,7 +1111,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                                     finally { followBusyIds = followBusyIds - authorId }
                                 }
                             },
-                            modifier = Modifier.height(36.dp),
+                            modifier = Modifier.height(48.dp),
                             shape = RoundedCornerShape(28.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         ) { Text(ftext, fontSize = 13.sp, color = FrianzoBlue) }
@@ -1206,8 +1206,8 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         contentAlignment = Alignment.Center,
                     ) {
                         when (myReaction) {
-                            null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
+                            null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(24.dp), tint = FrianzoBlue)
                             else -> ReactionIcon(myReaction, 24.dp)
                         }
                     }
@@ -1230,8 +1230,10 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         }
         item {
-            if (followError != null) Text(followError!!, color = Color.Red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-            if (error != null) Text(error!!, modifier = Modifier.padding(16.dp))
+            // v5.18.5: footer states are centred (they were bare
+            // left-aligned text at the bottom of the feed).
+            if (followError != null) Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), contentAlignment = Alignment.Center) { Text(followError!!, color = Color.Red, textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+            if (error != null) Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text(error!!, color = Color.Red, textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
             if (loading) {
                 if (posts.isEmpty()) {
                     // v5.12: skeleton post cards on a bare first load (no
@@ -1251,9 +1253,9 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             } else if (hasMore) {
                 OutlinedButton(onClick = { vm.loadMore() }, modifier = Modifier.fillMaxWidth().padding(16.dp), shape = RoundedCornerShape(28.dp)) { Text("Load more") }
             } else if (posts.isEmpty()) {
-                Text("No posts yet", modifier = Modifier.padding(16.dp))
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("No posts yet", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
-                Text("No more posts", modifier = Modifier.padding(16.dp))
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("No more posts", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
     }
@@ -1815,22 +1817,26 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
             }
         }
         if (replyTo != null) {
+            // v5.18.5: the banner background stays the light blue tint in
+            // both themes (like the amber banners), so the text is a
+            // fixed dark slate — the old onSurfaceVariant is light grey
+            // in dark mode and unreadable on the light tint.
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(FrianzoBlueTint).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = androidx.compose.ui.text.buildAnnotatedString {
                         append("Replying to ")
                         withStyle(androidx.compose.ui.text.SpanStyle(color = FrianzoBlue, fontWeight = FontWeight.SemiBold)) { append("@${replyTo!!.author?.username ?: "User"}") }
                     },
-                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp, color = Color(0xFF334155),
                     modifier = Modifier.weight(1f)
                 )
                 // v3.9 (live-web audit #2): web uses a "Cancel" TEXT button, not an x.
-                TextButton(onClick = { replyTo = null }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                TextButton(onClick = { replyTo = null }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Cancel", fontSize = 13.sp, color = Color(0xFF334155)) }
             }
             Spacer(Modifier.height(8.dp))
         }
         if (mentionQuery != null && mentionResults.isNotEmpty()) {
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = Color.White, shadowElevation = 4.dp, border = BorderStroke(1.dp, FrianzoBorder)) { Column(Modifier.padding(vertical = 4.dp)) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface, shadowElevation = 4.dp, border = BorderStroke(1.dp, FrianzoBorder)) { Column(Modifier.padding(vertical = 4.dp)) {
                 mentionResults.forEach { u ->
                     Row(Modifier.fillMaxWidth().clickable {
                         val q = mentionQuery ?: ""
@@ -1861,7 +1867,7 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
         Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             FrianzoAvatar(myAvatar, 32.dp)
             Spacer(Modifier.width(8.dp))
-            IconButton(onClick = { pickCommentPhoto() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            IconButton(onClick = { pickCommentPhoto() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photo", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             OutlinedTextField(
                 value = draft,
                 onValueChange = { v ->
@@ -1875,8 +1881,8 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                 singleLine = false,
                 shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = Color.White,
-                    unfocusedContainerColor = Color.White,
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
                     focusedBorderColor = FrianzoBorder,
                     unfocusedBorderColor = FrianzoBorder
                 )
@@ -1982,8 +1988,12 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
             FrianzoAvatar(c.author?.profilePictureUrl, if (isReply) 28.dp else 32.dp)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                // Web bubble: top-level bg-slate-100, reply bg-slate-50 + border.
-                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (isReply) Color(0xFFF8FAFC) else Color(0xFFF0F2F5)).padding(horizontal = 12.dp, vertical = 10.dp)) {
+                // v5.18.5: theme-aware bubble — the old hardcoded light
+                // greys (#F0F2F5 / #F8FAFC) left white dark-mode text on a
+                // light bubble, i.e. invisible. surfaceVariant matches
+                // them in light mode and stays readable in dark mode;
+                // the reply keeps its lighter look via 50% alpha.
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (isReply) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 10.dp)) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(c.author?.displayName ?: c.author?.username ?: "User", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
@@ -2424,8 +2434,8 @@ fun PostDetailScreen(vm: FeedViewModel, postId: String, myId: String?, myAvatar:
                     })
                 }, contentAlignment = Alignment.Center) {
                     when (detailReaction) {
-                        null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(28.dp), tint = FrianzoBlue)
+                        null -> Icon(Icons.Outlined.ThumbUp, contentDescription = "Like", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        "like" -> Icon(Icons.Filled.ThumbUp, contentDescription = "Like", modifier = Modifier.size(24.dp), tint = FrianzoBlue)
                         else -> ReactionIcon(detailReaction, 24.dp)
                     }
                 }
