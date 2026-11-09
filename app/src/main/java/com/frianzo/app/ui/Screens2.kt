@@ -6047,6 +6047,15 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var blockedByOther by remember { mutableStateOf(false) }
     var moreOpen by remember { mutableStateOf(false) }
     var showBlockConfirm by remember { mutableStateOf(false) }
+    // v5.21 (H6): "Report user" — same 7-reason picker + optional
+    // details as the reel report dialog; POST
+    // /api/users/{userId}/report (userRoutes, auth).
+    var showReport by remember { mutableStateOf(false) }
+    var reportReason by remember { mutableStateOf("other") }
+    var reportDetails by remember { mutableStateOf("") }
+    var reportBusy by remember { mutableStateOf(false) }
+    var reportDone by remember { mutableStateOf(false) }
+    var reportError by remember { mutableStateOf<String?>(null) }
     var showUnfollowConfirm by remember { mutableStateOf(false) }
     // v5.20 (M9): header Follow busy guard (the card-level Follow button
     // in ProfilePostCard already has one; the header button did not, so
@@ -6256,6 +6265,15 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                         leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
                                         onClick = { moreOpen = false; copyProfileLink(p.username) },
                                     )
+                                    // v5.21 (H6): "Report user" — hidden for
+                                    // your own profile (no self-report).
+                                    if (p.id != null && p.id != myId) {
+                                        DropdownMenuItem(
+                                            text = { Text("Report user", color = FrianzoBadgeRed) },
+                                            leadingIcon = { Icon(Icons.Filled.Flag, contentDescription = null, tint = FrianzoBadgeRed, modifier = Modifier.size(18.dp)) },
+                                            onClick = { moreOpen = false; reportReason = "other"; reportDetails = ""; reportDone = false; reportError = null; showReport = true },
+                                        )
+                                    }
                                     DropdownMenuItem(
                                         text = { Text(if (blockedByMe) "Unblock" else "Block", color = if (blockedByMe) MaterialTheme.colorScheme.onSurface else FrianzoBadgeRed) },
                                         leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null, tint = if (blockedByMe) MaterialTheme.colorScheme.onSurfaceVariant else FrianzoBadgeRed, modifier = Modifier.size(18.dp)) },
@@ -6287,6 +6305,51 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                         }
                                     },
                                     onDismiss = { showBlockConfirm = false },
+                                )
+                            }
+                            if (showReport) {
+                                // v5.21 (H6): same 7-reason picker +
+                                // optional details as the reel report
+                                // dialog; wires to the existing
+                                // POST /api/users/{userId}/report.
+                                AlertDialog(
+                                    onDismissRequest = { if (!reportBusy) showReport = false },
+                                    title = { Text("Report user", maxLines = 1, softWrap = false) },
+                                    text = {
+                                        Column {
+                                            listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "False information", "other" to "Something else").forEach { (v, label) ->
+                                                Row(Modifier.fillMaxWidth().noRippleClickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    RadioButton(selected = reportReason == v, onClick = { reportReason = v })
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Text(label, fontSize = 15.sp)
+                                                }
+                                            }
+                                            Spacer(Modifier.height(8.dp))
+                                            OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                                            if (reportDone) { Spacer(Modifier.height(8.dp)); Text("Report sent. Thanks for letting us know.", fontSize = 13.sp, color = FrianzoSuccess) }
+                                            if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
+                                        }
+                                    },
+                                    confirmButton = {
+                                        Button(
+                                            onClick = {
+                                                if (reportBusy) return@Button
+                                                val uid = p.id ?: return@Button
+                                                reportBusy = true; reportError = null
+                                                scope.launch {
+                                                    try {
+                                                        val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
+                                                        if (api2.reportUser(uid, body).success) { reportDone = true; reportDetails = "" } else reportError = "Could not send report"
+                                                    } catch (e: Exception) { reportError = e.message ?: "Could not send report" }
+                                                    finally { reportBusy = false }
+                                                }
+                                            },
+                                            enabled = !reportBusy,
+                                            colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
+                                            shape = RoundedCornerShape(28.dp),
+                                        ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
+                                    },
+                                    dismissButton = { TextButton(onClick = { if (!reportBusy) showReport = false }) { Text("Cancel") } },
                                 )
                             }
                             if (onOpenChat != null && !blockedByOther) {
@@ -7037,6 +7100,13 @@ private fun ProfilePostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, f
     var deleteBusy by remember { mutableStateOf(false) }
     var deleteError by remember { mutableStateOf<String?>(null) }
     var audienceError by remember { mutableStateOf<String?>(null) }
+    // v5.21 (M5): report reason picker (same 7 reasons + optional
+    // details as the reel report) — reports used to file "other".
+    var showReport by remember { mutableStateOf(false) }
+    var reportReason by remember { mutableStateOf("other") }
+    var reportDetails by remember { mutableStateOf("") }
+    var reportBusy by remember { mutableStateOf(false) }
+    var reportError by remember { mutableStateOf<String?>(null) }
     val isOwner = post.author?.id != null && post.author?.id == myId
     val clipboard = LocalClipboardManager.current
     fun toast(msg: String) { Toast.makeText(context, msg, Toast.LENGTH_SHORT).show() }
@@ -7089,9 +7159,7 @@ private fun ProfilePostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, f
                 ProfileMenuRow(Icons.Filled.Delete, "Delete post", destructive = true) { showDelete = true }
             } else {
                 ProfileMenuRow(Icons.Filled.Link, "Copy link") { copyPostLink() }
-                ProfileMenuRow(Icons.Filled.Flag, "Report post") {
-                    act("Reported") { val r = api2.reportPost(post.id, mapOf("reason" to "other")); if (r.success) null else r.error?.message ?: "Could not report post" }
-                }
+                ProfileMenuRow(Icons.Filled.Flag, "Report post") { reportReason = "other"; reportDetails = ""; reportError = null; showReport = true }
                 if (followStatus == "following" || followStatus == "friends") {
                     ProfileMenuRow(Icons.Filled.PersonRemove, "Unfollow") {
                         act("Unfollowed") { val aid = post.author?.id ?: return@act "Could not unfollow"; val r = api2.toggleFollow(aid); if (r.success) null else r.error?.message ?: "Could not unfollow" }
@@ -7112,6 +7180,50 @@ private fun ProfilePostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, f
         AlertDialog(onDismissRequest = { if (!deleteBusy) showDelete = false }, shape = RoundedCornerShape(16.dp), title = { Text("Delete this post?") }, text = { Column { Text("This can't be undone."); if (deleteError != null) { Spacer(Modifier.height(8.dp)); Text(deleteError!!, fontSize = 13.sp, color = Color.Red) } } },
             confirmButton = { Button(enabled = !deleteBusy, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White), onClick = { if (deleteBusy) return@Button; deleteBusy = true; deleteError = null; scope.launch { try { val r = api2.deletePost(post.id); if (r.success) { onPostDeleted(post.id); showDelete = false; onClose() } else deleteError = r.error?.message ?: "Could not delete post" } catch (e: Exception) { deleteError = e.message ?: "Could not delete post" } finally { deleteBusy = false } } }) { Text(if (deleteBusy) "Deleting…" else "Delete") } },
             dismissButton = { OutlinedButton(onClick = { showDelete = false }) { Text("Cancel") } })
+    }
+    if (showReport) {
+        // v5.21 (M5): same 7-reason picker + optional details as the
+        // reel report dialog. The dialog stays open on failure so the
+        // error is visible; the sheet closes on success.
+        AlertDialog(
+            onDismissRequest = { if (!reportBusy) showReport = false },
+            title = { Text("Report post") },
+            text = {
+                Column {
+                    listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "False information", "other" to "Something else").forEach { (v, label) ->
+                        Row(Modifier.fillMaxWidth().noRippleClickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = reportReason == v, onClick = { reportReason = v })
+                            Spacer(Modifier.width(8.dp))
+                            Text(label, fontSize = 15.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (reportBusy) return@Button
+                        reportBusy = true; reportError = null
+                        scope.launch {
+                            try {
+                                val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
+                                val r = api2.reportPost(post.id, body)
+                                if (r.success) { showReport = false; toast("Reported"); onClose() }
+                                else reportError = r.error?.message ?: "Could not report post"
+                            } catch (e: Exception) { reportError = e.message ?: "Could not report post" }
+                            finally { reportBusy = false }
+                        }
+                    },
+                    enabled = !reportBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
+                    shape = RoundedCornerShape(28.dp),
+                ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { if (!reportBusy) showReport = false }) { Text("Cancel") } },
+        )
     }
 }
 

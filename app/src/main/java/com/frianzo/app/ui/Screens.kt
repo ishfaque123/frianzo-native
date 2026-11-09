@@ -127,7 +127,7 @@ private fun GoogleGIcon() {
 }
 
 @Composable
-fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: PersistentCookieJar? = null, onLoggedIn: () -> Unit) {
+fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: PersistentCookieJar? = null, onGuest: () -> Unit = {}, onLoggedIn: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var email by rememberSaveable { mutableStateOf("") }
@@ -396,6 +396,13 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
         }
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
 
+        // v5.21 (H1): guest/demo path — a Google reviewer (or anyone
+        // without an account) can browse real public posts without
+        // logging in. Login itself is unchanged.
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = onGuest, modifier = Modifier.fillMaxWidth()) { Text("Browse as guest", color = FrianzoBlue, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, softWrap = false) }
+        Text("See public posts without an account.", fontSize = 12.sp, color = loginGrey, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+
         Spacer(Modifier.height(28.dp))
         // v2.9: Terms / Privacy / About are real links now (they were
         // plain Text with no click). Pages verified live 2026-11-05:
@@ -439,6 +446,109 @@ fun LoginScreen(api: FrianzoApi, session: SessionViewModel, cookieJar: Persisten
             modifier = Modifier.fillMaxWidth(),
             onClick = { offset -> footerText.getStringAnnotations("url", offset, offset).firstOrNull()?.let { if (!openWebUrl(context, it.item)) message = "Couldn't open the link — no browser app found on this phone." } },
         )
+    }
+}
+
+// v5.21 (H1): guest/demo browsing — read-only public feed for a
+// reviewer or anyone without an account. Uses the SAME public
+// GET /api/posts feed the logged-in feed uses (optionalAuth, works
+// logged-out — verified live). No login, no account, no private
+// content: no DMs, no private posts, no settings, no follow/like/
+// comment/post/chat actions, and no view recording (recordPostView
+// is auth-only and is never called here). "Log in" returns to the
+// login screen; the normal login flow is untouched.
+@Composable
+fun GuestScreen(feedVm: FeedViewModel, onLogin: () -> Unit) {
+    val posts = feedVm.posts
+    val loading = feedVm.loading
+    val error = feedVm.error
+    val hasMore = feedVm.hasMore
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            FrianzoLogo(36.dp)
+            Spacer(Modifier.width(10.dp))
+            Text("Frianzo", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            OutlinedButton(onClick = onLogin, shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { Text("Log in", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+        }
+        Text(
+            "You're browsing as a guest. Log in to like, comment, post, chat or follow.",
+            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 16.dp, vertical = 10.dp),
+            textAlign = TextAlign.Center,
+        )
+        if (posts.isEmpty() && loading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() }
+        } else if (posts.isEmpty() && error != null) {
+            Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Text(error, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { feedVm.retry() }) { Text("Retry") }
+            }
+        } else if (posts.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No public posts yet — check back soon.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.padding(24.dp))
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(posts, key = { it.id }) { post ->
+                    GuestPostCard(post)
+                    HorizontalDivider(color = FrianzoBorder)
+                }
+                item {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        if (loading) DotsLoading()
+                        else if (hasMore) OutlinedButton(onClick = { feedVm.loadMore() }, shape = RoundedCornerShape(28.dp)) { Text("Load more", fontSize = 14.sp) }
+                        else Text("You're all caught up.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// v5.21 (H1): one public post, read-only — author, time, text,
+// photo, and static counts. Nothing here is tappable: no like,
+// comment, share, follow, or profile navigation (those all need
+// an account). Reposts render the original via OriginalPostCard.
+@Composable
+private fun GuestPostCard(post: Post) {
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FrianzoAvatar(post.author?.profilePictureUrl, 40.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(post.author?.displayName ?: "@${post.author?.username ?: ""}", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (post.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.Verified, contentDescription = "Verified", tint = FrianzoBlue, modifier = Modifier.size(16.dp)) }
+                }
+                Text(feedTime(post.createdAt).ifBlank { "Just now" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        // Same order as the logged-in feed card: text (gradient tile
+        // when a background style is set and there is no photo), then
+        // photo, then the original post for reposts.
+        post.content?.takeIf { it.isNotBlank() }?.let {
+            if (!post.backgroundStyle.isNullOrBlank() && post.imageUrl.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    Modifier.fillMaxWidth().heightIn(min = 224.dp)
+                        .clip(RoundedCornerShape(16.dp)).background(postBackgroundBrush(post.backgroundStyle!!)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    PostContentText(it, fontSizeSp = 24, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(24.dp))
+                }
+            } else {
+                Spacer(Modifier.height(8.dp)); PostContentText(it, 15, MaterialTheme.colorScheme.onSurface)
+            }
+        }
+        post.imageUrl?.let { Spacer(Modifier.height(8.dp)); PostPhoto(it) }
+        post.originalPost?.let { Spacer(Modifier.height(8.dp)); OriginalPostCard(it) }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.ThumbUp, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text(formatCount(post.likeCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text(formatCount(post.commentCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.Share, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text(formatCount(post.shareCount), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
     }
 }
 
@@ -2158,6 +2268,12 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
     var showDelete by remember { mutableStateOf(false) }
     var reported by remember { mutableStateOf(false) }
     var reportError by remember { mutableStateOf<String?>(null) }
+    // v5.21 (M5): report reason picker (same 7 reasons + optional
+    // details as the reel report) — reports used to file "other".
+    var showReport by remember { mutableStateOf(false) }
+    var reportReason by remember { mutableStateOf("other") }
+    var reportDetails by remember { mutableStateOf("") }
+    var reportBusy by remember { mutableStateOf(false) }
     var deleteError by remember { mutableStateOf<String?>(null) }
     var deleteBusy by remember { mutableStateOf(false) }
     // v5.20 (M1): the full 6-reaction picker (web CommentItem parity),
@@ -2288,9 +2404,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                             DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; clipboard.setText(AnnotatedString(c.content ?: "")) })
                             DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = {
                                 menuOpen = false
-                                // A-D11: a failed report used to close the
-                                // menu with no confirmation and no error.
-                                scope.launch { try { val r = api2.reportComment(c.id, mapOf("reason" to "other")); if (r.success) { reported = true; reportError = null; Toast.makeText(context, "Reported", Toast.LENGTH_SHORT).show() } else reportError = r.error?.message ?: "Could not report comment" } catch (e: Exception) { reportError = e.message ?: "Could not report comment" } }
+                                reportReason = "other"; reportDetails = ""; reportError = null; showReport = true
                             })
                         }
                     }
@@ -2325,6 +2439,51 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                 }) { Text(if (deleteBusy) "Deleting…" else "Delete") }
             },
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
+        )
+    }
+    if (showReport) {
+        // v5.21 (M5): same 7-reason picker + optional details as the
+        // reel report dialog (Screens2.kt). The dialog stays open on
+        // failure so the error is visible (A-D11: a failed report
+        // used to close the menu with no confirmation and no error).
+        AlertDialog(
+            onDismissRequest = { if (!reportBusy) showReport = false },
+            title = { Text("Report comment") },
+            text = {
+                Column {
+                    listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "False information", "other" to "Something else").forEach { (v, label) ->
+                        Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = reportReason == v, onClick = { reportReason = v })
+                            Spacer(Modifier.width(8.dp))
+                            Text(label, fontSize = 15.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (reportBusy) return@Button
+                        reportBusy = true; reportError = null
+                        scope.launch {
+                            try {
+                                val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
+                                val r = api2.reportComment(c.id, body)
+                                if (r.success) { reported = true; reportError = null; showReport = false; Toast.makeText(context, "Reported", Toast.LENGTH_SHORT).show() }
+                                else reportError = r.error?.message ?: "Could not report comment"
+                            } catch (e: Exception) { reportError = e.message ?: "Could not report comment" }
+                            finally { reportBusy = false }
+                        }
+                    },
+                    enabled = !reportBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
+                    shape = RoundedCornerShape(28.dp),
+                ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { if (!reportBusy) showReport = false }) { Text("Cancel") } },
         )
     }
 }
@@ -2403,6 +2562,13 @@ fun PostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, followStatus: St
     var deleteBusy by remember { mutableStateOf(false) }
     var deleteError by remember { mutableStateOf<String?>(null) }
     var audienceError by remember { mutableStateOf<String?>(null) }
+    // v5.21 (M5): report reason picker (same 7 reasons + optional
+    // details as the reel report) — reports used to file "other".
+    var showReport by remember { mutableStateOf(false) }
+    var reportReason by remember { mutableStateOf("other") }
+    var reportDetails by remember { mutableStateOf("") }
+    var reportBusy by remember { mutableStateOf(false) }
+    var reportError by remember { mutableStateOf<String?>(null) }
     val isOwner = post.author?.id != null && post.author?.id == myId
     val clipboard = LocalClipboardManager.current
     // v5.15: feedback is a Toast, never the old inline blue notice text.
@@ -2467,9 +2633,7 @@ fun PostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, followStatus: St
                 MenuRow(Icons.Filled.Delete, "Delete post", destructive = true) { showDelete = true }
             } else {
                 MenuRow(Icons.Filled.Link, "Copy link") { copyPostLink() }
-                MenuRow(Icons.Filled.Flag, "Report post") {
-                    act("Reported") { val r = api2.reportPost(post.id, mapOf("reason" to "other")); if (r.success) null else r.error?.message ?: "Could not report post" }
-                }
+                MenuRow(Icons.Filled.Flag, "Report post") { reportReason = "other"; reportDetails = ""; reportError = null; showReport = true }
                 if (followStatus == "following" || followStatus == "friends") {
                     MenuRow(Icons.Filled.PersonRemove, "Unfollow") {
                         act("Unfollowed") { val aid = post.author?.id ?: return@act "Could not unfollow"; val r = api2.toggleFollow(aid); if (r.success) null else r.error?.message ?: "Could not unfollow" }
@@ -2497,6 +2661,50 @@ fun PostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, followStatus: St
         AlertDialog(onDismissRequest = { if (!deleteBusy) showDelete = false }, shape = RoundedCornerShape(16.dp), title = { Text("Delete this post?") }, text = { Column { Text("This can't be undone."); if (deleteError != null) { Spacer(Modifier.height(8.dp)); Text(deleteError!!, fontSize = 13.sp, color = Color.Red) } } },
             confirmButton = { Button(enabled = !deleteBusy, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White), onClick = { if (deleteBusy) return@Button; deleteBusy = true; deleteError = null; scope.launch { try { val r = api2.deletePost(post.id); if (r.success) { onHidden(post.id); showDelete = false; onClose() } else deleteError = r.error?.message ?: "Could not delete post" } catch (e: Exception) { deleteError = e.message ?: "Could not delete post" } finally { deleteBusy = false } } }) { Text(if (deleteBusy) "Deleting…" else "Delete") } },
             dismissButton = { OutlinedButton(onClick = { showDelete = false }) { Text("Cancel") } })
+    }
+    if (showReport) {
+        // v5.21 (M5): same 7-reason picker + optional details as the
+        // reel report dialog (Screens2.kt). The dialog stays open on
+        // failure so the error is visible; the sheet closes on success.
+        AlertDialog(
+            onDismissRequest = { if (!reportBusy) showReport = false },
+            title = { Text("Report post") },
+            text = {
+                Column {
+                    listOf("spam" to "Spam", "harassment" to "Harassment", "hate_speech" to "Hate speech", "violence" to "Violence", "nudity" to "Nudity", "misinformation" to "False information", "other" to "Something else").forEach { (v, label) ->
+                        Row(Modifier.fillMaxWidth().clickable { reportReason = v }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = reportReason == v, onClick = { reportReason = v })
+                            Spacer(Modifier.width(8.dp))
+                            Text(label, fontSize = 15.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (reportBusy) return@Button
+                        reportBusy = true; reportError = null
+                        scope.launch {
+                            try {
+                                val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
+                                val r = api2.reportPost(post.id, body)
+                                if (r.success) { showReport = false; toast("Reported"); onClose() }
+                                else reportError = r.error?.message ?: "Could not report post"
+                            } catch (e: Exception) { reportError = e.message ?: "Could not report post" }
+                            finally { reportBusy = false }
+                        }
+                    },
+                    enabled = !reportBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
+                    shape = RoundedCornerShape(28.dp),
+                ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { if (!reportBusy) showReport = false }) { Text("Cancel") } },
+        )
     }
 }
 

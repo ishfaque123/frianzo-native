@@ -82,11 +82,17 @@ class MainActivity : ComponentActivity() {
                 // loading IN PARALLEL with Session /me instead of after it,
                 // and (b) it survives tab switches (see FeedViewModel).
                 val feedVm: FeedViewModel = viewModel(factory = feedViewModelFactory(api, api2, applicationContext))
+                // v5.21 (H1): guest/demo mode — a reviewer (or anyone
+                // without an account) can browse real public posts
+                // without logging in. No account, no private content.
+                var guestMode by rememberSaveable { mutableStateOf(false) }
                 // v5.12: cache-first — show the last saved feed instantly,
                 // then refresh it from the network in the background.
                 LaunchedEffect(Unit) { feedVm.restoreCache(); feedVm.loadMore() }
                 val state by session.state.collectAsState()
-                when (state) {
+                if (guestMode) {
+                    GuestScreen(feedVm, onLogin = { guestMode = false })
+                } else when (state) {
                     is AuthState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         DotsLoading()
                     }
@@ -130,7 +136,7 @@ class MainActivity : ComponentActivity() {
                             TextButton(onClick = { session.markLoggedOut() }) { Text("Continue to login", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         }
                     }
-                    else -> LoginScreen(api, session, cookieJar) { session.refresh() }
+                    else -> LoginScreen(api, session, cookieJar, onGuest = { guestMode = true }) { session.refresh() }
                 }
             }
         }

@@ -1863,6 +1863,16 @@ fun MonetizationScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                         }
                     }
                 }
+                // v5.21 (H2+H5): qualify the earning promise — the rate,
+                // the 25-referral gate, the minimum withdrawal, and the
+                // disclaimer that earning is for CONTENT views only,
+                // never for viewing or clicking ads. Full terms linked.
+                DashboardCard {
+                    Text("How earning works", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text("You earn \$0.06 per 1,000 views of your own posts and reels, once you have completed 25 referrals. Minimum withdrawal is \$100.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Earning is only for views of your content. You never earn for viewing or clicking ads, and ads are never placed so that anyone earns from them.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://frianzo.online/terms"))) } catch (_: Exception) {} }, contentPadding = PaddingValues(0.dp)) { Text("Read the full terms", fontSize = 13.sp, color = FrianzoBlue) }
+                }
                 // 2. Referral link (web: link card + Copy button).
                 DashboardCard {
                     Text("Your referral link", fontSize = 14.sp, fontWeight = FontWeight.Medium)
