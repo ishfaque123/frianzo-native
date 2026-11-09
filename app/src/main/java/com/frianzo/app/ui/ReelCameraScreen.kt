@@ -15,7 +15,9 @@
 // behind a composable); the pills use the web's black/40 and black/70
 // backgrounds, which read the same. The recording red dot does not
 // pulse (the web's animate-pulse is a CSS animation; a static dot is
-// used instead).
+// used instead). v5.20 (M4): a PHOTO capture bakes the chosen effect
+// into the JPEG client-side (bakeEffectIntoPhoto) — the video path
+// still relies on the server filter at upload.
 package com.frianzo.app.ui
 
 import android.Manifest
@@ -206,6 +208,68 @@ private fun camFilterColorMatrix(id: String): ColorMatrix {
     return ColorMatrix(m)
 }
 
+// v5.20 (M4): bake a camera effect into a captured JPEG, like the
+// web's capturePhoto (ctx.filter = activeEffect.css). Decodes the file,
+// draws it through the effect's ColorMatrix (with EXIF rotation applied
+// so a portrait photo stays portrait), re-encodes JPEG 90. Returns the
+// baked file's Uri, or null to keep the original file on any failure —
+// the capture must never fail because of the bake. "normal" needs no
+// work, so the original file is returned untouched.
+private fun bakeEffectIntoPhoto(context: Context, file: File, effectId: String): Uri? {
+    if (effectId == "normal") return Uri.fromFile(file)
+    return try {
+        val matrix = camFilterColorMatrix(effectId)
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        // Downscale only if huge (a 12MP photo is ~48MB decoded); keep
+        // full resolution otherwise so the cover stays sharp.
+        var sample = 1
+        while (bounds.outWidth / sample > 3000 || bounds.outHeight / sample > 3000) sample *= 2
+        val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        val src = android.graphics.BitmapFactory.decodeFile(file.absolutePath, decodeOpts) ?: return null
+        val rotation = try {
+            when (android.media.ExifInterface(file.absolutePath).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)) {
+                android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+        } catch (_: Exception) { 0f }
+        val oriented = if (rotation != 0f) {
+            val m = android.graphics.Matrix().apply { postRotate(rotation) }
+            val r = android.graphics.Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+            src.recycle()
+            r
+        } else src
+        val out = android.graphics.Bitmap.createBitmap(oriented.width, oriented.height, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            val canvas = android.graphics.Canvas(out)
+            val paint = android.graphics.Paint().apply {
+                colorFilter = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix(matrix.values))
+            }
+            canvas.drawBitmap(oriented, 0f, 0f, paint)
+        } finally {
+            oriented.recycle()
+        }
+        val baked = File(context.cacheDir, "reel_photo_effect_${System.currentTimeMillis()}.jpg")
+        var ok = false
+        try {
+            baked.outputStream().use { stream -> ok = out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, stream) }
+        } finally {
+            out.recycle()
+        }
+        if (!ok || baked.length() <= 0) {
+            try { baked.delete() } catch (_: Exception) {}
+            return null
+        }
+        try { file.delete() } catch (_: Exception) {}
+        Uri.fromFile(baked)
+    } catch (_: Exception) {
+        null
+    }
+}
+
 // Web CAMERA_EFFECTS (src/app/reels/camera/page.tsx), in order. server
 // is the upload filter the effect maps to (B-B29: only 7 distinct
 // server filters exist; several camera effects share one).
@@ -310,7 +374,7 @@ fun ReelCameraScreen(
 
     val preview = remember { Preview.Builder().build() }
     val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
-    val recorder = remember { Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD)).build() }
+    val recorder = remember { Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.FHD)).build() }
     val videoCapture = remember { VideoCapture.withOutput(recorder) }
     val imageCapture = remember { ImageCapture.Builder().build() }
     val lifecycleOwner = context as? androidx.lifecycle.LifecycleOwner
@@ -395,7 +459,17 @@ fun ReelCameraScreen(
                 ImageCapture.OutputFileOptions.Builder(file).build(),
                 ContextCompat.getMainExecutor(context),
                 object : ImageCapture.OnImageSavedCallback {
-                    override fun onImageSaved(output: ImageCapture.OutputFileResults) { error = null; onPhotoCaptured(Uri.fromFile(file)) }
+                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                        error = null
+                        // v5.20 (M4): bake the chosen effect into the
+                        // photo, like the web's capturePhoto — the
+                        // effect is no longer silently dropped. The
+                        // photo still routes as the reel cover (see
+                        // Screens2.kt onPhotoCaptured); a photo cannot
+                        // be reel media — the editor + uploadReel are
+                        // video-only (video part + durationSec).
+                        onPhotoCaptured(bakeEffectIntoPhoto(context, file, effectId) ?: Uri.fromFile(file))
+                    }
                     override fun onError(exception: ImageCaptureException) { error = "Photo failed — try again" }
                 }
             )

@@ -321,24 +321,32 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
 
     // Unread badge for the Alerts tab (M1): refresh whenever the tab changes
     // and after returning to it; a failed count simply shows no badge.
-    LaunchedEffect(tab) {
-        scope.launch {
-            try {
-                val res = api2.unreadCount()
-                // C-B17: the backend GET /api/notifications/unread-count
-                // returns ONLY { count } — and count IS the unread total
-                // (notificationService.getUnreadCount counts read=false).
-                // There is no unreadCount field in the response, so the
-                // old `unreadCount.takeIf { >0 } ?: count` fallback was
-                // needless; use count directly, no badge when it is 0.
-                if (res.success && res.data != null) unread = res.data.count
-            } catch (_: Exception) {}
-        }
-        scope.launch {
-            try {
-                val res = api2.conversations()
-                if (res.success && res.data != null) unreadMessages = res.data.sumOf { it.unreadCount }
-            } catch (_: Exception) {}
+    // v5.20 (M21): the badge is now LIVE — the web refetches the unread
+    // count every 30s (Shell.tsx), the app only refreshed on tab change.
+    // The 30s poll below runs only while logged in (AppShell only exists
+    // in the LoggedIn branch) and is cancelled on logout with the
+    // composition. Same silent-failure rule as the tab refresh.
+    suspend fun refreshUnread() {
+        try {
+            val res = api2.unreadCount()
+            // C-B17: the backend GET /api/notifications/unread-count
+            // returns ONLY { count } — and count IS the unread total
+            // (notificationService.getUnreadCount counts read=false).
+            // There is no unreadCount field in the response, so the
+            // old `unreadCount.takeIf { >0 } ?: count` fallback was
+            // needless; use count directly, no badge when it is 0.
+            if (res.success && res.data != null) unread = res.data.count
+        } catch (_: Exception) {}
+        try {
+            val res = api2.conversations()
+            if (res.success && res.data != null) unreadMessages = res.data.sumOf { it.unreadCount }
+        } catch (_: Exception) {}
+    }
+    LaunchedEffect(tab) { refreshUnread() }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            refreshUnread()
         }
     }
 
@@ -575,7 +583,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS }, onOpenDrawerScreen = { drawerScreen = it }, initialSubScreen = drawerSubScreen, onInitialSubScreenConsumed = { drawerSubScreen = null })
+                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS }, onOpenDrawerScreen = { drawerScreen = it }, initialSubScreen = drawerSubScreen, onInitialSubScreenConsumed = { drawerSubScreen = null }, api = api)
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })

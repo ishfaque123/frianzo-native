@@ -17,6 +17,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -54,6 +56,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import coil.compose.AsyncImage
 import com.frianzo.app.data.*
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
+import retrofit2.HttpException
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -96,13 +102,13 @@ private fun trendColor(positive: Boolean): Color = if (isSystemInDarkTheme()) {
 }
 
 @Composable
-fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null, onOpenDrawerScreen: ((String) -> Unit)? = null, initialSubScreen: String? = null, onInitialSubScreenConsumed: (() -> Unit)? = null) {
+fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null, onOpenDrawerScreen: ((String) -> Unit)? = null, initialSubScreen: String? = null, onInitialSubScreenConsumed: (() -> Unit)? = null, api: FrianzoApi? = null) {
     when (label) {
-        "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen, initialSubScreen, onInitialSubScreenConsumed)
+        "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen, initialSubScreen, onInitialSubScreenConsumed, api = api)
         // v5.19 (H5): a verification notification tap lands straight on
         // the Verification page (web /settings-menu/verification), not
         // the Settings list — same screen, opened at its sub-screen.
-        "Verification" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen, initialSubScreen = "verification")
+        "Verification" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen, initialSubScreen = "verification", api = api)
         "Your Activity" -> ActivityScreen(api2, onBack)
         "Professional Dashboard" -> DashboardScreen(api2, onBack)
         "Monetization" -> MonetizationScreen(api2, onBack)
@@ -216,7 +222,7 @@ private fun formatMinutes(mins: Int): String {
 // screen (or a real dialog/action) — nothing here is a placeholder.
 
 @Composable
-fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onOpenDrawerScreen: ((String) -> Unit)? = null, initialSubScreen: String? = null, onInitialSubScreenConsumed: (() -> Unit)? = null) {
+fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onOpenDrawerScreen: ((String) -> Unit)? = null, initialSubScreen: String? = null, onInitialSubScreenConsumed: (() -> Unit)? = null, api: FrianzoApi? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // v2.9: in-settings sub-screens (My Interests, Verification).
@@ -243,7 +249,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
     BackHandler(enabled = deleteBusy) { /* delete in flight — wait for the result */ }
     if (subScreen == "interests") { MyInterestsScreen(api2, onBack = { subScreen = null }); return }
     if (subScreen == "verification") { VerificationScreen(api2, onBack = { subScreen = null }); return }
-    if (subScreen == "privacy") { AccountPrivacyScreen(api2, onBack = { subScreen = null }); return }
+    if (subScreen == "privacy") { AccountPrivacyScreen(api2, onBack = { subScreen = null }, onOpenBlocked = { subScreen = "blocked" }); return }
     if (subScreen == "muted") { MutedStoriesScreen(api2, onBack = { subScreen = null }); return }
     if (subScreen == "blocked") { BlockedAccountsScreen(api2, onBack = { subScreen = null }); return }
     if (subScreen == "devices") { DevicesScreen(api2, onBack = { subScreen = null }); return }
@@ -252,17 +258,17 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
-    var displayName by rememberSaveable { mutableStateOf("") }
-    var bio by rememberSaveable { mutableStateOf("") }
-    var isPrivate by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    // v5.20 (M15): typed DELETE confirmation — the Delete button stays
+    // disabled until this is exactly "DELETE". Cleared whenever the
+    // dialog closes, so a stale confirmation can never be reused.
+    var deleteConfirm by remember { mutableStateOf("") }
     var showLogout by remember { mutableStateOf(false) }
     var showAddAccount by remember { mutableStateOf(false) }
-    var showEdit by remember { mutableStateOf(false) }
-    var editError by remember { mutableStateOf<String?>(null) }
-    var saving by remember { mutableStateOf(false) }
-    // C-B12: true while the Private switch auto-save is in flight.
-    var privateSaving by remember { mutableStateOf(false) }
+    // v5.20 (M14): Add Account runs the Google sign-in IN the dialog
+    // (never signs out). Busy blocks dismiss; errors stay in the dialog.
+    var addAccountBusy by remember { mutableStateOf(false) }
+    var addAccountError by remember { mutableStateOf<String?>(null) }
     // v2.9: saved accounts on this device (GET /api/auth/accounts).
     var savedAccounts by remember { mutableStateOf<List<SavedAccount>>(emptyList()) }
     var switchingId by remember { mutableStateOf<String?>(null) }
@@ -279,9 +285,6 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                 val res = api2.myProfile()
                 if (res.success && res.data?.user != null) {
                     profile = res.data.user
-                    displayName = res.data.user.displayName ?: ""
-                    bio = res.data.user.bio ?: ""
-                    isPrivate = res.data.user.isPrivate
                 } else error = res.error?.message ?: "Could not load profile"
             } catch (e: Exception) { error = e.message }
             loading = false
@@ -294,8 +297,9 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
     // v5.18.4 (A-H3): Settings → Edit Profile opens the FULL
     // EditProfileScreen (Screens2.kt — username + 30-day locks, gender,
     // cascading Country→Province→City, website, phone, avatar/cover),
-    // as a full screen like the other sub-screens — NOT the cut-down
-    // dialog below (kept untouched; nothing sets showEdit any more).
+    // as a full screen like the other sub-screens. v5.20: the old
+    // cut-down dialog is deleted (it was unreachable dead code —
+    // nothing ever set showEdit to true).
     // The profile is the one Settings already loaded via
     // api2.myProfile() in load(); if it never loaded, fall through to
     // the Settings list, which shows the error + Retry.
@@ -315,55 +319,10 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
             // reloading then would discard the user's edits).
             if (error != null && profile == null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (notice != null) { Text(notice!!, fontSize = 13.sp, color = FrianzoBlue); Spacer(Modifier.height(8.dp)) }
-            Text("Profile", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Spacer(Modifier.height(8.dp))
-            Text("@${profile?.username ?: ""}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(value = displayName, onValueChange = { displayName = it }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(value = bio, onValueChange = { if (it.length <= 300) bio = it }, label = { Text("Bio") }, modifier = Modifier.fillMaxWidth())
-            Text("${bio.length}/300", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
-            Spacer(Modifier.height(12.dp))
-            Text("Account Privacy", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Private account", fontSize = 14.sp)
-                    Text("Only people who follow you can see your posts.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                // C-B12: the toggle saves immediately (like the comments
-                // switch) and rolls back on failure — it is no longer
-                // silently lost when leaving without pressing Save.
-                Switch(modifier = Modifier.padding(vertical = 8.dp), checked = isPrivate, enabled = !privateSaving, onCheckedChange = { checked ->
-                    val prev = isPrivate
-                    isPrivate = checked
-                    privateSaving = true
-                    scope.launch {
-                        try {
-                            val r = api2.updateMe(mapOf("isPrivate" to checked))
-                            if (r.success) profile = profile?.copy(isPrivate = checked)
-                            else { isPrivate = prev; error = r.error?.message ?: "Could not update private account setting" }
-                        } catch (e: Exception) { isPrivate = prev; error = e.message }
-                        privateSaving = false
-                    }
-                })
-            }
-            Spacer(Modifier.height(8.dp))
-            // C-B7: Save stays off until the profile actually loaded, so
-            // a failed load can no longer wipe the name/bio with "".
-            Button(enabled = !saving && profile != null, onClick = {
-                saving = true
-                scope.launch {
-                    try {
-                        val res = api2.updateMe(mapOf("displayName" to displayName, "bio" to bio, "isPrivate" to isPrivate))
-                        // C-B7: keep the local profile in step, so the
-                        // Edit Profile dialog (which reads `profile`)
-                        // shows the new name instead of the old one.
-                        if (res.success) { profile = profile?.copy(displayName = displayName, bio = bio, isPrivate = isPrivate); notice = "Profile saved." } else error = res.error?.message ?: "Could not save profile"
-                    } catch (e: Exception) { error = e.message }
-                    saving = false
-                }
-            }, modifier = Modifier.fillMaxWidth()) { Text(if (saving) "Saving..." else "Save", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-            Spacer(Modifier.height(16.dp))
+            // v5.20 (A-S11): no inline Profile form here any more — the
+            // web has no profile form in Settings; profile editing lives
+            // in Account Privacy (private switch) and the full Edit
+            // Profile page (Login & Security → Edit Profile).
             // v5.15: grouped cards (web settings-menu/page.tsx). Card 1 =
             // the account rows + the Login & Security accordion + the
             // saved-account switcher. Card 2 = Logout. Card 3 = the legal
@@ -495,77 +454,132 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
         }
       }
     }
-    // v3.4: Edit Profile from Settings (same dialog as the profile screen).
-    if (showEdit && profile != null) {
-        val cur = profile!!
-        var edName by remember { mutableStateOf(cur.displayName ?: "") }
-        var edBio by remember { mutableStateOf(cur.bio ?: "") }
-        var edCity by remember { mutableStateOf(cur.city ?: "") }
-        var edProvince by remember { mutableStateOf(cur.province ?: "") }
-        var edCountry by remember { mutableStateOf(cur.country ?: "") }
-        var edWeb by remember { mutableStateOf(cur.website ?: "") }
-        // C-B15: double-submit guard for Save Changes.
-        var edSaving by remember { mutableStateOf(false) }
+    // v5.20: the cut-down Edit Profile dialog is deleted (dead code — see above).
+    // v5.20 (M14): Add Account — the web adds a Google account in a
+    // popup WITHOUT signing out, and the app now does the same: the
+    // dialog runs the extracted Credential Manager Google flow
+    // (googleSignInWithCredentialManager, Screens.kt) right here.
+    // googleNative DOES switch the session cookie to the new account,
+    // so on success this immediately POSTs /api/auth/switch back to
+    // the ORIGINAL account id (the same deviceToken means the backend
+    // saved the new account as an AccountSession on this device
+    // session). The user is never signed out and never leaves
+    // Settings. A brand-new Google account is auto-created by the
+    // backend, but the immediate switch-back means the profile-setup
+    // gate is never reached. onSwitched is NOT called on success:
+    // the session is back on the original account, so there is
+    // nothing for MainActivity to refresh — only the saved-accounts
+    // list is reloaded so the new account appears.
+    if (showAddAccount) {
         AlertDialog(
-            onDismissRequest = { showEdit = false },
-            title = { Text("Edit profile") },
+            onDismissRequest = { if (!addAccountBusy) { showAddAccount = false; addAccountError = null } },
+            title = { Text("Add account") },
             text = {
                 Column {
-                    OutlinedTextField(value = edName, onValueChange = { edName = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = edBio, onValueChange = { if (it.length <= 300) edBio = it }, label = { Text("Bio") }, modifier = Modifier.fillMaxWidth())
-                    Text("${edBio.length}/300", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.End)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = edCity, onValueChange = { edCity = it }, label = { Text("City") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = edProvince, onValueChange = { edProvince = it }, label = { Text("Province") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = edCountry, onValueChange = { edCountry = it }, label = { Text("Country") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, label = { Text("Website") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    editError?.let { Spacer(Modifier.height(8.dp)); Text(it, fontSize = 13.sp, color = Color.Red) }
+                    Text("Choose a Google account to add to this device. You stay signed in to this account — the new account appears in the list below and you can switch to it any time.")
+                    if (addAccountError != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(addAccountError!!, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (addAccountBusy) {
+                        Spacer(Modifier.height(16.dp))
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
+                    }
                 }
             },
             confirmButton = {
-                Button(enabled = !edSaving, onClick = {
-                    if (edSaving) return@Button
-                    edSaving = true
-                    scope.launch {
+                TextButton(enabled = !addAccountBusy && api != null, onClick = {
+                    val frianzoApi = api ?: return@TextButton
+                    addAccountBusy = true
+                    addAccountError = null
+                    // C-B16: the add + switch-back runs on the app scope,
+                    // so leaving Settings mid-flow cannot cancel it with
+                    // the session left on the new account.
+                    accountOpsScope.launch {
                         try {
-                            val body = mapOf<String, Any>("displayName" to edName, "bio" to edBio, "city" to edCity, "province" to edProvince, "country" to edCountry, "website" to edWeb)
-                            val r = api2.updateMe(body)
-                            if (r.success) { profile = cur.copy(displayName = edName, bio = edBio, city = edCity, province = edProvince, country = edCountry, website = edWeb); displayName = edName; bio = edBio; showEdit = false; editError = null; notice = "Profile saved." }
-                            else editError = r.error?.message ?: "Could not save profile"
-                        } catch (e: Exception) { editError = e.message }
-                        edSaving = false
+                            // 1. The ORIGINAL account id, BEFORE the Google
+                            // flow switches the session. profile?.id is the
+                            // current row's id; if Settings never loaded a
+                            // profile, read it fresh first.
+                            val originalId = profile?.id ?: run {
+                                val me = api2.myProfile()
+                                me.data?.user?.id
+                            } ?: throw Exception("Could not find your current account. Please try again.")
+                            // 2. Same Google sign-in as the login screen —
+                            // no sign-out. Throws (mapped below) on
+                            // cancel / failure, before any session change.
+                            val login = googleSignInWithCredentialManager(frianzoApi, context)
+                            val newName = login.data?.user?.displayName
+                                ?: login.data?.user?.username
+                                ?: "the new account"
+                            // 3. googleNative switched the session to the
+                            // new account — switch straight back.
+                            try {
+                                val back = api2.switchAccount(mapOf("accountId" to originalId))
+                                if (!back.success) throw Exception(back.error?.message ?: "Could not switch back")
+                                try {
+                                    val r = api2.savedAccounts()
+                                    if (r.success && r.data?.accounts != null) savedAccounts = r.data.accounts
+                                } catch (_: Exception) {}
+                                showAddAccount = false
+                                addAccountError = null
+                                Toast.makeText(context, "Account added", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                // Switch-back failed AFTER googleNative
+                                // succeeded: the session is NOW the new
+                                // account. Say so honestly instead of
+                                // pretending nothing happened, and reload
+                                // the list + profile so the user can switch
+                                // back manually from the accounts list.
+                                try {
+                                    val r = api2.savedAccounts()
+                                    if (r.success && r.data?.accounts != null) savedAccounts = r.data.accounts
+                                } catch (_: Exception) {}
+                                try {
+                                    val me = api2.myProfile()
+                                    if (me.success && me.data?.user != null) profile = me.data.user
+                                } catch (_: Exception) {}
+                                addAccountError = "Signed in as $newName. Could not switch back — use Switch in the accounts list."
+                            }
+                        } catch (e: GetCredentialCancellationException) {
+                            // User backed out of the picker: still on the
+                            // original account, dialog stays open.
+                            addAccountError = "Google sign-in cancelled. Tap Add account to try again."
+                        } catch (e: NoCredentialException) {
+                            addAccountError = "No Google account is available for sign-in on this phone."
+                        } catch (e: GetCredentialException) {
+                            addAccountError = "Google sign-in failed after you chose your account. Please try again."
+                        } catch (e: HttpException) {
+                            addAccountError = "Google sign-in failed (HTTP ${e.code()}). Please try again."
+                        } catch (e: Exception) {
+                            addAccountError = e.message ?: "Google sign-in failed. Please try again."
+                        } finally { addAccountBusy = false }
                     }
-                }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text(if (edSaving) "Saving..." else "Save Changes", maxLines = 1, softWrap = false) }
+                }) { Text("Add account") }
             },
-            dismissButton = { TextButton(onClick = { showEdit = false }) { Text("Cancel") } },
-        )
-    }
-    // v3.4: Add Account — there is no second-account login inside the app,
-    // so this takes the user to the real login screen (current session is
-    // signed out first; saved accounts stay on this device).
-    if (showAddAccount) {
-        AlertDialog(
-            onDismissRequest = { showAddAccount = false },
-            title = { Text("Add account") },
-            text = { Text("You'll be signed out of this account and taken to the login screen, where you can sign in with another account. Your saved accounts stay on this device.") },
-            confirmButton = { TextButton(onClick = { showAddAccount = false; onLogout() }) { Text("Continue to login") } },
-            dismissButton = { TextButton(onClick = { showAddAccount = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(enabled = !addAccountBusy, onClick = { showAddAccount = false; addAccountError = null }) { Text("Cancel") } },
         )
     }
     if (showDelete) {
         AlertDialog(
-            onDismissRequest = { showDelete = false },
+            onDismissRequest = { showDelete = false; deleteConfirm = "" },
             title = { Text("Delete Account", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
-            text = { Text("This permanently removes your profile, posts, and messages. This cannot be undone.") },
+            // v5.20 (M15): web requires typing DELETE to enable the
+            // button (delete-account/page.tsx); wording fixed to the
+            // web's "profile, posts, comments, and followers".
+            text = {
+                Column {
+                    Text("This permanently removes your profile, posts, comments, and followers. This cannot be undone.")
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(value = deleteConfirm, onValueChange = { deleteConfirm = it }, label = { Text("Type DELETE to confirm") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                }
+            },
             // v2.9 FIX: only log out when the delete actually succeeded.
             // On failure show the error and STAY logged in.
             confirmButton = {
-                TextButton(enabled = !deleteBusy, onClick = {
+                TextButton(enabled = !deleteBusy && deleteConfirm == "DELETE", onClick = {
                     showDelete = false
+                    deleteConfirm = ""
                     deleteBusy = true
                     // C-B16: the delete runs on the app scope, so
                     // navigating away cannot cancel it mid-request.
@@ -580,7 +594,7 @@ fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, 
                     }
                 }) { Text("Delete", color = Color.Red, maxLines = 1, softWrap = false) }
             },
-            dismissButton = { TextButton(onClick = { showDelete = false }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { showDelete = false; deleteConfirm = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Cancel") } },
         )
     }
     // v5.15: Logout confirm — centred modal, RED FILLED "Log out" button
@@ -621,7 +635,7 @@ private fun PermissionChoice(title: String, value: String, onValue: (String) -> 
 }
 
 @Composable
-fun AccountPrivacyScreen(api2: FrianzoApi2, onBack: () -> Unit) {
+fun AccountPrivacyScreen(api2: FrianzoApi2, onBack: () -> Unit, onOpenBlocked: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -758,6 +772,15 @@ fun AccountPrivacyScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     saving = false
                 }
             }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (saving) "Saving..." else "Save", maxLines = 1, softWrap = false) }
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+            // v5.20 (M18): the web privacy page links to Blocked Accounts
+            // at the bottom — same destination the Settings list uses
+            // (subScreen "blocked"), so Back returns to Settings.
+            Row(Modifier.fillMaxWidth().clickable(onClick = onOpenBlocked).padding(vertical = 12.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Blocked Accounts", fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+            }
         }
       }
     }
@@ -818,12 +841,29 @@ fun MutedStoriesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
 
 // ---------- Blocked Accounts (v3.4, moved out of the flat Settings page) ----------
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BlockedAccountsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var blocked by remember { mutableStateOf<List<BlockedEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    // v5.20 (M16): Unblock is behind a confirm dialog.
+    var unblockTarget by remember { mutableStateOf<BlockedUser?>(null) }
+    var unblockBusy by remember { mutableStateOf(false) }
+    // ===== v5.20 (M16) HIDE-BLOCKED — BEGIN (part 1 of 6: state) =====
+    // Select mode + hide/delete state. To drop the hide feature, delete
+    // all 6 parts tagged HIDE-BLOCKED in this function (state, hide call,
+    // select-mode top bar, row tap/long-press lines, long-press menu,
+    // bottom Delete bar + hide confirm) AND the two lines below tagged
+    // HIDE-BLOCKED (the select-mode BackHandler and the isSelected line).
+    // The list and the Unblock confirm keep working without them.
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectMode by remember { mutableStateOf(false) }
+    var menuEntryId by remember { mutableStateOf<String?>(null) }
+    var hideTargetIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var hideBusy by remember { mutableStateOf(false) }
+    // ===== v5.20 (M16) HIDE-BLOCKED — END (part 1 of 6) =====
     fun load() {
         loading = true; error = null
         scope.launch {
@@ -835,6 +875,35 @@ fun BlockedAccountsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
         }
     }
     LaunchedEffect(Unit) { load() }
+    // ===== v5.20 (M16) HIDE-BLOCKED — BEGIN (part 2 of 6: hide call) =====
+    // Hides entries from this list WITHOUT unblocking — the user stays
+    // blocked. Calls api2.hideBlockedEntries, which is being added to
+    // Api2.kt by a separate agent with the exact signature:
+    //   suspend fun hideBlockedEntries(userIds: List<String>): Boolean
+    // If that function does not exist at merge, delete parts 1–6.
+    fun hideEntries(ids: List<String>) {
+        if (ids.isEmpty() || hideBusy) return
+        hideBusy = true
+        scope.launch {
+            try {
+                val ok = api2.hideBlockedEntries(ids)
+                if (ok) {
+                    blocked = blocked.filter { it.user?.id !in ids }
+                    selected = selected - ids.toSet()
+                    if (selected.isEmpty()) selectMode = false
+                    hideTargetIds = emptyList()
+                } else error = "Could not hide blocked accounts"
+            } catch (e: Exception) { error = e.message }
+            hideBusy = false
+        }
+    }
+    // ===== v5.20 (M16) HIDE-BLOCKED — END (part 2 of 6) =====
+    // v5.20 (M16) HIDE-BLOCKED: Back exits select mode first instead
+    // of leaving the screen — delete with parts 1–6.
+    BackHandler(enabled = selectMode) {
+        selectMode = false
+        selected = emptySet()
+    }
     DrawerScaffold("Blocked Accounts", onBack) {
         if (loading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { DotsLoading() }
@@ -843,23 +912,110 @@ fun BlockedAccountsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             if (error != null) { TextButton(onClick = { load() }) { Text("Retry") } }
             if (blocked.isEmpty() && error == null) Text("Nobody blocked.")
         }
+        // ===== v5.20 (M16) HIDE-BLOCKED — BEGIN (part 3 of 6: select-mode top bar) =====
+        if (selectMode) {
+            val allIds = blocked.mapNotNull { it.user?.id }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("${selected.size} selected", fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { selected = if (allIds.isNotEmpty() && selected.size == allIds.size) emptySet() else allIds.toSet() }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text(if (allIds.isNotEmpty() && selected.size == allIds.size) "Unselect all" else "Select all", maxLines = 1, softWrap = false) }
+                TextButton(onClick = { selectMode = false; selected = emptySet() }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Cancel", maxLines = 1, softWrap = false) }
+            }
+        }
+        // ===== v5.20 (M16) HIDE-BLOCKED — END (part 3 of 6) =====
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
             // C-B22: stable unique keys even when the user id is null
             // (the old `it.user?.id ?: ""` key collided on "").
             itemsIndexed(blocked, key = { index, entry -> entry.user?.id ?: "blocked-${entry.user?.username ?: "?"}-$index" }) { _, entry ->
                 val u = entry.user
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                val id = u?.id
+                // v5.20 (M16) HIDE-BLOCKED: delete with parts 1–6.
+                val isSelected = id != null && id in selected
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                        .combinedClickable(
+                            onClick = {
+                                // v5.20 (M16) HIDE-BLOCKED (part 4 of 6): tap toggles selection in select mode.
+                                if (selectMode && id != null) selected = if (isSelected) selected - id else selected + id
+                            },
+                            onLongClick = {
+                                // v5.20 (M16) HIDE-BLOCKED (part 4 of 6): long-press (500ms, the system
+                                // default for combinedClickable) opens the Select / Delete menu.
+                                if (id != null) menuEntryId = id
+                            },
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // v5.20 (M16) HIDE-BLOCKED (part 4 of 6): checkbox in select mode.
+                    if (selectMode) {
+                        Checkbox(checked = isSelected, onCheckedChange = { checked -> if (id != null) selected = if (checked) selected + id else selected - id }, enabled = id != null)
+                        Spacer(Modifier.width(8.dp))
+                    }
                     FrianzoAvatar(u?.profilePictureUrl, 44.dp)
                     Spacer(Modifier.width(12.dp))
                     Text(u?.displayName ?: u?.username ?: "User", fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     // C-B13: a failed Unblock now shows the error instead
                     // of silently doing nothing. C-B22: a row with no id
                     // has no action — say so instead of showing a dead row.
-                    if (u?.id != null) TextButton(onClick = { scope.launch { try { val r = api2.unblockUser(u.id); if (r.success) blocked = blocked.filter { it.user?.id != u.id } else error = r.error?.message ?: "Could not unblock" } catch (e: Exception) { error = e.message } } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Unblock", maxLines = 1, softWrap = false) }
+                    // v5.20 (M16): Unblock now asks first (confirm dialog below).
+                    if (u?.id != null) TextButton(onClick = { unblockTarget = u }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Unblock", maxLines = 1, softWrap = false) }
                     else Text("Unavailable", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
+                // ===== v5.20 (M16) HIDE-BLOCKED — BEGIN (part 5 of 6: long-press menu) =====
+                DropdownMenu(expanded = menuEntryId != null && menuEntryId == id, onDismissRequest = { menuEntryId = null }) {
+                    DropdownMenuItem(text = { Text("Select") }, onClick = {
+                        menuEntryId = null
+                        if (id != null) { selectMode = true; selected = selected + id }
+                    })
+                    DropdownMenuItem(text = { Text("Delete") }, onClick = {
+                        menuEntryId = null
+                        if (id != null) hideTargetIds = listOf(id)
+                    })
+                }
+                // ===== v5.20 (M16) HIDE-BLOCKED — END (part 5 of 6) =====
             }
         }
+        // ===== v5.20 (M16) HIDE-BLOCKED — BEGIN (part 6 of 6: bottom Delete bar + hide confirm) =====
+        if (selectMode) {
+            Button(enabled = selected.isNotEmpty() && !hideBusy, onClick = { hideTargetIds = selected.toList() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = Color.White), modifier = Modifier.fillMaxWidth()) { Text("Delete (${selected.size})", maxLines = 1, softWrap = false) }
+        }
+        if (hideTargetIds.isNotEmpty()) {
+            AlertDialog(
+                onDismissRequest = { if (!hideBusy) hideTargetIds = emptyList() },
+                title = { Text("Hide from this list?", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+                text = { Text("These ${hideTargetIds.size} account(s) will be hidden from your blocked list. They stay blocked.") },
+                confirmButton = {
+                    TextButton(enabled = !hideBusy, onClick = { hideEntries(hideTargetIds) }) { Text("Hide", color = Color.Red, maxLines = 1, softWrap = false) }
+                },
+                dismissButton = { TextButton(onClick = { if (!hideBusy) hideTargetIds = emptyList() }) { Text("Cancel") } },
+            )
+        }
+        // ===== v5.20 (M16) HIDE-BLOCKED — END (part 6 of 6) =====
+    }
+    // v5.20 (M16): Unblock confirm — same wording as the web
+    // ("Unblock this account?").
+    if (unblockTarget != null) {
+        val u = unblockTarget!!
+        AlertDialog(
+            onDismissRequest = { if (!unblockBusy) unblockTarget = null },
+            title = { Text("Unblock this account?", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+            text = { Text("Unblock ${u.displayName ?: u.username ?: "this account"}? They will be able to see your profile and message you again.") },
+            confirmButton = {
+                TextButton(enabled = !unblockBusy, onClick = {
+                    unblockBusy = true
+                    val id = u.id!!
+                    scope.launch {
+                        try {
+                            val r = api2.unblockUser(id)
+                            if (r.success) { blocked = blocked.filter { it.user?.id != id }; selected = selected - id; unblockTarget = null }
+                            else error = r.error?.message ?: "Could not unblock"
+                        } catch (e: Exception) { error = e.message }
+                        unblockBusy = false
+                    }
+                }) { Text("Unblock", maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { if (!unblockBusy) unblockTarget = null }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -871,6 +1027,12 @@ fun DevicesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
     var devices by remember { mutableStateOf<List<DeviceItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    // v5.20 (M17): revoke is behind a confirm (web: "Log out this
+    // device?" / "Log out of all other devices?") — one mis-tap no
+    // longer logs a device out.
+    var confirmRevoke by remember { mutableStateOf<DeviceItem?>(null) }
+    var confirmRevokeAll by remember { mutableStateOf(false) }
+    var revokeBusy by remember { mutableStateOf(false) }
     fun load() {
         loading = true; error = null
         scope.launch {
@@ -900,14 +1062,59 @@ fun DevicesScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                     }
                     // C-B13: a failed Revoke now shows the error instead
                     // of silently doing nothing.
-                    if (!d.isCurrent && d.id != null) TextButton(onClick = { scope.launch { try { val r = api2.revokeDevice(d.id); if (r.success) devices = devices.filter { it.id != d.id } else error = r.error?.message ?: "Could not revoke device" } catch (e: Exception) { error = e.message } } }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Revoke", maxLines = 1, softWrap = false) }
+                    if (!d.isCurrent && d.id != null) TextButton(onClick = { confirmRevoke = d }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Text("Revoke", maxLines = 1, softWrap = false) }
                 }
             }
             if (devices.size > 1) {
-                TextButton(onClick = { scope.launch { try { val r = api2.revokeOtherDevices(); if (r.success) devices = devices.filter { it.isCurrent } else error = r.error?.message ?: "Could not revoke devices" } catch (e: Exception) { error = e.message } } }, modifier = Modifier.fillMaxWidth()) { Text("Revoke all other devices", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                TextButton(onClick = { confirmRevokeAll = true }, modifier = Modifier.fillMaxWidth()) { Text("Revoke all other devices", modifier = Modifier.fillMaxWidth(), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
             }
             }
         }
+    }
+    // v5.20 (M17): confirm before any revoke (single + revoke-all).
+    if (confirmRevoke != null) {
+        val d = confirmRevoke!!
+        AlertDialog(
+            onDismissRequest = { if (!revokeBusy) confirmRevoke = null },
+            title = { Text("Log out this device?", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+            text = { Text("${d.label ?: "This device"} will be signed out of Frianzo.") },
+            confirmButton = {
+                TextButton(enabled = !revokeBusy, onClick = {
+                    revokeBusy = true
+                    val id = d.id!!
+                    scope.launch {
+                        try {
+                            val r = api2.revokeDevice(id)
+                            if (r.success) { devices = devices.filter { it.id != id }; confirmRevoke = null }
+                            else error = r.error?.message ?: "Could not revoke device"
+                        } catch (e: Exception) { error = e.message }
+                        revokeBusy = false
+                    }
+                }) { Text("Log out", color = Color.Red, maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { if (!revokeBusy) confirmRevoke = null }) { Text("Cancel") } },
+        )
+    }
+    if (confirmRevokeAll) {
+        AlertDialog(
+            onDismissRequest = { if (!revokeBusy) confirmRevokeAll = false },
+            title = { Text("Log out of all other devices?", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+            text = { Text("All other devices will be signed out of Frianzo. This device stays signed in.") },
+            confirmButton = {
+                TextButton(enabled = !revokeBusy, onClick = {
+                    revokeBusy = true
+                    scope.launch {
+                        try {
+                            val r = api2.revokeOtherDevices()
+                            if (r.success) { devices = devices.filter { it.isCurrent }; confirmRevokeAll = false }
+                            else error = r.error?.message ?: "Could not revoke devices"
+                        } catch (e: Exception) { error = e.message }
+                        revokeBusy = false
+                    }
+                }) { Text("Log out", color = Color.Red, maxLines = 1, softWrap = false) }
+            },
+            dismissButton = { TextButton(onClick = { if (!revokeBusy) confirmRevokeAll = false }) { Text("Cancel") } },
+        )
     }
 }
 

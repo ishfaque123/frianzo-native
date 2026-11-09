@@ -733,6 +733,14 @@ interface FrianzoApi2 {
     suspend fun blockUser(@Path("userId") userId: String): Envelope<Any>
     @DELETE("api/blocks/{userId}")
     suspend fun unblockUser(@Path("userId") userId: String): Envelope<Any>
+    // v5.20 (M16): hide blocked-list entries WITHOUT unblocking.
+    // Web: POST /api/blocks/hide { ids } (vynzo-frontend
+    // src/lib/api/userApi.ts hideBlockedEntries); backend: vynzo-backend
+    // src/routes/blockRoutes.ts POST /hide -> hideBlockedEntriesHandler
+    // (reads req.body.ids, an array of strings). Body reuses
+    // DeleteIdsRequest ({ ids }), the same shape deleteNotifications uses.
+    @POST("api/blocks/hide")
+    suspend fun hideBlockedEntriesRaw(@Body body: DeleteIdsRequest): Envelope<Any>
     @GET("api/blocks/{userId}/status")
     suspend fun blockStatus(@Path("userId") userId: String): Envelope<BlockStatusData>
     @Multipart
@@ -817,6 +825,22 @@ interface FrianzoApi2 {
     suspend fun updateMe(@Body body: Map<String, Any>): Envelope<Any>
     @DELETE("api/users/me")
     suspend fun deleteMe(): Envelope<Any>
+}
+
+// v5.20 (M16): Boolean wrapper over hideBlockedEntriesRaw — the call site
+// (BlockedAccountsScreen) calls api2.hideBlockedEntries(ids) and gets true
+// only when the backend answers success; any failure (network, HTTP
+// error) returns false and never throws. A Retrofit interface method
+// cannot return Boolean directly: the backend answers with the standard
+// { success, data } envelope, so the raw call stays Envelope<Any> and
+// this maps it. Same package (com.frianzo.app.data), so callers with the
+// usual `import com.frianzo.app.data.*` need no extra import.
+suspend fun FrianzoApi2.hideBlockedEntries(userIds: List<String>): Boolean {
+    return try {
+        hideBlockedEntriesRaw(DeleteIdsRequest(userIds)).success
+    } catch (_: Exception) {
+        false
+    }
 }
 
 fun createApi2(context: android.content.Context, cookieJar: PersistentCookieJar): FrianzoApi2 {

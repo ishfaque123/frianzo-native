@@ -116,6 +116,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.MediaType
@@ -1643,7 +1646,8 @@ private fun ChatWallpaperSheet(selected: String, onPick: (String) -> Unit, onDis
 // the reel link via socket message:send (was: empty author-only chat).
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose: () -> Unit, onShared: () -> Unit, onOpenChat: (String, String) -> Unit) {
+// v5.20 (M6): public so the feed card (Screens.kt) can open the same sheet.
+fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose: () -> Unit, onShared: () -> Unit, onOpenChat: (String, String) -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -5226,6 +5230,46 @@ private fun groupNotificationTitle(g: NotificationGroup): String {
     }
 }
 
+// v5.20 (M22): notifications offline cache — the same pattern as
+// FeedCache (data/FeedCache.kt: SharedPreferences + Gson, last good
+// list only, 50 rows max). On a fetch failure the cached rows are
+// shown with an offline note instead of bare error text.
+private object NotificationCache {
+    private const val PREFS = "frianzo_notifications"
+    private const val KEY_JSON = "cached_notifications_json"
+    private const val MAX_ITEMS = 50
+
+    private data class CachedNotifications(
+        val items: List<NotificationItem> = emptyList(),
+        val savedAt: Long = 0L,
+    )
+
+    fun load(context: android.content.Context): List<NotificationItem>? {
+        return try {
+            val json = context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                .getString(KEY_JSON, null) ?: return null
+            val type = object : com.google.gson.reflect.TypeToken<CachedNotifications>() {}.type
+            val cached = com.google.gson.Gson().fromJson<CachedNotifications>(json, type)
+            if (cached == null || cached.items.isEmpty()) null else cached.items
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun save(context: android.content.Context, items: List<NotificationItem>) {
+        try {
+            val cached = CachedNotifications(
+                items = items.take(MAX_ITEMS),
+                savedAt = System.currentTimeMillis(),
+            )
+            context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).edit()
+                .putString(KEY_JSON, com.google.gson.Gson().toJson(cached))
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+}
+
 fun notifTimeAgo(createdAt: String?): String {
     if (createdAt.isNullOrBlank()) return ""
     return try {
@@ -5348,6 +5392,7 @@ private fun VoiceMessagePlayer(url: String, durationSec: Int?, mine: Boolean) {
 // / Verification settings, removed/restricted/banned rows open Community
 // Guidelines in the browser (same openWebUrl mechanism as the login
 // Terms/Privacy links), new_device_login navigates nowhere.
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOpenPost: (String) -> Unit = {}, onOpenReel: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenOwnProfile: () -> Unit = {}, onOpenVerification: () -> Unit = {}) {
     val context = LocalContext.current
     var items by remember { mutableStateOf<List<NotificationItem>>(emptyList()) }
@@ -5362,30 +5407,83 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
     // dialog closed and nothing changed, silently).
     var loading by remember { mutableStateOf(true) }
     var actionError by remember { mutableStateOf<String?>(null) }
+    // v5.20 (M22): true while the list on screen came from the cache
+    // because the network failed (web sets offlineMode the same way).
+    var offlineMode by remember { mutableStateOf(false) }
+    // v5.20 (M20): Undo snackbar for swipe-deletes.
+    val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     fun load() {
         loading = true
         scope.launch {
             try {
                 val res = api2.notifications()
-                if (res.success && res.data != null) items = res.data.notifications else error = res.error?.message
-            } catch (e: Exception) { error = e.message }
+                if (res.success && res.data != null) {
+                    items = res.data.notifications
+                    error = null
+                    offlineMode = false
+                    NotificationCache.save(context, items)
+                } else {
+                    // v5.20 (M22): show the cached rows + an offline
+                    // note instead of bare error text.
+                    val cached = NotificationCache.load(context)
+                    if (cached != null) { items = cached; error = null; offlineMode = true }
+                    else error = res.error?.message
+                }
+            } catch (e: Exception) {
+                val cached = NotificationCache.load(context)
+                if (cached != null) { items = cached; error = null; offlineMode = true }
+                else error = e.message
+            }
             finally { loading = false }
         }
     }
-    LaunchedEffect(Unit) { load() }
+    // v5.20 (M20): swipe-deletes a group with a 4-second Undo window,
+    // like the web — the row is removed at once, but the DELETE call is
+    // deferred until the snackbar closes without Undo. A failed call (or
+    // Undo) puts the rows back, newest-first like the live list.
+    fun deleteGroupWithUndo(group: NotificationGroup) {
+        val ids = group.items.map { it.id }
+        items = items.filter { it.id !in ids }
+        selected = selected - ids.toSet()
+        scope.launch {
+            val result = snackbarHostState.showSnackbar(
+                message = "Notification deleted",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Short, // 4s, like the web
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                items = (items + group.items).sortedByDescending { parseNotifMillis(it.createdAt) ?: 0L }
+            } else {
+                try {
+                    val r = api2.deleteNotifications(DeleteIdsRequest(ids))
+                    if (!r.success) {
+                        items = (items + group.items).sortedByDescending { parseNotifMillis(it.createdAt) ?: 0L }
+                        actionError = r.error?.message ?: "Couldn't delete notifications"
+                    }
+                } catch (e: Exception) {
+                    items = (items + group.items).sortedByDescending { parseNotifMillis(it.createdAt) ?: 0L }
+                    actionError = e.message ?: "Couldn't delete notifications"
+                }
+            }
+        }
+    }
+    // v5.20 (M22): cache-first, like the feed — cached rows show
+    // instantly, then the network refreshes them.
+    LaunchedEffect(Unit) { NotificationCache.load(context)?.let { items = it }; load() }
     // v5.19 (H2): group first (web groupNotifications), then filter the
     // GROUPS by type (web matchesFilter) — a merged group shows under
     // its own type's chip. Likes/Comments/Follows use the web's exact
-    // predicates; Unread shows groups with any unread row; Messages is
-    // kept as-is (dead type today, same as before — see MAP §(d)6).
+    // predicates; Unread shows groups with any unread row.
+    // v5.20 (M19): the "Messages" chip is gone — the backend never
+    // creates `message` rows (chat is push-only), so the chip was always
+    // empty, and the web has no Messages filter either.
     val groups = groupNotifications(items)
     val filtered = when (filter) {
         "Unread" -> groups.filter { it.hasUnread }
         "Likes" -> groups.filter { (it.type ?: "").endsWith("_like") }
         "Comments" -> groups.filter { val t = it.type ?: ""; t.contains("comment") || t.contains("reply") || t.contains("mention") }
         "Follows" -> groups.filter { it.type == "follow" }
-        "Messages" -> groups.filter { it.type == "message" }
         else -> groups
     }
     // v5.19 (H2): a grouped row's tap marks ALL its rows read — one
@@ -5419,23 +5517,14 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
             else -> when {
                 n.postId != null -> onOpenPost(n.postId)
                 n.reelId != null -> onOpenReel(n.reelId)
-                n.type == "message" && n.actor?.id != null -> {
-                    // No conversation id on the notification:
-                    // open (or create) the DM with the actor.
-                    scope.launch {
-                        try {
-                            val r = api2.createConversation(CreateConversationRequest(n.actor!!.id!!))
-                            val cid = r.data?.id
-                            if (cid != null) onOpenChat(cid, n.actor?.displayName ?: n.actor?.username ?: "Chat")
-                            else n.actor?.username?.let { onAuthor(it) }
-                        } catch (_: Exception) { n.actor?.username?.let { onAuthor(it) } }
-                    }
-                }
                 else -> n.actor?.username?.let { onAuthor(it) }
             }
         }
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // v5.20 (M20): Box so the Undo SnackbarHost overlays the list
+    // (an overlay goes AFTER the list, never before it).
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(Modifier.fillMaxSize()) {
         // v3.0: title on its own row — the three action buttons used to share
         // one Row with it, leaving the title ~60dp wide so it wrapped letter
         // by letter. Actions now sit on a second row, single-line, no wrap.
@@ -5470,13 +5559,16 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
         // Filter chips below the header (placement: header first, filters
         // second, list last — the live-web order).
         LazyRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(listOf("All", "Unread", "Likes", "Comments", "Follows", "Messages")) { f ->
+            items(listOf("All", "Unread", "Likes", "Comments", "Follows")) { f ->
                 val sel = filter == f
                 Box(Modifier.clip(RoundedCornerShape(28.dp)).background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant).clickable { filter = f }.padding(horizontal = 14.dp, vertical = 8.dp)) {
                     Text(f, style = MaterialTheme.typography.bodyMedium, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
+        // v5.20 (M22): offline note when the list on screen came from
+        // the cache because the network failed.
+        if (offlineMode) Text("Offline — showing saved notifications", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         actionError?.let { Text(it, color = FrianzoBadgeRed, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         LazyColumn(Modifier.weight(1f)) {
             if (loading) item {
@@ -5496,22 +5588,52 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                 // the supporting line no longer repeats it.
                 val n = g.latest
                 val groupIds = g.items.map { it.id }
+                // v5.20 (M20): swipe left deletes the group with a 4s
+                // Undo snackbar (the Material3 default swipe threshold
+                // is used — the exact 80px form of positionalThreshold
+                // differs between material3 releases and cannot be
+                // compile-checked here); long-press (web: 500ms)
+                // enters select mode with this row pre-selected. Swipe
+                // is off while selecting, so a select tap never deletes.
+                val dismissState = rememberSwipeToDismissBoxState()
+                LaunchedEffect(dismissState.currentValue) {
+                    if (dismissState.currentValue == SwipeToDismissBoxValue.EndToStart) deleteGroupWithUndo(g)
+                }
+                SwipeToDismissBox(
+                    state = dismissState,
+                    enableDismissFromStartToEnd = false,
+                    gesturesEnabled = !selecting,
+                    backgroundContent = {
+                        Box(Modifier.fillMaxSize().background(FrianzoBadgeRed).padding(horizontal = 20.dp), contentAlignment = Alignment.CenterEnd) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color.White)
+                        }
+                    },
+                ) {
                 ListItem(
                     headlineContent = { Text(groupNotificationTitle(g), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text(notifTimeAgo(n.createdAt), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     trailingContent = { if (g.hasUnread) Badge(containerColor = FrianzoBadgeRed) { Text("new", maxLines = 1, softWrap = false) } },
                     leadingContent = { if (selecting) Checkbox(checked = groupIds.all { it in selected }, onCheckedChange = { checked -> selected = if (checked) selected + groupIds else selected - groupIds.toSet() }) else FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
                     colors = ListItemDefaults.colors(containerColor = if (g.hasUnread) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.clickable {
-                        if (selecting) { selected = if (groupIds.all { it in selected }) selected - groupIds.toSet() else selected + groupIds }
-                        else { markGroupRead(g); navigateFor(n) }
-                    },
+                    modifier = Modifier.combinedClickable(
+                        onClick = {
+                            if (selecting) { selected = if (groupIds.all { it in selected }) selected - groupIds.toSet() else selected + groupIds }
+                            else { markGroupRead(g); navigateFor(n) }
+                        },
+                        onLongClick = {
+                            if (!selecting) { selecting = true; selected = groupIds.toSet() }
+                            else { selected = if (groupIds.all { it in selected }) selected - groupIds.toSet() else selected + groupIds }
+                        },
+                    ),
                 )
+                }
                 HorizontalDivider()
             }
             if (error != null) item { Text(error!!, Modifier.padding(16.dp)) }
             if (!loading && filtered.isEmpty() && error == null) item { Text(if (items.isEmpty()) "You're all caught up. New activity will show up here." else "Nothing in $filter", Modifier.padding(16.dp)) }
         }
+    }
+        SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
     }
 }
 
@@ -5926,6 +6048,10 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var moreOpen by remember { mutableStateOf(false) }
     var showBlockConfirm by remember { mutableStateOf(false) }
     var showUnfollowConfirm by remember { mutableStateOf(false) }
+    // v5.20 (M9): header Follow busy guard (the card-level Follow button
+    // in ProfilePostCard already has one; the header button did not, so
+    // a double-tap could fire concurrent toggleFollow calls).
+    var followBusy by remember { mutableStateOf(false) }
     // v5.17: profile-load retry (web has a "Try again" button).
     var retryKey by remember { mutableStateOf(0) }
     // v3.3: strikes banner on own profile (GET /api/users/me/strikes,
@@ -5934,6 +6060,10 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // v5.20 (M9): Follow / Message / Block failures were silent (empty
+    // catch blocks) — they now toast, like the web's handleFollow /
+    // handleMessage / handleBlockToggle.
+    fun toast(msg: String) { Toast.makeText(context, msg, Toast.LENGTH_SHORT).show() }
     // B-B4: private profile viewed by a non-follower — posts/photos/all
     // are already gated; the Reels grid was not. (Highlights are NOT
     // gated: the web profile shows them for private accounts too —
@@ -6133,7 +6263,11 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                             moreOpen = false
                                             if (blockedByMe) {
                                                 scope.launch {
-                                                    try { if (api2.unblockUser(p.id ?: "").success) blockedByMe = false } catch (_: Exception) {}
+                                                    try {
+                                                        val r = api2.unblockUser(p.id ?: "")
+                                                        if (r.success) blockedByMe = false
+                                                        else toast(r.error?.message ?: "Could not unblock")
+                                                    } catch (e: Exception) { toast(e.message ?: "Could not unblock") }
                                                 }
                                             } else showBlockConfirm = true
                                         },
@@ -6145,7 +6279,11 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                     name = p.displayName ?: p.username ?: "User",
                                     onBlock = {
                                         scope.launch {
-                                            try { if (api2.blockUser(p.id ?: "").success) { blockedByMe = true; following = false; followStatus = "none" } } catch (_: Exception) {}
+                                            try {
+                                                val r = api2.blockUser(p.id ?: "")
+                                                if (r.success) { blockedByMe = true; following = false; followStatus = "none" }
+                                                else toast(r.error?.message ?: "Could not block")
+                                            } catch (e: Exception) { toast(e.message ?: "Could not block") }
                                         }
                                     },
                                     onDismiss = { showBlockConfirm = false },
@@ -6159,7 +6297,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                         try {
                                             val r = api2.createConversation(CreateConversationRequest(p.id ?: ""))
                                             if (r.success && r.data != null) onOpenChat(r.data.id, p.displayName ?: p.username ?: "")
-                                        } catch (_: Exception) {}
+                                            else toast(r.error?.message ?: "Could not open chat")
+                                        } catch (e: Exception) { toast(e.message ?: "Could not open chat") }
                                     }
                                 }) { Icon(Icons.Filled.Chat, contentDescription = "Message", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
@@ -6283,11 +6422,15 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     AlertDialog(onDismissRequest = { showUnfollowConfirm = false }, title = { Text("Unfollow @${p.username ?: ""}?") }, text = { Text("You will stop seeing their posts.") },
                         confirmButton = { Button(onClick = {
                             showUnfollowConfirm = false
+                            if (followBusy) return@Button
+                            followBusy = true
                             scope.launch {
                                 try {
                                     val r = api2.toggleFollow(p.id ?: "")
                                     if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none"; bumpFollowers(if (following) 1 else -1) }
-                                } catch (_: Exception) {}
+                                    else toast(r.error?.message ?: "Could not unfollow")
+                                } catch (e: Exception) { toast(e.message ?: "Could not unfollow") }
+                                finally { followBusy = false }
                             }
                         }) { Text("Unfollow") } },
                         dismissButton = { TextButton(onClick = { showUnfollowConfirm = false }) { Text("Cancel") } })
@@ -6300,18 +6443,28 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         }
                     } else if (blockedByMe) {
                         OutlinedButton(onClick = {
-                            scope.launch { try { if (api2.unblockUser(p.id).success) blockedByMe = false } catch (_: Exception) {} }
+                            scope.launch {
+                                try {
+                                    val r = api2.unblockUser(p.id)
+                                    if (r.success) blockedByMe = false
+                                    else toast(r.error?.message ?: "Could not unblock")
+                                } catch (e: Exception) { toast(e.message ?: "Could not unblock") }
+                            }
                         }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Unblock", maxLines = 1, softWrap = false) }
                     } else {
                         Button(onClick = {
                             if (following) { showUnfollowConfirm = true; return@Button }
+                            if (followBusy) return@Button
+                            followBusy = true
                             scope.launch {
                                 try {
                                     val r = api2.toggleFollow(p.id)
                                     if (r.success && r.data != null) { following = r.data.following || r.data.isFollowing; followStatus = r.data.friendStatus ?: if (following) "following" else "none"; bumpFollowers(if (following) 1 else -1) }
-                                } catch (_: Exception) {}
+                                    else toast(r.error?.message ?: "Could not change follow status")
+                                } catch (e: Exception) { toast(e.message ?: "Could not change follow status") }
+                                finally { followBusy = false }
                             }
-                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = if (following) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.onSurface, contentColor = if (following) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.inverseOnSurface)) { Text(if (followStatus == "friends") "Friends" else if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow", maxLines = 1, softWrap = false) }
+                        }, enabled = !followBusy, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = if (following) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.onSurface, contentColor = if (following) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.inverseOnSurface)) { Text(if (followStatus == "friends") "Friends" else if (following) "Following" else if (followStatus == "follow_back") "Follow Back" else "Follow", maxLines = 1, softWrap = false) }
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -6479,7 +6632,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
             if (entry.reel != null) {
                 // v5.18.4: web wraps the All-tab reel in mx-4 mb-4.
                 Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
-                    FeedReelCard(api2, entry.reel, onOpenReel = { id -> onOpenReel?.invoke(id) })
+                    FeedReelCard(api2, entry.reel, onOpenReel = { id -> onOpenReel?.invoke(id) }, onOpenChat = { id, name -> onOpenChat?.invoke(id, name) })
                 }
                 return@items
             }
@@ -6534,7 +6687,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     // LazyColumn, same pattern as the v5.18.3 Edit fix —
     // FollowListScreen is a plain full-size Column, so emitted
     // before the list it was painted over and untappable.
-    followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }) }
+    followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }, myId = myId) }
     // v5.18.3 (B-H1 fix): the edit page MUST be emitted AFTER the
     // LazyColumn — both are direct children of MainActivity's Box, so the
     // later child draws on top. Before v5.18.3 it was emitted first and the
@@ -7322,6 +7475,50 @@ private fun HighlightCreateDialog(api2: FrianzoApi2, statusItems: List<StatusIte
 // the existing upload calls. Save errors surface as Toasts — the old
 // dialog wrote the error under the profile buttons, behind the dialog,
 // so a failed save looked like nothing happened.
+// v5.20 (E-N4): the in-flight avatar/cover upload and the profile save
+// run in this ViewModel's scope, so a rotation — which disposes the
+// composition and cancels rememberCoroutineScope — no longer silently
+// cancels them. The busy flags live here too, so the new composition
+// still shows "Uploading..." / "Saving..." after a rotation. No new
+// dependency: lifecycle-viewmodel-compose is already in build.gradle.kts.
+class EditProfileWorkViewModel : ViewModel() {
+    var uploading by mutableStateOf(false)
+        private set
+    var saving by mutableStateOf(false)
+        private set
+    // Avatar + cover share one flag (as before), so two overlapping
+    // uploads keep it on until both finish.
+    private var uploadJobs = 0
+
+    fun runUpload(block: suspend () -> Unit) {
+        uploadJobs += 1
+        uploading = true
+        viewModelScope.launch {
+            try {
+                block()
+            } finally {
+                uploadJobs -= 1
+                if (uploadJobs <= 0) {
+                    uploadJobs = 0
+                    uploading = false
+                }
+            }
+        }
+    }
+
+    fun runSave(block: suspend () -> Unit) {
+        if (saving) return
+        saving = true
+        viewModelScope.launch {
+            try {
+                block()
+            } finally {
+                saving = false
+            }
+        }
+    }
+}
+
 @Composable
 fun EditProfileScreen(
     api2: FrianzoApi2,
@@ -7332,7 +7529,11 @@ fun EditProfileScreen(
 ) {
     BackHandler { onClose() }
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    // v5.20 (E-N4): the upload/save work and the busy flags live in the
+    // ViewModel, so a rotation does not cancel them or lose the flags.
+    val workVm: EditProfileWorkViewModel = viewModel()
+    val uploading = workVm.uploading
+    val edSaving = workVm.saving
     // Form state (rememberSaveable so a rotation does not wipe the form).
     // Country is normalised to its web display name: the backend stores a
     // 2-letter code (IP auto-detect) or a full name (Settings) — the app
@@ -7348,10 +7549,8 @@ fun EditProfileScreen(
     var edCity by rememberSaveable { mutableStateOf(profile.city ?: "") }
     var edWeb by rememberSaveable { mutableStateOf(profile.website ?: "") }
     var edPhone by rememberSaveable { mutableStateOf(profile.phone ?: "") }
-    var avatarUrl by remember { mutableStateOf(profile.profilePictureUrl) }
-    var coverUrl by remember { mutableStateOf(profile.coverPhotoUrl) }
-    var edSaving by remember { mutableStateOf(false) }
-    var uploading by remember { mutableStateOf(false) }
+    var avatarUrl by rememberSaveable { mutableStateOf(profile.profilePictureUrl) }
+    var coverUrl by rememberSaveable { mutableStateOf(profile.coverPhotoUrl) }
     // 30-day lock (web cooldownInfo): 0 = editable.
     val usernameDaysLeft = cooldownDaysLeft(profile.usernameChangedAt)
     val nameDaysLeft = cooldownDaysLeft(profile.displayNameChangedAt)
@@ -7368,8 +7567,7 @@ fun EditProfileScreen(
     // pickers); the parent profile is updated too, so the photo behind
     // this page is fresh when the user goes back.
     val avatarPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
-        if (uri != null) scope.launch {
-            uploading = true
+        if (uri != null) workVm.runUpload {
             try {
                 val part = uriToImagePart(context, uri, "avatar_upload")
                 if (api2.uploadAvatar(part).success) {
@@ -7377,12 +7575,10 @@ fun EditProfileScreen(
                     Toast.makeText(context, "Photo updated", Toast.LENGTH_SHORT).show()
                 } else Toast.makeText(context, "Photo upload failed", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) { Toast.makeText(context, e.message ?: "Photo upload failed", Toast.LENGTH_SHORT).show() }
-            finally { uploading = false }
         }
     }
     val coverPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
-        if (uri != null) scope.launch {
-            uploading = true
+        if (uri != null) workVm.runUpload {
             try {
                 val part = uriToImagePart(context, uri, "cover_upload")
                 if (api2.uploadCover(part).success) {
@@ -7390,20 +7586,24 @@ fun EditProfileScreen(
                     Toast.makeText(context, "Cover updated", Toast.LENGTH_SHORT).show()
                 } else Toast.makeText(context, "Cover upload failed", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) { Toast.makeText(context, e.message ?: "Cover upload failed", Toast.LENGTH_SHORT).show() }
-            finally { uploading = false }
         }
     }
     val pickAvatar = rememberPermissionGate(galleryPermissions(), onGranted = { avatarPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
     val pickCover = rememberPermissionGate(galleryPermissions(), onGranted = { coverPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) })
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // v5.20 (E-N6): sticky header — the Back row sits above the
+        // scrolling content now, so it never scrolls away.
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Back", maxLines = 1, softWrap = false) }
         }
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
         // Cover banner (web: h-32) + avatar overlapping it by 40dp.
         Box(Modifier.fillMaxWidth().height(168.dp)) {
             Box(
                 Modifier.fillMaxWidth().height(128.dp)
-                    .then(if (coverUrl == null) Modifier.background(Brush.linearGradient(listOf(Color(0xFF60A5FA), Color(0xFF2563EB), Color(0xFF1E40AF)))) else Modifier)
+                    // v5.20 (B-S10): no-cover state is plain grey (web
+                    // bg-slate-200), not the blue gradient.
+                    .then(if (coverUrl == null) Modifier.background(Color(0xFFE2E8F0)) else Modifier)
                     .clickable(enabled = !uploading) { pickCover() },
                 contentAlignment = Alignment.Center,
             ) {
@@ -7424,13 +7624,15 @@ fun EditProfileScreen(
             // Username (30-day lock).
             Text("Username", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
-            OutlinedTextField(value = edUsername, onValueChange = { edUsername = it }, modifier = Modifier.fillMaxWidth().height(40.dp), enabled = usernameDaysLeft == 0, singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
+            OutlinedTextField(value = edUsername, onValueChange = { edUsername = it }, modifier = Modifier.fillMaxWidth().height(48.dp), enabled = usernameDaysLeft == 0, singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
             if (usernameDaysLeft > 0) { Spacer(Modifier.height(4.dp)); Text("You can change this again in $usernameDaysLeft day(s).", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(16.dp))
             // Full Name (30-day lock).
             Text("Full Name", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
-            OutlinedTextField(value = edName, onValueChange = { edName = it }, modifier = Modifier.fillMaxWidth().height(40.dp), enabled = nameDaysLeft == 0, singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
+            // v5.20 (E-N5): Full Name caps at 50, like Bio (300) and
+            // Phone (30) already do — the backend rejects longer values.
+            OutlinedTextField(value = edName, onValueChange = { if (it.length <= 50) edName = it }, modifier = Modifier.fillMaxWidth().height(48.dp), enabled = nameDaysLeft == 0, singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next))
             if (nameDaysLeft > 0) { Spacer(Modifier.height(4.dp)); Text("You can change this again in $nameDaysLeft day(s).", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(16.dp))
             // Bio + counter.
@@ -7454,12 +7656,14 @@ fun EditProfileScreen(
             // Website.
             Text("Website", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
-            OutlinedTextField(value = edWeb, onValueChange = { edWeb = it }, placeholder = { Text("https://", fontSize = 15.sp) }, modifier = Modifier.fillMaxWidth().height(40.dp), singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next))
+            // v5.20 (E-N5): Website caps at 200 (backend max) — same
+            // pattern as Bio/Phone.
+            OutlinedTextField(value = edWeb, onValueChange = { if (it.length <= 200) edWeb = it }, placeholder = { Text("https://", fontSize = 15.sp) }, modifier = Modifier.fillMaxWidth().height(48.dp), singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next))
             Spacer(Modifier.height(16.dp))
             // Contact Number.
             Text("Contact Number", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
-            OutlinedTextField(value = edPhone, onValueChange = { if (it.length <= 30) edPhone = it }, modifier = Modifier.fillMaxWidth().height(40.dp), singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done))
+            OutlinedTextField(value = edPhone, onValueChange = { if (it.length <= 30) edPhone = it }, modifier = Modifier.fillMaxWidth().height(48.dp), singleLine = true, shape = RoundedCornerShape(8.dp), textStyle = TextStyle(fontSize = 15.sp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done))
             Spacer(Modifier.height(16.dp))
             Button(enabled = !edSaving, onClick = {
                 // Client guards mirror the backend profileUpdateSchema
@@ -7469,8 +7673,9 @@ fun EditProfileScreen(
                 val dname = edName.trim()
                 if (!Regex("^[a-zA-Z0-9_.]{3,30}$").matches(uname)) { toast("Username must be 3-30 characters: letters, numbers, underscore, or period."); return@Button }
                 if (dname.isBlank()) { toast("Name can't be empty"); return@Button }
-                edSaving = true
-                scope.launch {
+                // v5.20 (E-N4): the save runs in the ViewModel scope, so
+                // a rotation does not cancel it.
+                workVm.runSave {
                     try {
                         val body = mutableMapOf<String, Any>(
                             "username" to uname, "displayName" to dname, "bio" to edBio,
@@ -7497,9 +7702,15 @@ fun EditProfileScreen(
                         } else Toast.makeText(context, r.error?.message ?: "Could not save profile", Toast.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         Toast.makeText(context, e.message ?: "Could not save profile", Toast.LENGTH_LONG).show()
-                    } finally { edSaving = false }
+                    }
                 }
-            }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))) { Text(if (edSaving) "Saving..." else "Save Changes", maxLines = 1, softWrap = false) }
+            }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius),
+                // v5.20 (E-N1): theme-aware button colour — the old
+                // hardcoded 0xFF0F172A was invisible in dark mode (it
+                // equals the dark page background). Same colours as the
+                // profile screen's "Edit Profile" button.
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Text(if (edSaving) "Saving..." else "Save Changes", maxLines = 1, softWrap = false) }
+        }
         }
     }
 }
@@ -7511,12 +7722,14 @@ private fun EditProfileSelectField(label: String, value: String, placeholder: St
     var menuOpen by remember { mutableStateOf(false) }
     Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Spacer(Modifier.height(4.dp))
-    Box {
+    // v5.20 (E-N7): the menu matches the full field width (was sized to
+    // its content). BoxWithConstraints measures the field for it.
+    BoxWithConstraints {
         OutlinedTextField(
             value = value,
             onValueChange = {},
             placeholder = { Text(placeholder, fontSize = 15.sp) },
-            modifier = Modifier.fillMaxWidth().height(40.dp).clickable { menuOpen = true },
+            modifier = Modifier.fillMaxWidth().height(48.dp).clickable { menuOpen = true },
             readOnly = true,
             singleLine = true,
             shape = RoundedCornerShape(8.dp),
@@ -7527,7 +7740,7 @@ private fun EditProfileSelectField(label: String, value: String, placeholder: St
                 }
             },
         )
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, modifier = Modifier.width(maxWidth)) {
             options.forEach { opt ->
                 DropdownMenuItem(text = { Text(opt) }, onClick = { onPick(opt); menuOpen = false })
             }
@@ -7537,9 +7750,14 @@ private fun EditProfileSelectField(label: String, value: String, placeholder: St
 
 // ---------- FOLLOWERS / FOLLOWING LIST (GET /api/follows/{id}/{direction}) ----------
 @Composable
-private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: String, onUser: (String) -> Unit, onClose: () -> Unit) {
+private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: String, onUser: (String) -> Unit, onClose: () -> Unit, myId: String? = null) {
+    val context = LocalContext.current
     var users by remember { mutableStateOf<List<FollowListUser>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    // v5.20 (M8): per-row Follow busy guard (one set, like the card-level
+    // followBusy in ProfilePostCard — a row's button cannot fire twice).
+    var busyIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    fun toast(msg: String) { Toast.makeText(context, msg, Toast.LENGTH_SHORT).show() }
     // v3.4: server pagination (?page=&limit=20) + client-side search.
     var page by remember { mutableStateOf(1) }
     var pages by remember { mutableStateOf(1) }
@@ -7550,6 +7768,13 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
     // search param on this endpoint, so extra pages are fetched on demand).
     var allUsers by remember { mutableStateOf<List<FollowListUser>?>(null) }
     val scope = rememberCoroutineScope()
+    // v5.20 (M8): flip a row's Follow state in both lists (the paged
+    // page and the all-pages search list) after a successful toggle.
+    fun setFollowing(id: String, isFollowing: Boolean) {
+        val update: (FollowListUser) -> FollowListUser = { if (it.id == id) it.copy(isFollowing = isFollowing) else it }
+        users = users.map(update)
+        allUsers = allUsers?.map(update)
+    }
     fun load(p: Int) {
         loading = true
         scope.launch {
@@ -7590,10 +7815,43 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
         OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
         LazyColumn(Modifier.weight(1f)) {
             items(shown, key = { it.id ?: it.username ?: "" }) { u ->
+                // v5.20 (M8): web parity — verified badge next to the name
+                // + a Follow/Following button per row (busy-guarded,
+                // wired to toggleFollow). The button is hidden for the
+                // current user's own row.
+                val uid = u.id
                 ListItem(
-                    headlineContent = { Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    headlineContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(u.displayName ?: u.username ?: "", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (u.isVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+                        }
+                    },
                     supportingContent = { Text("@${u.username ?: ""}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingContent = { FrianzoAvatar(u.profilePictureUrl, 48.dp) },
+                    trailingContent = {
+                        if (uid != null && uid != myId) {
+                            val busy = uid in busyIds
+                            OutlinedButton(
+                                enabled = !busy,
+                                onClick = {
+                                    if (busy) return@OutlinedButton
+                                    busyIds = busyIds + uid
+                                    scope.launch {
+                                        try {
+                                            val r = api2.toggleFollow(uid)
+                                            if (r.success && r.data != null) setFollowing(uid, r.data.following || r.data.isFollowing)
+                                            else toast(r.error?.message ?: "Could not change follow status")
+                                        } catch (e: Exception) { toast(e.message ?: "Could not change follow status") }
+                                        finally { busyIds = busyIds - uid }
+                                    }
+                                },
+                                modifier = Modifier.height(36.dp),
+                                shape = RoundedCornerShape(28.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) { Text(if (u.isFollowing) "Following" else "Follow", fontSize = 13.sp, color = FrianzoBlue) }
+                        }
+                    },
                     modifier = Modifier.clickable { if (u.username != null) onUser(u.username!!) },
                 )
                 HorizontalDivider()
@@ -7624,8 +7882,60 @@ private fun uriToImagePart(context: android.content.Context, uri: Uri, baseName:
     val ext = when (mime.substringAfter("/")) { "png" -> "png"; "webp" -> "webp"; "gif" -> "gif"; else -> "jpg" }
     val tmp = File(context.cacheDir, "$baseName.$ext")
     input.use { inp -> tmp.outputStream().use { out -> inp.copyTo(out) } }
-    // v5.17: web enforces a 5MB photo limit — same rule here, so a big
-    // phone photo fails fast with a clear message instead of a raw error.
-    if (tmp.length() > 5 * 1024 * 1024) { try { tmp.delete() } catch (_: Exception) {}; throw Exception("Photo is too large. Maximum size is 5MB.") }
-    return MultipartBody.Part.createFormData("image", tmp.name, tmp.asRequestBody(mime.toMediaTypeOrNull()))
+    // v5.20 (E-N2): compress like the web (compressImage.ts) — downscale
+    // to max 1600px, JPEG 0.82 — BEFORE upload, so a normal 4-6MB phone
+    // photo uploads fine. The 5MB guard applies AFTER compression, so it
+    // almost never triggers. GIFs are left untouched (re-encoding would
+    // kill animation); an undecodable file falls back to the raw copy.
+    var file = tmp
+    var partMime = mime
+    if (mime != "image/gif") {
+        try {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(tmp.absolutePath, bounds)
+            if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                var sample = 1
+                while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
+                val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                val src = android.graphics.BitmapFactory.decodeFile(tmp.absolutePath, decodeOpts)
+                if (src != null) {
+                    // BitmapFactory ignores EXIF orientation; apply it so
+                    // a portrait photo does not upload sideways.
+                    val rotation = try {
+                        when (android.media.ExifInterface(tmp.absolutePath).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)) {
+                            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                            else -> 0f
+                        }
+                    } catch (_: Exception) { 0f }
+                    val oriented = if (rotation != 0f) {
+                        val m = android.graphics.Matrix().apply { postRotate(rotation) }
+                        val r = android.graphics.Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+                        src.recycle()
+                        r
+                    } else src
+                    val compressed = File(context.cacheDir, "$baseName.jpg")
+                    var ok = false
+                    try {
+                        compressed.outputStream().use { out -> ok = oriented.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out) }
+                    } finally {
+                        oriented.recycle()
+                    }
+                    if (ok && compressed.length() > 0) {
+                        try { tmp.delete() } catch (_: Exception) {}
+                        file = compressed
+                        partMime = "image/jpeg"
+                    } else {
+                        try { compressed.delete() } catch (_: Exception) {}
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Compression failed — fall through with the raw copy.
+        }
+    }
+    // The 5MB limit applies AFTER compression (web parity).
+    if (file.length() > 5 * 1024 * 1024) { try { file.delete() } catch (_: Exception) {}; throw Exception("Photo is too large. Maximum size is 5MB.") }
+    return MultipartBody.Part.createFormData("image", file.name, file.asRequestBody(partMime.toMediaTypeOrNull()))
 }
