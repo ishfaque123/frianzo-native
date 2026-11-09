@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import com.google.firebase.messaging.FirebaseMessaging
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
@@ -57,7 +58,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pendingDeepLink = parseDeepLink(intent?.data)
+        pendingDeepLink = parsePushIntent(intent)
         val cookieJar = PersistentCookieJar(applicationContext)
         val api = createApi(applicationContext, cookieJar)
         val api2 = createApi2(applicationContext, cookieJar)
@@ -140,7 +141,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        parseDeepLink(intent.data)?.let { pendingDeepLink = it }
+        parsePushIntent(intent)?.let { pendingDeepLink = it }
     }
 }
 
@@ -152,8 +153,17 @@ private enum class Tab { FEED, REELS, CREATE, CHAT, NOTIFS, SEARCH, PROFILE }
 // GET /api/share/{code} resolve exists, but the native Api2 has no call
 // for it (area B owns Api2.kt), so short links open in the browser
 // instead of being faked in-app — PARTIAL, see the area report.
-private enum class DeepLinkKind { POST, REEL, PROFILE, BROWSER, TAG }
-private data class DeepLink(val kind: DeepLinkKind, val value: String)
+private enum class DeepLinkKind { POST, REEL, PROFILE, BROWSER, TAG, CHAT, MY_PROFILE, VERIFICATION, NOTIFICATIONS }
+// extra: chat sender name for CHAT (a /messages/{id} URL carries no name).
+private data class DeepLink(val kind: DeepLinkKind, val value: String, val extra: String? = null)
+
+// v5.19 (FCM): a chat push carries the sender's display name as an
+// intent extra (FrianzoMessagingService.EXTRA_CHAT_NAME); plain web
+// links have no extra, so they parse exactly as before.
+private fun parsePushIntent(intent: Intent?): DeepLink? {
+    val link = parseDeepLink(intent?.data) ?: return null
+    return if (link.kind == DeepLinkKind.CHAT) link.copy(extra = intent?.getStringExtra(FrianzoMessagingService.EXTRA_CHAT_NAME)) else link
+}
 
 private fun parseDeepLink(uri: Uri?): DeepLink? {
     if (uri == null) return null
@@ -167,6 +177,16 @@ private fun parseDeepLink(uri: Uri?): DeepLink? {
         seg.size == 2 && seg[0] == "u" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.PROFILE, seg[1])
         seg.size == 2 && seg[0] == "tag" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.TAG, seg[1])
         seg.size == 2 && seg[0] == "s" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.BROWSER, "https://frianzo.online/s/${seg[1]}")
+        // v5.19 (FCM tap destinations): /messages/{id} is the chat push
+        // url (web: /messages/{conversationId}); /me and
+        // /settings-menu/verification are internal-only push targets
+        // (no such web routes) for verification_approved (own profile)
+        // and verification_rejected (Verification settings);
+        // /notifications is the backend's default push url.
+        seg.size == 2 && seg[0] == "messages" && seg[1].isNotBlank() -> DeepLink(DeepLinkKind.CHAT, seg[1])
+        seg.size == 1 && seg[0] == "me" -> DeepLink(DeepLinkKind.MY_PROFILE, "")
+        seg.size == 2 && seg[0] == "settings-menu" && seg[1] == "verification" -> DeepLink(DeepLinkKind.VERIFICATION, "")
+        seg.size == 1 && seg[0] == "notifications" -> DeepLink(DeepLinkKind.NOTIFICATIONS, "")
         else -> null
     }
 }
@@ -189,6 +209,11 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     // v5.15: real drawer state (replaces the old boolean + dialog).
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     var drawerScreen by rememberSaveable { mutableStateOf<String?>(null) }
+    // v5.19 (FCM): a verification-rejected push opens Settings straight
+    // at the Verification sub-screen. Cleared whenever the drawer closes
+    // so a stale value can never hijack a later manual Settings open.
+    var drawerSubScreen by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(drawerScreen) { if (drawerScreen == null) drawerSubScreen = null }
     // v2.9: notification deep-links + AI Video "Post as Reel" handoff.
     var openPostId by rememberSaveable { mutableStateOf<String?>(null) }
     var focusReelId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -221,6 +246,23 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+    }
+    // v5.19 (FCM): register this device's push token now that the user
+    // is logged in — AppShell only exists in the LoggedIn branch, so
+    // this runs once per login (and again on a restored session after
+    // process death). Token refreshes are handled by
+    // FrianzoMessagingService.onNewToken. Best-effort and silent: a
+    // failure (no google-services.json, no network) must never break
+    // login, and the backend upserts the token, so registering the same
+    // token twice is harmless.
+    LaunchedEffect(Unit) {
+        try {
+            FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+                scope.launch {
+                    try { api2.registerPushToken(PushTokenRequest(token)) } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {}
     }
     // v2.9: drawer profile row data (loaded once; a failure just leaves
     // the row showing the fallback name).
@@ -259,6 +301,14 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             DeepLinkKind.PROFILE -> { openProfile = dl.value }
             // v5.18: /tag/{tag} opens the in-app tag page (no backend change).
             DeepLinkKind.TAG -> { openTag = dl.value }
+            // v5.19 (FCM tap destinations): chat opens the thread (the
+            // sender name rides in dl.extra); MY_PROFILE opens the own
+            // profile tab; VERIFICATION opens Settings at the
+            // Verification sub-screen; NOTIFICATIONS opens the Alerts tab.
+            DeepLinkKind.CHAT -> { openProfile = null; openPostId = null; openChat = dl.value to (dl.extra?.takeIf { it.isNotBlank() } ?: "Chat") }
+            DeepLinkKind.MY_PROFILE -> { openChat = null; openProfile = null; openPostId = null; drawerScreen = null; tab = Tab.PROFILE }
+            DeepLinkKind.VERIFICATION -> { openChat = null; openProfile = null; openPostId = null; drawerScreen = "Settings"; drawerSubScreen = "verification" }
+            DeepLinkKind.NOTIFICATIONS -> { openChat = null; openProfile = null; openPostId = null; drawerScreen = null; tab = Tab.NOTIFS }
             DeepLinkKind.BROWSER -> {
                 // Short link: no in-app resolver (see parseDeepLink note).
                 try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(dl.value))) } catch (_: Exception) {
@@ -293,12 +343,37 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     }
 
     fun logout() {
+        // v5.19 (FCM): remove this device's push token BEFORE clearing
+        // the auth cookie — DELETE /api/notifications/push-token needs
+        // the cookie. The token fetch + DELETE run first; logout always
+        // completes (3 s watchdog) even if FCM hangs or the call fails,
+        // so a push failure can never trap the user on this phone.
         // No server logout endpoint is verified, so app logout clears the
         // persisted auth cookies (the same mechanism web logout relies on
         // client-side) and drops the session state. The server token then
         // simply expires (7 days) and cannot be reused from this phone.
-        cookieJar.clear()
-        session.markLoggedOut()
+        var loggedOut = false
+        fun finishLogout() {
+            if (!loggedOut) {
+                loggedOut = true
+                cookieJar.clear()
+                session.markLoggedOut()
+            }
+        }
+        try {
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                scope.launch {
+                    try {
+                        val token = if (task.isSuccessful) task.result else null
+                        if (!token.isNullOrBlank()) api2.removePushToken(PushTokenRequest(token))
+                    } catch (_: Exception) {}
+                    finishLogout()
+                }
+            }
+            scope.launch { kotlinx.coroutines.delay(3000); finishLogout() }
+        } catch (_: Exception) {
+            finishLogout()
+        }
     }
 
     // v5.15: real left slide-in drawer (web Shell.tsx) — replaces the
@@ -500,7 +575,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS }, onOpenDrawerScreen = { drawerScreen = it })
+                drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS }, onOpenDrawerScreen = { drawerScreen = it }, initialSubScreen = drawerSubScreen, onInitialSubScreenConsumed = { drawerSubScreen = null })
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
                 openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
@@ -510,7 +585,12 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 tab == Tab.REELS -> ReelsScreen(api2, myId, session = reelsSession, onAuthor = { username -> openProfile = username }, onOpenChat = { id, name -> openChat = id to name }, focusReelId = focusReelId, onFocusConsumed = { focusReelId = null }, uploadUri = pendingReelUri, onUploadUriConsumed = { pendingReelUri = null }, onEditorOpenChange = { reelsEditorOpen = it }, onTag = { tag -> openTag = tag })
                 tab == Tab.CREATE -> CreatePostScreen(api2, initialUri = pendingMedia, onPosted = { pendingMedia = null; feedVm.refresh(); tab = Tab.FEED }, onClose = { pendingMedia = null; tab = Tab.FEED }, onPostAsReel = { uri -> pendingMedia = null; pendingReelUri = uri; tab = Tab.REELS })
                 tab == Tab.CHAT -> ChatListScreen(api2, myId) { id, name -> openChat = id to name }
-                tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name })
+                // v5.19 (H5): verification taps need destinations the screen
+                // itself cannot reach — own profile is the Profile tab
+                // (ProfileScreen with a null username), Verification is
+                // the Settings drawer opened straight at its Verification
+                // sub-screen ("Verification" router label, DrawerScreens).
+                tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name }, onOpenOwnProfile = { openChat = null; openProfile = null; openPostId = null; openTag = null; tab = Tab.PROFILE }, onOpenVerification = { openChat = null; openProfile = null; openPostId = null; openTag = null; drawerScreen = "Verification" })
                 tab == Tab.SEARCH -> SearchScreen(api2, onUser = { username -> openProfile = username }, onTag = { tag -> openTag = tag }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
                 tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it }, onDashboard = { drawerScreen = "Professional Dashboard" }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
             }

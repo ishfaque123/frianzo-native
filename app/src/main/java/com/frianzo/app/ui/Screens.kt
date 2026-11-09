@@ -1,6 +1,8 @@
 package com.frianzo.app.ui
 
 import android.content.Context
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.net.Uri
 import android.media.MediaPlayer
 import android.widget.VideoView
@@ -33,7 +35,11 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -87,6 +93,8 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Base64
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
@@ -477,6 +485,60 @@ internal fun openWebUrl(context: Context, url: String): Boolean {
     val fixed = if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
     return try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fixed))); true } catch (_: Exception) { false }
 }
+
+// v5.19 (H6 story stickers): parse a countdown ISO timestamp. The
+// backend stores targetAt as JS toISOString() (always millis + Z).
+// java.time is avoided: minSdk 24 < 26, so SimpleDateFormat + UTC.
+private fun parseStickerIsoMillis(iso: String?): Long? {
+    if (iso.isNullOrBlank()) return null
+    val patterns = listOf("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'")
+    for (p in patterns) {
+        try {
+            val f = SimpleDateFormat(p, Locale.US)
+            f.timeZone = TimeZone.getTimeZone("UTC")
+            return f.parse(iso)?.time
+        } catch (_: Exception) {}
+    }
+    return null
+}
+
+private fun stickerIsoString(millis: Long): String {
+    val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+    f.timeZone = TimeZone.getTimeZone("UTC")
+    return f.format(Date(millis))
+}
+
+// v5.19 (H6): web useCountdown format (StoryStickers.tsx:6-22).
+private fun formatCountdown(targetMillis: Long, nowMillis: Long): String {
+    val diff = targetMillis - nowMillis
+    if (diff <= 0) return "Ended"
+    val d = diff / 86400000
+    val h = (diff % 86400000) / 3600000
+    val m = (diff % 3600000) / 60000
+    val s = (diff % 60000) / 1000
+    return when {
+        d > 0 -> "${d}d ${h}h ${m}m"
+        h > 0 -> "${h}h ${m}m ${s}s"
+        m > 0 -> "${m}m ${s}s"
+        else -> "${s}s"
+    }
+}
+
+// v5.19 (H6): combine a picked calendar date with a picked hour/minute
+// into epoch millis (device timezone).
+private fun combineDateTimeMillis(dateMillis: Long, hour: Int, minute: Int): Long {
+    val c = Calendar.getInstance()
+    c.timeInMillis = dateMillis
+    c.set(Calendar.HOUR_OF_DAY, hour)
+    c.set(Calendar.MINUTE, minute)
+    c.set(Calendar.SECOND, 0)
+    c.set(Calendar.MILLISECOND, 0)
+    return c.timeInMillis
+}
+
+// v5.19 (H6): stagger new stickers down the preview so they never stack
+// exactly on top of each other before the user drags them.
+private fun nextStickerY(existingCount: Int): Float = (30 + existingCount * 12).coerceAtMost(78).toFloat()
 
 // A-B26: simple email shape check (client-side only; the server still
 // validates). Kept permissive on purpose — no MX/DNS check.
@@ -2482,15 +2544,32 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
     var showDelete by remember { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
     var storyPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    val isOwn = group.userId == myId || group.user?.id == myId
-    val item = group.items.getOrNull(idx)
+    // v5.19 (H6 story stickers): the group is held in state so a poll
+    // vote / question answer can re-fetch the feed and show fresh
+    // results without closing the viewer. remember(group) re-seeds it
+    // only if the parent hands in a different group.
+    var liveGroup by remember(group) { mutableStateOf(group) }
+    // v5.19 (H6): 1s clock for live countdown stickers.
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); nowMs = System.currentTimeMillis() } }
+    fun refreshStickers() {
+        scope.launch {
+            try {
+                val sf = api2.statusFeed()
+                val fresh = sf.data?.feed?.find { it.userId == liveGroup.userId }
+                if (sf.success && fresh != null) liveGroup = fresh
+            } catch (_: Exception) {}
+        }
+    }
+    val isOwn = liveGroup.userId == myId || liveGroup.user?.id == myId
+    val item = liveGroup.items.getOrNull(idx)
     val isVideo = item?.mediaType == "video" && !item.mediaUrl.isNullOrBlank()
     // Image/text stories: 5s. Video stories: 15s cap (the VideoView
     // completion listener advances earlier). The ticker only advances
     // while !paused, so a hold-pause keeps the progress; the effect
     // restarts only when idx changes.
     val durationMs = if (isVideo) 15000L else 5000L
-    fun advance() { if (idx < group.items.size - 1) idx++ else onClose() }
+    fun advance() { if (idx < liveGroup.items.size - 1) idx++ else onClose() }
     // A-D7: left-tap on the first story closes the viewer (web/FB go to
     // the previous story group) instead of doing nothing.
     fun goBack() { if (idx > 0) idx-- else onClose() }
@@ -2501,11 +2580,11 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
     // A-B18: load the real mute state once when the viewer opens, from
     // GET /api/statuses/muted — the menu used to always offer "Mute
     // stories" even for an already-muted author.
-    LaunchedEffect(group.user?.id ?: group.userId) {
+    LaunchedEffect(liveGroup.user?.id ?: liveGroup.userId) {
         if (isOwn) return@LaunchedEffect
         try {
             val r = api2.mutedStories()
-            val uid = group.user?.id ?: group.userId
+            val uid = liveGroup.user?.id ?: liveGroup.userId
             if (r.success && r.data != null) isMuted = r.data.muted?.any { it.id == uid } == true
         } catch (_: Exception) {}
     }
@@ -2550,10 +2629,44 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                     onPress = { paused = true; tryAwaitRelease(); paused = false },
                 )
             })
+            // v5.19 (H6 story stickers): render web-created stickers at
+            // their posX/posY (% of the viewer, centred like the web's
+            // translate(-50%,-50%)). This layer sits ABOVE the tap zones
+            // (sticker taps must not advance the story) and BELOW the
+            // header/bottom rows. Sizes are measured so each card centres
+            // exactly on its anchor; the guard stops a measure/set loop.
+            val stickers = item?.stickers.orEmpty()
+            if (stickers.isNotEmpty()) {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    val layerDensity = LocalDensity.current
+                    var stickerSizes by remember(item?.id) { mutableStateOf<Map<String, IntSize>>(emptyMap()) }
+                    stickers.forEach { sticker ->
+                        val measured = stickerSizes[sticker.id]
+                        val xDp = maxWidth * (sticker.posX / 100f) - with(layerDensity) { ((measured?.width ?: 0) / 2).toDp() }
+                        val yDp = maxHeight * (sticker.posY / 100f) - with(layerDensity) { ((measured?.height ?: 0) / 2).toDp() }
+                        Box(
+                            Modifier.offset(x = xDp, y = yDp).onGloballyPositioned { coords ->
+                                if (stickerSizes[sticker.id] != coords.size) stickerSizes = stickerSizes + (sticker.id to coords.size)
+                            }
+                        ) {
+                            StoryStickerView(
+                                api2 = api2,
+                                sticker = sticker,
+                                isOwner = isOwn,
+                                nowMs = nowMs,
+                                onVoted = { refreshStickers() },
+                                onAnswered = { refreshStickers() },
+                                onNotice = { notice = it },
+                                onPauseChange = { paused = it },
+                            )
+                        }
+                    }
+                }
+            }
             // Top: progress segments + header
             Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    group.items.forEachIndexed { i, _ ->
+                    liveGroup.items.forEachIndexed { i, _ ->
                         val fill = when { i < idx -> 1f; i == idx -> progress; else -> 0f }
                         Box(Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.35f))) {
                             Box(Modifier.fillMaxHeight().fillMaxWidth(fill).background(Color.White))
@@ -2562,10 +2675,10 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    FrianzoAvatar(group.user?.profilePictureUrl, 36.dp)
+                    FrianzoAvatar(liveGroup.user?.profilePictureUrl, 36.dp)
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(group.user?.displayName ?: group.user?.username ?: "Story", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        Text(liveGroup.user?.displayName ?: liveGroup.user?.username ?: "Story", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         Text(commentTimeAgo(item?.createdAt), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     if (isVideo) IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (muted) "Unmute" else "Mute", tint = Color.White) }
@@ -2576,7 +2689,7 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                             // (the progress ticker and the VideoView both
                             // honour `paused`); Cancel row added (web parity).
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false; paused = false }) {
-                                DropdownMenuItem(text = { Text(if (isMuted) "Unmute stories" else "Mute stories") }, onClick = { menuOpen = false; paused = false; scope.launch { try { val uid = group.user?.id ?: group.userId; val r = if (isMuted) api2.unmuteStories(uid) else api2.muteStories(uid); if (r.success) { isMuted = !isMuted; notice = if (isMuted) "Stories muted" else "Stories unmuted" } else notice = r.error?.message ?: "Could not change mute setting" } catch (e: Exception) { notice = e.message } } })
+                                DropdownMenuItem(text = { Text(if (isMuted) "Unmute stories" else "Mute stories") }, onClick = { menuOpen = false; paused = false; scope.launch { try { val uid = liveGroup.user?.id ?: liveGroup.userId; val r = if (isMuted) api2.unmuteStories(uid) else api2.muteStories(uid); if (r.success) { isMuted = !isMuted; notice = if (isMuted) "Stories muted" else "Stories unmuted" } else notice = r.error?.message ?: "Could not change mute setting" } catch (e: Exception) { notice = e.message } } })
                                 DropdownMenuItem(text = { Text("Cancel") }, onClick = { menuOpen = false; paused = false })
                             }
                         }
@@ -2605,7 +2718,7 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                             // Web story reply goes to the author's DM; the
                             // backend has no story-reply endpoint, so the
                             // reply is sent as a real chat message.
-                            scope.launch { try { val uid = group.user?.id ?: group.userId; val conv = api2.createConversation(CreateConversationRequest(uid)); val cid = conv.data?.id; if (cid != null && api2.sendMessage(cid, SendMessageRequest(text)).success) { replyText = ""; replySent = true; notice = "Reply sent" } else notice = "Could not send reply" } catch (e: Exception) { notice = e.message } }
+                            scope.launch { try { val uid = liveGroup.user?.id ?: liveGroup.userId; val conv = api2.createConversation(CreateConversationRequest(uid)); val cid = conv.data?.id; if (cid != null && api2.sendMessage(cid, SendMessageRequest(text)).success) { replyText = ""; replySent = true; notice = "Reply sent" } else notice = "Could not send reply" } catch (e: Exception) { notice = e.message } }
                         }) { Icon(Icons.Filled.Send, contentDescription = "Send reply", tint = Color.White) }
                         // A-B17: revert the heart when the server rejects
                         // the like, not only on exception.
@@ -2628,6 +2741,166 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
     }
 }
 
+// ---------- STORY STICKERS (v5.19, H6) ----------
+// One web-created sticker, matching StoryStickers.tsx:25-190.
+// Poll: vote once (owner sees bars, a voter sees bars after voting,
+// anyone else sees plain options). Question: answer sheet, or the
+// owner's answers sheet. Countdown: live ticking text. Link: opens
+// the browser. Unknown types render nothing, like the web.
+@Composable
+private fun StoryStickerView(api2: FrianzoApi2, sticker: StatusSticker, isOwner: Boolean, nowMs: Long, onVoted: () -> Unit, onAnswered: () -> Unit, onNotice: (String) -> Unit, onPauseChange: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    if (sticker.type == "poll") {
+        val data = sticker.data
+        val options = data?.options.orEmpty()
+        val results = sticker.results
+        val voted = sticker.myVote != null
+        var showResults by remember(sticker.id) { mutableStateOf(false) }
+        var voting by remember(sticker.id) { mutableStateOf(false) }
+        val showBars = isOwner || voted || showResults
+        // Taps on the card itself (not on an option) must not advance
+        // the story — the web stops propagation on every sticker.
+        Column(
+            Modifier.width(208.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = 0.95f)).padding(12.dp)
+                .pointerInput(Unit) { detectTapGestures { } }
+        ) {
+            Text(data?.question ?: "Poll", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0F172A), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            options.forEachIndexed { i, opt ->
+                val pct = if (results != null && results.total > 0) (results.counts.getOrNull(i) ?: 0) * 100 / results.total else 0
+                val mine = sticker.myVote == i
+                Box(
+                    Modifier.fillMaxWidth().height(32.dp).clip(RoundedCornerShape(8.dp))
+                        .background(if (mine) FrianzoBlue else Color(0xFFF1F5F9))
+                        .clickable(enabled = !showBars && !voting && !isOwner) {
+                            voting = true
+                            scope.launch {
+                                try {
+                                    val r = api2.votePoll(sticker.id, mapOf("optionIndex" to i))
+                                    // The vote response carries no results
+                                    // (stickerService.votePoll returns only
+                                    // { voted, optionIndex }), so the viewer
+                                    // re-fetches the feed for fresh counts.
+                                    if (r.success) onVoted() else onNotice(r.error?.message ?: "Could not vote")
+                                } catch (e: Exception) { onNotice(e.message ?: "Could not vote") }
+                                finally { voting = false }
+                            }
+                        }
+                ) {
+                    if (showBars && results != null) Box(Modifier.fillMaxHeight().fillMaxWidth(pct / 100f).background(if (mine) Color(0xFF1D4ED8) else Color(0xFFCBD5E1)))
+                    Row(Modifier.fillMaxSize().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(opt, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (mine) Color.White else Color(0xFF1E293B), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        if (showBars && results != null) Text("$pct%", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (mine) Color.White else Color(0xFF1E293B))
+                    }
+                }
+                if (i < options.size - 1) Spacer(Modifier.height(6.dp))
+            }
+            if (results != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    Text("${results.total} ${if (results.total == 1) "vote" else "votes"}", fontSize = 10.sp, color = Color(0xFF64748B))
+                    // Same condition as the web (StoryStickers.tsx:75-79);
+                    // on the web it can never fire either, since results
+                    // is null for a non-owner who has not voted yet.
+                    if (!isOwner && !voted) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (showResults) "hide" else "results", fontSize = 10.sp, color = FrianzoBlue, modifier = Modifier.clickable { showResults = !showResults })
+                    }
+                }
+            }
+        }
+    }
+    if (sticker.type == "question") {
+        var answerOpen by remember(sticker.id) { mutableStateOf(false) }
+        var answersOpen by remember(sticker.id) { mutableStateOf(false) }
+        var answerText by remember(sticker.id) { mutableStateOf("") }
+        var sending by remember(sticker.id) { mutableStateOf(false) }
+        val answered = sticker.myAnswer != null
+        Column(
+            Modifier.width(208.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = 0.95f)).padding(12.dp)
+                .clickable { if (isOwner) { answersOpen = true; onPauseChange(true) } else { answerOpen = true; onPauseChange(true) } },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Ask me", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF9333EA))
+            Text(sticker.data?.prompt ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0F172A), textAlign = TextAlign.Center)
+            Spacer(Modifier.height(4.dp))
+            if (isOwner) Text("${sticker.answerCount} answers — tap to view", fontSize = 10.sp, color = Color(0xFF64748B))
+            else if (answered) Text("✓ Answered", fontSize = 10.sp, fontWeight = FontWeight.Medium, color = Color(0xFF16A34A))
+            else Text("Tap to answer", fontSize = 10.sp, color = Color(0xFF64748B))
+        }
+        if (answerOpen) {
+            Dialog(onDismissRequest = { answerOpen = false; onPauseChange(false) }) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White).padding(16.dp)) {
+                    Text(sticker.data?.prompt ?: "", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF0F172A))
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = answerText, onValueChange = { if (it.length <= 300) answerText = it }, placeholder = { Text("Type your answer...") }, modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 4)
+                    Spacer(Modifier.height(12.dp))
+                    Button(enabled = answerText.isNotBlank() && !sending, onClick = {
+                        sending = true
+                        scope.launch {
+                            try {
+                                val r = api2.answerQuestion(sticker.id, mapOf("text" to answerText.trim()))
+                                if (r.success) { answerOpen = false; onPauseChange(false); answerText = ""; onAnswered() } else onNotice(r.error?.message ?: "Could not send answer")
+                            } catch (e: Exception) { onNotice(e.message ?: "Could not send answer") }
+                            finally { sending = false }
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) { Text(if (sending) "Sending..." else "Send") }
+                }
+            }
+        }
+        if (answersOpen) {
+            Dialog(onDismissRequest = { answersOpen = false; onPauseChange(false) }) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White).padding(16.dp)) {
+                    Text(sticker.data?.prompt ?: "", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF0F172A), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                        val answers = sticker.answers.orEmpty()
+                        if (answers.isEmpty()) Text("No answers yet.", fontSize = 14.sp, color = Color(0xFF94A3B8), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                        answers.forEach { a ->
+                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+                                FrianzoAvatar(a.user?.profilePictureUrl, 28.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(a.user?.displayName ?: a.user?.username ?: "User", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF475569))
+                                    Text(a.text ?: "", fontSize = 14.sp, color = Color(0xFF0F172A))
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { answersOpen = false; onPauseChange(false) }, modifier = Modifier.fillMaxWidth()) { Text("Close") }
+                }
+            }
+        }
+    }
+    if (sticker.type == "countdown") {
+        val targetMillis = parseStickerIsoMillis(sticker.data?.targetAt)
+        Column(
+            Modifier.clip(RoundedCornerShape(16.dp)).background(Brush.linearGradient(listOf(Color(0xFF9333EA), Color(0xFFDB2777)))).padding(horizontal = 16.dp, vertical = 10.dp)
+                .pointerInput(Unit) { detectTapGestures { } },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(sticker.data?.title ?: "", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            if (targetMillis != null) Text(formatCountdown(targetMillis, nowMs), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        }
+    }
+    if (sticker.type == "link") {
+        Button(
+            onClick = {
+                val url = sticker.data?.url ?: return@Button
+                if (!openWebUrl(context, url)) onNotice("Could not open link")
+            },
+            shape = RoundedCornerShape(28.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.95f), contentColor = Color(0xFF1D4ED8)),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(sticker.data?.label ?: sticker.data?.url ?: "Link", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
 // ---------- STORY CREATION: photo/video or text + background (POST /api/statuses) ----------
 @Composable
 private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: () -> Unit) {
@@ -2639,6 +2912,21 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
     var visibility by rememberSaveable { mutableStateOf("everyone") }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    // v5.19 (H6 story stickers): drafts for this story (backend max 5,
+    // enforced on the button) + which sticker sheet is open.
+    var stickers by remember { mutableStateOf<List<StickerDraft>>(emptyList()) }
+    var stickerSheet by remember { mutableStateOf<String?>(null) }
+    // Sticker form state (plain remember: pollOpts is a List, which
+    // rememberSaveable cannot save).
+    var pollQ by remember { mutableStateOf("") }
+    var pollOpts by remember { mutableStateOf(listOf("", "")) }
+    var qPrompt by remember { mutableStateOf("") }
+    var cdTitle by remember { mutableStateOf("") }
+    var cdDateMillis by remember { mutableStateOf<Long?>(null) }
+    var cdHour by remember { mutableStateOf(12) }
+    var cdMinute by remember { mutableStateOf(0) }
+    var linkUrl by remember { mutableStateOf("") }
+    var linkLabel by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -2652,7 +2940,9 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
         }
     }
     val pickStoryMedia = rememberPermissionGate(galleryPermissions(), onGranted = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageAndVideo)) })
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+    // v5.19 (H6): the sticker section makes the screen taller than a
+    // small phone, so the whole create screen scrolls.
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).background(MaterialTheme.colorScheme.background).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onClose) { Text("Cancel") }
             Text("New story", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2685,6 +2975,37 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
             }
         }
         Spacer(Modifier.height(12.dp))
+        // v5.19 (H6 story stickers): the sticker step — same four types
+        // as the web StickerSheets (poll / question / countdown / link).
+        // The backend caps a story at 5 stickers (stickerService).
+        Text("Stickers (${stickers.size}/5)", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        OutlinedButton(enabled = stickers.size < 5, onClick = { stickerSheet = "types" }, shape = RoundedCornerShape(28.dp)) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Add sticker", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        }
+        if (stickers.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Drag a sticker to move it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            StickerPreviewBox(
+                mediaUri = mediaUri,
+                mediaIsVideo = mediaIsVideo,
+                text = text,
+                bgColor = bgColor,
+                stickers = stickers,
+                onMove = { i, x, y -> stickers = stickers.mapIndexed { idx, s -> if (idx == i) s.copy(posX = x, posY = y) else s } },
+            )
+            Spacer(Modifier.height(4.dp))
+            stickers.forEachIndexed { i, s ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stickerDraftSummary(s), fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    IconButton(onClick = { stickers = stickers.filterIndexed { idx, _ -> idx != i } }) { Icon(Icons.Filled.Close, contentDescription = "Remove sticker", modifier = Modifier.size(18.dp)) }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         Button(enabled = !busy && (mediaUri != null || text.isNotBlank()), onClick = {
             busy = true
             scope.launch {
@@ -2706,6 +3027,8 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
                         text.ifBlank { null }?.let { okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), it) },
                         okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), bgColor),
                         okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), visibility),
+                        // v5.19 (H6): stickers JSON part; null when none.
+                        stickers = if (stickers.isEmpty()) null else okhttp3.RequestBody.create("text/plain".toMediaTypeOrNull(), stickerDraftsJson(stickers)),
                     )
                     try { tmpFile?.delete() } catch (_: Exception) {}
                     if (!res.success) throw Exception(res.error?.message ?: "Story failed")
@@ -2716,6 +3039,192 @@ private fun StoryCreateScreen(api2: FrianzoApi2, onDone: () -> Unit, onClose: ()
         }, modifier = Modifier.fillMaxWidth().height(FrianzoUi.ButtonHeight), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text(if (busy) "Posting..." else "Share story", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         message?.let { Spacer(Modifier.height(12.dp)); Text(it, color = FrianzoBadgeRed) }
         if (busy) { Spacer(Modifier.height(12.dp)); DotsLoading() }
+        // v5.19 (H6): sticker sheets — same fields + limits as the web
+        // StickerSheets (poll Q<=100 / options 2-4 x <=40, question
+        // prompt<=100, countdown title<=60 + future date/time, link
+        // URL required / label<=40 optional).
+        if (stickerSheet == "types") {
+            AlertDialog(onDismissRequest = { stickerSheet = null }, title = { Text("Choose a sticker") },
+                text = {
+                    Column {
+                        listOf("poll" to "Poll", "question" to "Question", "countdown" to "Countdown", "link" to "Link").forEach { (t, label) ->
+                            Row(Modifier.fillMaxWidth().clickable { stickerSheet = t }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(when (t) { "poll" -> Icons.Filled.Poll; "question" -> Icons.Filled.QuestionAnswer; "countdown" -> Icons.Filled.Timer; else -> Icons.Filled.Link }, contentDescription = null, tint = FrianzoBlue)
+                                Spacer(Modifier.width(12.dp))
+                                Text(label, fontSize = 15.sp)
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { stickerSheet = null }) { Text("Cancel") } })
+        }
+        if (stickerSheet == "poll") {
+            AlertDialog(onDismissRequest = { stickerSheet = null }, title = { Text("Poll") },
+                text = {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        OutlinedTextField(value = pollQ, onValueChange = { if (it.length <= 100) pollQ = it }, label = { Text("Ask a question...") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        Spacer(Modifier.height(8.dp))
+                        pollOpts.forEachIndexed { i, opt ->
+                            OutlinedTextField(value = opt, onValueChange = { v -> if (v.length <= 40) pollOpts = pollOpts.mapIndexed { j, o -> if (j == i) v else o } }, label = { Text("Option ${i + 1}") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        if (pollOpts.size < 4) TextButton(onClick = { pollOpts = pollOpts + "" }) { Text("+ Add option") }
+                    }
+                },
+                confirmButton = {
+                    val valid = pollQ.isNotBlank() && pollOpts.count { it.isNotBlank() } >= 2
+                    Button(enabled = valid, onClick = {
+                        stickers = stickers + StickerDraft(type = "poll", posX = 50f, posY = nextStickerY(stickers.size), question = pollQ.trim(), options = pollOpts.map { it.trim() }.filter { it.isNotEmpty() })
+                        pollQ = ""; pollOpts = listOf("", "")
+                        stickerSheet = null
+                    }) { Text("Add") }
+                },
+                dismissButton = { TextButton(onClick = { stickerSheet = "types" }) { Text("Back") } })
+        }
+        if (stickerSheet == "question") {
+            AlertDialog(onDismissRequest = { stickerSheet = null }, title = { Text("Question") },
+                text = {
+                    OutlinedTextField(value = qPrompt, onValueChange = { if (it.length <= 100) qPrompt = it }, label = { Text("Ask me anything...") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                },
+                confirmButton = {
+                    Button(enabled = qPrompt.isNotBlank(), onClick = {
+                        stickers = stickers + StickerDraft(type = "question", posX = 50f, posY = nextStickerY(stickers.size), prompt = qPrompt.trim())
+                        qPrompt = ""
+                        stickerSheet = null
+                    }) { Text("Add") }
+                },
+                dismissButton = { TextButton(onClick = { stickerSheet = "types" }) { Text("Back") } })
+        }
+        if (stickerSheet == "countdown") {
+            AlertDialog(onDismissRequest = { stickerSheet = null }, title = { Text("Countdown") },
+                text = {
+                    Column {
+                        OutlinedTextField(value = cdTitle, onValueChange = { if (it.length <= 60) cdTitle = it }, label = { Text("Countdown to...") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                val cal = Calendar.getInstance()
+                                if (cdDateMillis != null) cal.timeInMillis = cdDateMillis!!
+                                val dlg = DatePickerDialog(context, { _, y, m, d ->
+                                    val c = Calendar.getInstance()
+                                    c.set(y, m, d, cdHour, cdMinute, 0)
+                                    c.set(Calendar.MILLISECOND, 0)
+                                    cdDateMillis = c.timeInMillis
+                                }, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH))
+                                dlg.datePicker.minDate = System.currentTimeMillis()
+                                dlg.show()
+                            }, modifier = Modifier.weight(1f)) { Text(if (cdDateMillis == null) "Pick a date" else SimpleDateFormat("MMM d, yyyy", Locale.US).format(Date(cdDateMillis!!)), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                            OutlinedButton(onClick = {
+                                TimePickerDialog(context, { _, h, m ->
+                                    cdHour = h; cdMinute = m
+                                    cdDateMillis = cdDateMillis?.let { combineDateTimeMillis(it, h, m) }
+                                }, cdHour, cdMinute, true).show()
+                            }, modifier = Modifier.weight(1f)) { Text(String.format(Locale.US, "%02d:%02d", cdHour, cdMinute), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                        }
+                        if (cdDateMillis != null && cdDateMillis!! <= System.currentTimeMillis()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("Pick a future date and time.", color = FrianzoBadgeRed, fontSize = 13.sp)
+                        }
+                    }
+                },
+                confirmButton = {
+                    val valid = cdTitle.isNotBlank() && cdDateMillis != null && cdDateMillis!! > System.currentTimeMillis()
+                    Button(enabled = valid, onClick = {
+                        stickers = stickers + StickerDraft(type = "countdown", posX = 50f, posY = nextStickerY(stickers.size), title = cdTitle.trim(), targetAt = stickerIsoString(cdDateMillis!!))
+                        cdTitle = ""; cdDateMillis = null; cdHour = 12; cdMinute = 0
+                        stickerSheet = null
+                    }) { Text("Add") }
+                },
+                dismissButton = { TextButton(onClick = { stickerSheet = "types" }) { Text("Back") } })
+        }
+        if (stickerSheet == "link") {
+            AlertDialog(onDismissRequest = { stickerSheet = null }, title = { Text("Link") },
+                text = {
+                    Column {
+                        OutlinedTextField(value = linkUrl, onValueChange = { linkUrl = it }, label = { Text("https://...") }, modifier = Modifier.fillMaxWidth(), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = linkLabel, onValueChange = { if (it.length <= 40) linkLabel = it }, label = { Text("Label (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    }
+                },
+                confirmButton = {
+                    Button(enabled = linkUrl.isNotBlank(), onClick = {
+                        // The backend adds https:// when the URL has no
+                        // scheme and defaults a blank label to the
+                        // hostname (stickerService.validateStickerData).
+                        stickers = stickers + StickerDraft(type = "link", posX = 50f, posY = nextStickerY(stickers.size), url = linkUrl.trim(), label = linkLabel.trim())
+                        linkUrl = ""; linkLabel = ""
+                        stickerSheet = null
+                    }) { Text("Add") }
+                },
+                dismissButton = { TextButton(onClick = { stickerSheet = "types" }) { Text("Back") } })
+        }
+    }
+}
+
+
+private fun stickerDraftSummary(draft: StickerDraft): String {
+    return when (draft.type) {
+        "poll" -> "Poll: ${draft.question ?: ""}"
+        "question" -> "Q: ${draft.prompt ?: ""}"
+        "countdown" -> "Countdown: ${draft.title ?: ""}"
+        "link" -> "Link: ${draft.label?.takeIf { it.isNotBlank() } ?: draft.url ?: ""}"
+        else -> draft.type
+    }
+}
+
+@Composable
+private fun StickerDraftChip(draft: StickerDraft) {
+    Box(Modifier.widthIn(max = 180.dp).clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.95f)).padding(horizontal = 8.dp, vertical = 4.dp)) {
+        Text(stickerDraftSummary(draft), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF0F172A), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// v5.19 (H6): preview of where the stickers will sit on the story
+// (the photo, or the text story's background colour), with drag to
+// move. Positions are 0-100 percentages of the layer; the gesture's
+// pixel deltas are converted with the layer size in px.
+// rememberUpdatedState guards the stale-closure trap — the pointerInput
+// block is keyed on the sticker index only, so without it the gesture
+// would keep the first composition's draft/onMove forever.
+@Composable
+private fun StickerPreviewBox(mediaUri: android.net.Uri?, mediaIsVideo: Boolean, text: String, bgColor: String, stickers: List<StickerDraft>, onMove: (Int, Float, Float) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp))) {
+        val density = LocalDensity.current
+        val layerWpx = with(density) { maxWidth.toPx() }
+        val layerHpx = with(density) { maxHeight.toPx() }
+        val latestOnMove by rememberUpdatedState(onMove)
+        var sizes by remember { mutableStateOf<Map<Int, IntSize>>(emptyMap()) }
+        if (mediaUri != null && !mediaIsVideo) {
+            AsyncImage(model = mediaUri, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        } else {
+            val bg = try { Color(android.graphics.Color.parseColor(bgColor)) } catch (_: Exception) { Color(0xFF1E293B) }
+            Box(Modifier.fillMaxSize().background(bg), contentAlignment = Alignment.Center) {
+                if (text.isNotBlank()) Text(text, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(16.dp), textAlign = TextAlign.Center, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                else if (mediaUri != null) Text("Video selected", color = Color.White, fontSize = 14.sp)
+            }
+        }
+        stickers.forEachIndexed { i, draft ->
+            val latestDraft by rememberUpdatedState(draft)
+            val sz = sizes[i]
+            val xDp = maxWidth * (draft.posX / 100f) - with(density) { ((sz?.width ?: 0) / 2).toDp() }
+            val yDp = maxHeight * (draft.posY / 100f) - with(density) { ((sz?.height ?: 0) / 2).toDp() }
+            Box(
+                Modifier.offset(x = xDp, y = yDp)
+                    .onGloballyPositioned { coords -> if (sizes[i] != coords.size) sizes = sizes + (i to coords.size) }
+                    .pointerInput(i) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            if (layerWpx <= 0f || layerHpx <= 0f) return@detectDragGestures
+                            val base = latestDraft
+                            val nx = (((base.posX / 100f) * layerWpx + dragAmount.x) / layerWpx * 100f).coerceIn(0f, 100f)
+                            val ny = (((base.posY / 100f) * layerHpx + dragAmount.y) / layerHpx * 100f).coerceIn(0f, 100f)
+                            latestOnMove(i, nx, ny)
+                        }
+                    }
+            ) {
+                StickerDraftChip(draft)
+            }
+        }
     }
 }
 

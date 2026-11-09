@@ -292,7 +292,9 @@ fun ReelCameraScreen(
 
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     var camera by remember { mutableStateOf<Camera?>(null) }
-    var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
+    // v5.19 (H8): default is FRONT (web reels/camera opens on the front
+    // camera). The flip toggle below still switches BACK <-> FRONT.
+    var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_FRONT) }
     // B-B17: an error banner clears itself after 5s (and is cleared by a
     // successful record/photo, above) instead of staying pinned all session.
     LaunchedEffect(error) {

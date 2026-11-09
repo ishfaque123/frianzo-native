@@ -34,8 +34,8 @@ android {
         applicationId = "com.frianzo.nativeapp"
         minSdk = 24
         targetSdk = 35
-        versionCode = 61
-        versionName = "5.18.5"
+        versionCode = 62
+        versionName = "5.19"
     }
 
     buildFeatures { compose = true }
@@ -121,4 +121,11 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-analytics")
     implementation("com.google.firebase:firebase-crashlytics")
+    // v5.19 (FCM push, HIGH gap H1): firebase-messaging, same BOM 33.7.0
+    // (BOM NEVER upgraded — see the 35.1.0 revert note above). Delivers
+    // data-only push via FrianzoMessagingService; the backend sends only
+    // when FIREBASE_SERVICE_ACCOUNT_JSON is set (owner step — pushes stay
+    // dormant until then). No code change needed beyond this line: the
+    // SDK auto-initialises from google-services.json.
+    implementation("com.google.firebase:firebase-messaging")
 }

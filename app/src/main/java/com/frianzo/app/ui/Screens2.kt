@@ -110,6 +110,8 @@ import com.frianzo.app.data.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -1637,6 +1639,8 @@ private fun ChatWallpaperSheet(selected: String, onPick: (String) -> Unit, onDis
 // FB Story, Text.
 // The rail count moves only when a channel is really tapped (R6).
 // No Repost row: the backend has no reel-repost endpoint, so none is faked.
+// v5.19 (H7): Frianzo DM now opens the "Send to" picker and really sends
+// the reel link via socket message:send (was: empty author-only chat).
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose: () -> Unit, onShared: () -> Unit, onOpenChat: (String, String) -> Unit) {
@@ -1644,7 +1648,27 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
-    var dmBusy by remember { mutableStateOf(false) }
+    // v5.19 (H7): "Send to" picker (web /messages/new) — copied from
+    // ProfileShareSheet in this file (same mechanism as the v5.18 post
+    // sheet). The old DM tile created a chat with the AUTHOR and opened
+    // it EMPTY; the reel link was never sent. Now the user picks
+    // recipients and the link is actually sent to each of them.
+    var showDmPicker by remember { mutableStateOf(false) }
+    var dmQ by remember { mutableStateOf("") }
+    var dmFound by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var dmSelected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var dmSelectedUsers by remember { mutableStateOf<List<PublicProfile>>(emptyList()) }
+    var dmSending by remember { mutableStateOf(false) }
+    var shareError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(dmQ) {
+        if (dmQ.isBlank()) { dmFound = emptyList(); return@LaunchedEffect }
+        kotlinx.coroutines.delay(300)
+        val term = dmQ
+        try {
+            val r = api2.searchUsers(term)
+            if (term == dmQ && r.success && r.data != null) dmFound = r.data.users
+        } catch (_: Exception) {}
+    }
     // v3.7 (C8): the rail count moves ONLY after POST /api/share/event
     // succeeds. A failed event used to bump the rail anyway (fire-and-
     // forget with the error swallowed) and show a share the server never
@@ -1654,6 +1678,45 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
             try {
                 if (api2.recordShareEvent(mapOf("type" to "reel", "id" to reel.id, "channel" to channel)).success) onShared()
             } catch (_: Exception) { /* no bump: the server never recorded it */ }
+        }
+    }
+    // v5.19 (H7): send the reel link to every picked recipient —
+    // same call as the post/profile sheets: createConversation, then
+    // socket `message:send` with {conversationId, content: link}.
+    // `link` is the sheet's param — the caller already built it as the
+    // short /s/ link (Screens2.kt ReelPage lazy createShareLink).
+    // NOTE: record("dm") alone here — unlike the post/profile sheets,
+    // this sheet's record() already calls onShared() on success, so a
+    // second onShared() would double-count the rail.
+    fun sendDm() {
+        if (dmSelected.isEmpty() || dmSending) return
+        dmSending = true; shareError = null
+        val targets = dmSelectedUsers.filter { it.id in dmSelected }
+        scope.launch {
+            var sent = 0
+            var firstConv: Pair<String, String>? = null
+            for (u in targets) {
+                val uid = u.id ?: continue
+                try {
+                    val res = api2.createConversation(com.frianzo.app.data.CreateConversationRequest(uid))
+                    val convId = res.data?.id ?: continue
+                    val obj = org.json.JSONObject()
+                    obj.put("conversationId", convId)
+                    obj.put("content", link)
+                    val ack = ChatSocket.emitAck("message:send", obj)
+                    if (ack?.optBoolean("success") == true) {
+                        sent += 1
+                        if (firstConv == null) firstConv = convId to (u.displayName ?: u.username ?: "User")
+                    }
+                } catch (_: Exception) {}
+            }
+            dmSending = false
+            if (sent > 0) {
+                record("dm")
+                showDmPicker = false; onClose()
+                if (sent == 1 && firstConv != null) onOpenChat(firstConv!!.first, firstConv!!.second)
+                else Toast.makeText(context, "Sent to $sent chats", Toast.LENGTH_SHORT).show()
+            } else shareError = "Couldn't send — try again."
         }
     }
     fun openUrl(url: String, channel: String) { record(channel); try { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } catch (_: Exception) {}; onClose() }
@@ -1685,30 +1748,11 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 userScrollEnabled = false,
             ) {
-                // B-D5: the DM tile is hidden when the reel has no author
-                // id — it used to sit there and do nothing when tapped.
-                if (reel.author?.id != null) {
-                    item {
-                        ReelShareTile("Frianzo DM", Color(0xFF0F172A), "F") {
-                            val authorId = reel.author?.id
-                            if (authorId != null && !dmBusy) {
-                                dmBusy = true
-                                scope.launch {
-                                    try {
-                                        val res = api2.createConversation(com.frianzo.app.data.CreateConversationRequest(authorId))
-                                        val convId = res.data?.id
-                                        if (convId != null) {
-                                            // v3.7 (C8): record the DM share ONLY
-                                            // after the conversation really exists.
-                                            record("dm")
-                                            onClose(); onOpenChat(convId, reel.author?.displayName ?: reel.author?.username ?: "User")
-                                        }
-                                    } catch (_: Exception) {}
-                                    dmBusy = false
-                                }
-                            }
-                        }
-                    }
+                // v5.19 (H7): always shown — the picker lets the user
+                // choose ANY recipient(s), so no author id is needed.
+                // (B-D5's author guard died with the old author-only tile.)
+                item {
+                    ReelShareTile("Frianzo DM", Color(0xFF0F172A), "F") { showDmPicker = true }
                 }
                 item { ReelShareTile("WhatsApp", Color(0xFF25D366), "W") { openUrl("https://wa.me/?text=" + android.net.Uri.encode(link), "whatsapp") } }
                 item { ReelShareTile("WA Status", Color(0xFF25D366), "W") { openUrl("whatsapp://send?text=" + android.net.Uri.encode(link), "whatsapp_status") } }
@@ -1717,7 +1761,73 @@ private fun ReelShareSheet(api2: FrianzoApi2, reel: Reel, link: String, onClose:
                 item { ReelShareTile("FB Story", Color(0xFF1877F2), "f") { openUrl("fb://story/camera?attachment_url=" + android.net.Uri.encode(link), "facebook_story") } }
                 item { ReelShareTile("Text message", Color(0xFF34C759), "S") { openUrl("sms:?body=" + android.net.Uri.encode(link), "sms") } }
             }
+            if (shareError != null) { Spacer(Modifier.height(8.dp)); Text(shareError!!, fontSize = 13.sp, color = Color.Red) }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+    // v5.19 (H7): "Send to" picker (web /messages/new?share=<url>):
+    // search people, multi-select, Send — the link goes to each
+    // recipient. Copied from ProfileShareSheet in this file.
+    if (showDmPicker) {
+        ModalBottomSheet(
+            onDismissRequest = { showDmPicker = false },
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Send to", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+                    if (dmSelected.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                        Text("${dmSelected.size} selected", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { showDmPicker = false }, contentPadding = PaddingValues(0.dp)) { Text("Cancel", fontSize = 14.sp, color = FrianzoBlue, maxLines = 1, softWrap = false) }
+                }
+                HorizontalDivider(color = FrianzoBorder)
+                OutlinedTextField(
+                    value = dmQ, onValueChange = { dmQ = it },
+                    label = { Text("Search people") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    shape = RoundedCornerShape(12.dp),
+                )
+                dmFound.forEach { u ->
+                    val selected = u.id != null && dmSelected.contains(u.id)
+                    Row(
+                        Modifier.fillMaxWidth().background(if (selected) FrianzoBlueTint else Color.Transparent).clickable {
+                            val id = u.id ?: return@clickable
+                            if (selected) {
+                                dmSelected = dmSelected - id
+                                dmSelectedUsers = dmSelectedUsers.filter { it.id != id }
+                            } else {
+                                dmSelected = dmSelected + id
+                                dmSelectedUsers = dmSelectedUsers + u
+                            }
+                        }.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FrianzoAvatar(u.profilePictureUrl, 40.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text(u.displayName ?: u.username ?: "User", Modifier.weight(1f), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Box(Modifier.size(20.dp).clip(CircleShape).background(if (selected) FrianzoBlue else Color.Transparent).border(if (selected) 0.dp else 1.dp, if (selected) Color.Transparent else FrianzoBorder, CircleShape), contentAlignment = Alignment.Center) {
+                            if (selected) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                        }
+                    }
+                }
+                if (dmQ.isNotBlank() && dmFound.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Text("No people found", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { sendDm() },
+                    enabled = dmSelected.isNotEmpty() && !dmSending,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
+                ) {
+                    Text(if (dmSending) "Sending…" else "Send (${dmSelected.size})", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                }
+            }
         }
     }
 }
@@ -4999,39 +5109,121 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
 }
 
 // ---------- NOTIFICATIONS ----------
-/** M1 fix: raw type codes ("reel_like", blank actor) rendered as
- * " reel_like". Map known types to plain words and fall back to the
- * type with underscores replaced, never a blank headline. */
+// v5.19 (H3): row text is the web's messageFor() verbatim
+// (frontend/src/app/notifications/page.tsx:218-264) — copied string
+// for string, never paraphrased. Differences from the old mapping:
+// viral_post uses detail ("@{username}'s post is going viral!") or
+// falls back to "🔥 {A}'s post is going viral!"; new_device_login,
+// reel_reply and verification_* use the web's exact words;
+// comment_mention says "tagged you in a post" when commentId is null
+// (H4) and "mentioned you in a comment" otherwise; the removed /
+// restricted / banned rows carry the reason (detail) IN the message,
+// as on the web. "message" / "comment" are kept for the legacy types
+// the old code already handled; unknown future types fall back to the
+// web's default, "New notification", never a raw snake_case code.
 private fun notificationTitle(n: NotificationItem): String {
     val actor = n.actor?.displayName ?: n.actor?.username ?: "Someone"
-    // B-B34: every type the backend can send (notificationService
-    // NotificationType union), plus "message" for safety. Unknown future
-    // types fall back to plain English, never the raw snake_case code.
-    val action = when (n.type) {
-        "post_like" -> "liked your post"
-        "reel_like" -> "liked your reel"
-        "post_comment" -> "commented on your post"
-        "reel_comment" -> "commented on your reel"
-        "comment" -> "commented on your post"
-        "comment_like" -> "liked your comment"
-        "comment_reply" -> "replied to your comment"
-        "reel_reply" -> "replied to your reel comment"
-        "comment_mention" -> "mentioned you in a comment"
-        "post_share" -> "shared your post"
-        "follow" -> "started following you"
-        "new_device_login" -> "signed in from a new device"
-        "message" -> "sent you a message"
-        "account_restricted" -> "your account was restricted"
-        "account_banned" -> "your account was banned"
-        "verification_approved" -> "your verification was approved"
-        "verification_rejected" -> "your verification was not approved"
-        "comment_removed" -> "a comment was removed"
-        "post_removed" -> "a post was removed"
-        "reel_removed" -> "a reel was removed"
-        "messaging_restricted" -> "your messaging was restricted"
-        else -> "sent you a notification"
+    return when (n.type) {
+        "follow" -> "$actor started following you"
+        "post_like" -> "$actor liked your post"
+        "post_comment" -> "$actor commented on your post"
+        "comment_like" -> "$actor liked your comment"
+        "comment_reply" -> "$actor replied to your comment"
+        "post_share" -> "$actor shared your post"
+        "reel_like" -> "$actor liked your reel"
+        "reel_comment" -> "$actor commented on your reel"
+        "reel_reply" -> "$actor replied to your comment on a reel"
+        "comment_mention" -> if (n.commentId != null) "$actor mentioned you in a comment" else "$actor tagged you in a post"
+        "new_device_login" -> "New login detected on your account"
+        "comment_removed" -> "Your comment was removed" + if (!n.detail.isNullOrEmpty()) " for ${n.detail}" else ""
+        "post_removed" -> "Your post was removed" + if (!n.detail.isNullOrEmpty()) " for ${n.detail}" else ""
+        "reel_removed" -> "Your reel was removed" + if (!n.detail.isNullOrEmpty()) " for ${n.detail}" else ""
+        "messaging_restricted" -> if (!n.detail.isNullOrEmpty()) "Messaging restricted: ${n.detail}" else "Messaging restricted"
+        "verification_approved" -> "Your account has been verified"
+        "verification_rejected" -> "Your verification request was rejected"
+        "account_restricted" -> if (!n.detail.isNullOrEmpty()) "Your account has been restricted: ${n.detail}" else "Your account has been restricted"
+        "account_banned" -> if (!n.detail.isNullOrEmpty()) "Your account has been banned: ${n.detail}" else "Your account has been banned"
+        "viral_post" -> if (!n.detail.isNullOrEmpty() && n.detail != "viral-scan-marker") n.detail else "🔥 $actor's post is going viral!"
+        "message" -> "$actor sent you a message"
+        "comment" -> "$actor commented on your post"
+        else -> "New notification"
     }
-    return "$actor $action"
+}
+
+// v5.19 (H2): the web's groupNotifications() port
+// (frontend/src/app/notifications/page.tsx:47-111). Rows are merged by
+// (type + actor) across the whole list; a merged group sits at its
+// latest item's time. NEVER_GROUP system types get a unique key per
+// row, so each keeps its own message/reason and never merges.
+private val NEVER_GROUP_NOTIFICATIONS = setOf(
+    "comment_removed",
+    "post_removed",
+    "reel_removed",
+    "messaging_restricted",
+    "new_device_login",
+    "account_restricted",
+    "account_banned",
+    "verification_approved",
+    "verification_rejected",
+)
+
+private data class NotificationGroup(
+    val key: String,
+    val type: String?,
+    val actor: Author?,
+    val items: List<NotificationItem>,
+    val latest: NotificationItem,
+    val hasUnread: Boolean,
+)
+
+private fun parseNotifMillis(createdAt: String?): Long? {
+    if (createdAt.isNullOrBlank()) return null
+    return try {
+        val f = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        f.parse(createdAt)?.time
+    } catch (_: Exception) { null }
+}
+
+private fun groupNotifications(list: List<NotificationItem>): List<NotificationGroup> {
+    val byKey = LinkedHashMap<String, MutableList<NotificationItem>>()
+    for (n in list) {
+        val actorId = n.actor?.id ?: "none"
+        // n.type is nullable; contains() needs a non-null String.
+        val neverGroup = n.type?.let { NEVER_GROUP_NOTIFICATIONS.contains(it) } == true
+        val key = if (neverGroup) "${n.type}:$actorId:${n.id}" else "${n.type}:$actorId"
+        byKey.getOrPut(key) { mutableListOf() }.add(n)
+    }
+    return byKey.entries.map { (key, rows) ->
+        val latest = rows.maxByOrNull { parseNotifMillis(it.createdAt) ?: 0L } ?: rows.first()
+        NotificationGroup(
+            key = key,
+            type = rows.first().type,
+            actor = rows.first().actor,
+            items = rows,
+            latest = latest,
+            hasUnread = rows.any { !it.read },
+        )
+    }.sortedByDescending { parseNotifMillis(it.latest.createdAt) ?: 0L }
+}
+
+// v5.19 (H2): the web's groupMessage() verbatim
+// (frontend/src/app/notifications/page.tsx:85-111). A single-row group
+// shows the normal row text; a merged group counts its rows.
+private fun groupNotificationTitle(g: NotificationGroup): String {
+    val count = g.items.size
+    if (count == 1) return notificationTitle(g.latest)
+    val name = g.actor?.displayName ?: g.actor?.username ?: "Someone"
+    return when (g.type) {
+        "post_like" -> "$name liked $count of your posts"
+        "reel_like" -> "$name liked $count of your reels"
+        "post_comment" -> "$name commented on $count of your posts"
+        "reel_comment" -> "$name commented on $count of your reels"
+        "comment_like" -> "$name liked $count of your comments"
+        "comment_reply" -> "$name replied $count times to your comments"
+        "post_share" -> "$name shared $count of your posts"
+        "follow" -> "$name and ${count - 1} others started following you"
+        else -> "$name sent you $count notifications"
+    }
 }
 
 fun notifTimeAgo(createdAt: String?): String {
@@ -5151,7 +5343,13 @@ private fun VoiceMessagePlayer(url: String, durationSec: Int?, mine: Boolean) {
 // v2.9: tapping a notification deep-links — postId opens the post detail,
 // reelId opens that reel, a message opens the chat with the actor, a follow
 // opens the actor's profile. It no longer always opens the actor profile.
-fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOpenPost: (String) -> Unit = {}, onOpenReel: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }) {
+// v5.19 (H2/H5): rows are grouped like the web (groupNotifications) and
+// taps follow the web's hrefFor() — verification goes to the own profile
+// / Verification settings, removed/restricted/banned rows open Community
+// Guidelines in the browser (same openWebUrl mechanism as the login
+// Terms/Privacy links), new_device_login navigates nowhere.
+fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOpenPost: (String) -> Unit = {}, onOpenReel: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenOwnProfile: () -> Unit = {}, onOpenVerification: () -> Unit = {}) {
+    val context = LocalContext.current
     var items by remember { mutableStateOf<List<NotificationItem>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var filter by remember { mutableStateOf("All") }
@@ -5176,13 +5374,66 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
         }
     }
     LaunchedEffect(Unit) { load() }
+    // v5.19 (H2): group first (web groupNotifications), then filter the
+    // GROUPS by type (web matchesFilter) — a merged group shows under
+    // its own type's chip. Likes/Comments/Follows use the web's exact
+    // predicates; Unread shows groups with any unread row; Messages is
+    // kept as-is (dead type today, same as before — see MAP §(d)6).
+    val groups = groupNotifications(items)
     val filtered = when (filter) {
-        "Unread" -> items.filter { !it.read }
-        "Likes" -> items.filter { (it.type ?: "").contains("like") }
-        "Comments" -> items.filter { (it.type ?: "").contains("comment") }
-        "Follows" -> items.filter { it.type == "follow" }
-        "Messages" -> items.filter { it.type == "message" }
-        else -> items
+        "Unread" -> groups.filter { it.hasUnread }
+        "Likes" -> groups.filter { (it.type ?: "").endsWith("_like") }
+        "Comments" -> groups.filter { val t = it.type ?: ""; t.contains("comment") || t.contains("reply") || t.contains("mention") }
+        "Follows" -> groups.filter { it.type == "follow" }
+        "Messages" -> groups.filter { it.type == "message" }
+        else -> groups
+    }
+    // v5.19 (H2): a grouped row's tap marks ALL its rows read — one
+    // per-item POST /:id/read per unread row, as the web does
+    // (handleRowTap, Promise.all). Optimistic: rows flip read at once;
+    // a failed call reloads the list so the state stays truthful.
+    fun markGroupRead(g: NotificationGroup) {
+        val unreadIds = g.items.filter { !it.read }.map { it.id }
+        if (unreadIds.isEmpty()) return
+        items = items.map { if (it.id in unreadIds) it.copy(read = true) else it }
+        scope.launch {
+            val results = unreadIds.map { id -> async { try { api2.markNotificationRead(id).success } catch (_: Exception) { false } } }.awaitAll()
+            if (results.any { !it }) load()
+        }
+    }
+    // v5.19 (H5): the web's hrefFor() destinations
+    // (frontend/src/app/notifications/page.tsx:266-300). System types
+    // are checked BEFORE the postId/reelId fallback: post_removed DOES
+    // carry a postId, but the web sends it to Community Guidelines, not
+    // to the deleted post. new_device_login has no destination on the
+    // web — the tap only marks it read.
+    fun navigateFor(n: NotificationItem) {
+        when (n.type) {
+            "verification_approved" -> onOpenOwnProfile()
+            "verification_rejected" -> onOpenVerification()
+            "account_restricted", "account_banned", "post_removed", "reel_removed", "messaging_restricted" -> {
+                if (!openWebUrl(context, "https://frianzo.online/community-guidelines")) actionError = "Couldn't open the link — no browser app found on this phone."
+            }
+            "new_device_login" -> { /* web hrefFor returns null: no navigation */ }
+            "comment_removed", "viral_post" -> n.postId?.let { onOpenPost(it) }
+            else -> when {
+                n.postId != null -> onOpenPost(n.postId)
+                n.reelId != null -> onOpenReel(n.reelId)
+                n.type == "message" && n.actor?.id != null -> {
+                    // No conversation id on the notification:
+                    // open (or create) the DM with the actor.
+                    scope.launch {
+                        try {
+                            val r = api2.createConversation(CreateConversationRequest(n.actor!!.id!!))
+                            val cid = r.data?.id
+                            if (cid != null) onOpenChat(cid, n.actor?.displayName ?: n.actor?.username ?: "Chat")
+                            else n.actor?.username?.let { onAuthor(it) }
+                        } catch (_: Exception) { n.actor?.username?.let { onAuthor(it) } }
+                    }
+                }
+                else -> n.actor?.username?.let { onAuthor(it) }
+            }
+        }
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // v3.0: title on its own row — the three action buttons used to share
@@ -5237,35 +5488,23 @@ fun NotificationsScreen(api2: FrianzoApi2, onAuthor: (String) -> Unit = {}, onOp
                     Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { DotsLoading() }
                 }
             }
-            items(filtered, key = { it.id }) { n ->
+            items(filtered, key = { it.key }) { g ->
+                // v5.19 (H2): one row per group; the headline is the group
+                // text and the time is the latest row's (web: message +
+                // formatTime only). The reason (detail) already lives in
+                // the headline for every type that carries one (H3), so
+                // the supporting line no longer repeats it.
+                val n = g.latest
+                val groupIds = g.items.map { it.id }
                 ListItem(
-                    headlineContent = { Text(notificationTitle(n), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    supportingContent = { Text(listOfNotNull(n.detail?.takeIf { it.isNotBlank() }, notifTimeAgo(n.createdAt).takeIf { it.isNotBlank() }).joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    trailingContent = { if (!n.read) Badge(containerColor = FrianzoBadgeRed) { Text("new", maxLines = 1, softWrap = false) } },
-                    leadingContent = { if (selecting) Checkbox(checked = n.id in selected, onCheckedChange = { checked -> selected = if (checked) selected + n.id else selected - n.id }) else FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
-                    colors = ListItemDefaults.colors(containerColor = if (!n.read) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),
+                    headlineContent = { Text(groupNotificationTitle(g), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text(notifTimeAgo(n.createdAt), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    trailingContent = { if (g.hasUnread) Badge(containerColor = FrianzoBadgeRed) { Text("new", maxLines = 1, softWrap = false) } },
+                    leadingContent = { if (selecting) Checkbox(checked = groupIds.all { it in selected }, onCheckedChange = { checked -> selected = if (checked) selected + groupIds else selected - groupIds.toSet() }) else FrianzoAvatar(n.actor?.profilePictureUrl, 48.dp) },
+                    colors = ListItemDefaults.colors(containerColor = if (g.hasUnread) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),
                     modifier = Modifier.clickable {
-                        if (selecting) { selected = if (n.id in selected) selected - n.id else selected + n.id }
-                        else {
-                            scope.launch { try { api2.markNotificationRead(n.id); load() } catch (_: Exception) {} }
-                            when {
-                                n.postId != null -> onOpenPost(n.postId)
-                                n.reelId != null -> onOpenReel(n.reelId)
-                                n.type == "message" && n.actor?.id != null -> {
-                                    // No conversation id on the notification:
-                                    // open (or create) the DM with the actor.
-                                    scope.launch {
-                                        try {
-                                            val r = api2.createConversation(CreateConversationRequest(n.actor!!.id!!))
-                                            val cid = r.data?.id
-                                            if (cid != null) onOpenChat(cid, n.actor?.displayName ?: n.actor?.username ?: "Chat")
-                                            else n.actor?.username?.let { onAuthor(it) }
-                                        } catch (_: Exception) { n.actor?.username?.let { onAuthor(it) } }
-                                    }
-                                }
-                                else -> n.actor?.username?.let { onAuthor(it) }
-                            }
-                        }
+                        if (selecting) { selected = if (groupIds.all { it in selected }) selected - groupIds.toSet() else selected + groupIds }
+                        else { markGroupRead(g); navigateFor(n) }
                     },
                 )
                 HorizontalDivider()

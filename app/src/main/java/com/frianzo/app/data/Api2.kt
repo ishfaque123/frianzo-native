@@ -71,7 +71,99 @@ data class StatusItem(
     val createdAt: String? = null,
     val seen: Boolean = false,
     val liked: Boolean = false,
+    // v5.19 (H6 story stickers): GET /api/statuses returns these per item
+    // (getStickers in vynzo-backend stickerService.ts, verified 2026-11-09
+    // in the fresh backend base + live main). The web highlight viewer does
+    // NOT render stickers, so HighlightItem stays untouched.
+    val stickers: List<StatusSticker> = emptyList(),
 )
+// v5.19 (H6 story stickers): StatusSticker rows (status_stickers table)
+// carry { id, type, posX, posY, data } where data is per-type JSON —
+// poll { question, options[] }, question { prompt },
+// countdown { title, targetAt (ISO) }, link { url, label }.
+// GET /api/statuses adds per-viewer state: poll -> myVote +
+// results { counts, total } (results is null for a non-owner who has not
+// voted yet); question -> myAnswer + answers (owner only) + answerCount.
+data class StickerData(
+    val question: String? = null,
+    val options: List<String>? = null,
+    val prompt: String? = null,
+    val title: String? = null,
+    val targetAt: String? = null,
+    val url: String? = null,
+    val label: String? = null,
+)
+data class StickerResults(val counts: List<Int> = emptyList(), val total: Int = 0)
+data class StickerAnswer(val id: String? = null, val userId: String? = null, val text: String? = null, val createdAt: String? = null, val user: Author? = null)
+data class StatusSticker(
+    val id: String,
+    val type: String? = null,
+    val posX: Float = 50f,
+    val posY: Float = 50f,
+    val data: StickerData? = null,
+    val myVote: Int? = null,
+    val results: StickerResults? = null,
+    val myAnswer: String? = null,
+    val answers: List<StickerAnswer>? = null,
+    val answerCount: Int = 0,
+)
+// v5.19 (H6): POST /api/statuses/stickers/:id/vote { optionIndex }
+// returns { voted, optionIndex } — NO results; the viewer re-fetches the
+// feed after a vote to show fresh percentages. POST .../answer { text }
+// returns { answered }.
+data class PollVoteData(val voted: Boolean = false, val optionIndex: Int? = null)
+data class QuestionAnswerData(val answered: Boolean = false)
+/** Draft sticker built in StoryCreateScreen. posX/posY are 0-100
+ * percentages (web StickerComposer default 50/50, draggable). Only the
+ * fields for the draft's type are set. */
+data class StickerDraft(
+    val type: String,
+    val posX: Float = 50f,
+    val posY: Float = 50f,
+    val question: String? = null,
+    val options: List<String> = emptyList(),
+    val prompt: String? = null,
+    val title: String? = null,
+    val targetAt: String? = null,
+    val url: String? = null,
+    val label: String? = null,
+)
+/** Serialises drafts to exactly the web payload shape
+ * { type, posX, posY, data } (StatusBar.tsx:114-115, 314-318:
+ * stickers.map(s => ({ type: s.type, posX: s.posX, posY: s.posY,
+ * data: s.data }))). The backend reads it as a JSON string in the
+ * multipart "stickers" part (statusController.ts:27) and validates +
+ * normalises each sticker (stickerService.ts prepareStickers). */
+fun stickerDraftsJson(drafts: List<StickerDraft>): String {
+    val arr = org.json.JSONArray()
+    for (d in drafts) {
+        val data = org.json.JSONObject()
+        when (d.type) {
+            "poll" -> {
+                data.put("question", d.question ?: "")
+                val opts = org.json.JSONArray()
+                d.options.forEach { opts.put(it) }
+                data.put("options", opts)
+            }
+            "question" -> data.put("prompt", d.prompt ?: "")
+            "countdown" -> {
+                data.put("title", d.title ?: "")
+                data.put("targetAt", d.targetAt ?: "")
+            }
+            "link" -> {
+                data.put("url", d.url ?: "")
+                data.put("label", d.label ?: "")
+            }
+        }
+        val obj = org.json.JSONObject()
+        obj.put("type", d.type)
+        obj.put("posX", d.posX.toDouble())
+        obj.put("posY", d.posY.toDouble())
+        obj.put("data", data)
+        arr.put(obj)
+    }
+    return arr.toString()
+}
 data class StatusGroup(
     val userId: String,
     val user: Author? = null,
@@ -127,6 +219,11 @@ data class CreateConversationData(val id: String)
 data class SendMessageRequest(val content: String)
 
 // ---------- Notifications ----------
+// v5.19 (H4): commentId — the backend GET /api/notifications already
+// returns it (notificationService getNotifications); Gson maps it by
+// field name (GsonConverterFactory, createApi2 below), so no parsing
+// change is needed. Null = a post tag, non-null = a comment mention
+// (web messageFor); without it the two could not be told apart.
 data class NotificationItem(
     val id: String,
     val type: String?,
@@ -134,6 +231,7 @@ data class NotificationItem(
     val detail: String?,
     val createdAt: String?,
     val postId: String?,
+    val commentId: String? = null,
     val reelId: String?,
     val actor: Author?,
 )
@@ -142,6 +240,14 @@ data class NotificationPref(val category: String, val enabled: Boolean = true)
 data class NotificationPrefsData(val preferences: List<NotificationPref>? = null)
 data class DeleteIdsRequest(val ids: List<String>)
 data class UnreadData(val unreadCount: Int = 0, val count: Int = 0)
+// v5.19 (FCM push): POST/DELETE /api/notifications/push-token
+// (notificationRoutes.ts:22-23, pushController.registerPushTokenHandler /
+// removePushTokenHandler -> pushService.registerPushToken/removePushToken).
+// Request { token } (token <= 255 chars; platform defaults to 'android'
+// server-side). Responses { registered: true } / { removed: true }.
+data class PushTokenRequest(val token: String)
+data class PushTokenRegisteredData(val registered: Boolean = false)
+data class PushTokenRemovedData(val removed: Boolean = false)
 
 // ---------- Profile / search / follow ----------
 data class PublicProfile(
@@ -498,6 +604,10 @@ interface FrianzoApi2 {
         @Part("textContent") textContent: RequestBody?,
         @Part("bgColor") bgColor: RequestBody?,
         @Part("visibility") visibility: RequestBody?,
+        // v5.19 (H6 story stickers): JSON string of
+        // [{ type, posX, posY, data }] (see stickerDraftsJson); the
+        // backend parses it from the multipart part (statusController).
+        @Part("stickers") stickers: RequestBody? = null,
     ): Envelope<StatusCreateData>
     @GET("api/statuses/muted")
     suspend fun mutedStories(): Envelope<MutedStoriesData>
@@ -517,6 +627,14 @@ interface FrianzoApi2 {
     suspend fun toggleStatusLike(@Path("id") id: String): Envelope<Any>
     @DELETE("api/statuses/{id}")
     suspend fun deleteStatus(@Path("id") id: String): Envelope<Any>
+    // v5.19 (H6 story stickers): POST /api/statuses/stickers/:id/vote
+    // { optionIndex } and POST .../answer { text } (statusRoutes.ts).
+    // Vote returns { voted, optionIndex } — no results; the viewer
+    // re-fetches the feed after a vote to show fresh percentages.
+    @POST("api/statuses/stickers/{stickerId}/vote")
+    suspend fun votePoll(@Path("stickerId") stickerId: String, @Body body: Map<String, Int>): Envelope<PollVoteData>
+    @POST("api/statuses/stickers/{stickerId}/answer")
+    suspend fun answerQuestion(@Path("stickerId") stickerId: String, @Body body: Map<String, String>): Envelope<QuestionAnswerData>
 
     // Chat (REST polling for step 1 of chat; live socket is a later stage)
     @GET("api/messages/conversations")
@@ -563,6 +681,13 @@ interface FrianzoApi2 {
     // now surfaces a failure instead of silently doing nothing.
     @HTTP(method = "DELETE", path = "api/notifications", hasBody = true)
     suspend fun deleteNotifications(@Body body: DeleteIdsRequest): Envelope<Any>
+    // v5.19 (FCM): register / remove this device's push token.
+    // The DELETE carries a body ({ token }), so it uses @HTTP like
+    // deleteNotifications above — Retrofit's @DELETE takes no @Body.
+    @POST("api/notifications/push-token")
+    suspend fun registerPushToken(@Body body: PushTokenRequest): Envelope<PushTokenRegisteredData>
+    @HTTP(method = "DELETE", path = "api/notifications/push-token", hasBody = true)
+    suspend fun removePushToken(@Body body: PushTokenRequest): Envelope<PushTokenRemovedData>
 
     // Profile / search / follow
     @GET("api/users/me")

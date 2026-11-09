@@ -96,9 +96,13 @@ private fun trendColor(positive: Boolean): Color = if (isSystemInDarkTheme()) {
 }
 
 @Composable
-fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null, onOpenDrawerScreen: ((String) -> Unit)? = null) {
+fun DrawerScreenRouter(api2: FrianzoApi2, label: String, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onPostAsReel: ((android.net.Uri) -> Unit)? = null, onOpenDrawerScreen: ((String) -> Unit)? = null, initialSubScreen: String? = null, onInitialSubScreenConsumed: (() -> Unit)? = null) {
     when (label) {
-        "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen)
+        "Settings" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen, initialSubScreen, onInitialSubScreenConsumed)
+        // v5.19 (H5): a verification notification tap lands straight on
+        // the Verification page (web /settings-menu/verification), not
+        // the Settings list — same screen, opened at its sub-screen.
+        "Verification" -> SettingsScreen(api2, onBack, onLogout, onSwitched, onOpenDrawerScreen, initialSubScreen = "verification")
         "Your Activity" -> ActivityScreen(api2, onBack)
         "Professional Dashboard" -> DashboardScreen(api2, onBack)
         "Monetization" -> MonetizationScreen(api2, onBack)
@@ -212,12 +216,22 @@ private fun formatMinutes(mins: Int): String {
 // screen (or a real dialog/action) — nothing here is a placeholder.
 
 @Composable
-fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onOpenDrawerScreen: ((String) -> Unit)? = null) {
+fun SettingsScreen(api2: FrianzoApi2, onBack: () -> Unit, onLogout: () -> Unit, onSwitched: () -> Unit = {}, onOpenDrawerScreen: ((String) -> Unit)? = null, initialSubScreen: String? = null, onInitialSubScreenConsumed: (() -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // v2.9: in-settings sub-screens (My Interests, Verification).
     // C-B18: subScreen survives rotation.
-    var subScreen by rememberSaveable { mutableStateOf<String?>(null) }
+    // v5.19 (H5): initialSubScreen lets a caller (notification tap)
+    // open straight at a sub-screen, e.g. "verification".
+    var subScreen by rememberSaveable { mutableStateOf(initialSubScreen) }
+    // v5.19 (FCM): consume the initial sub-screen once, so Back to the
+    // Settings list never re-opens Verification.
+    LaunchedEffect(initialSubScreen) {
+        if (initialSubScreen != null) {
+            subScreen = initialSubScreen
+            onInitialSubScreenConsumed?.invoke()
+        }
+    }
     // C-B16: true while a Delete Account request is in flight; Back is
     // swallowed until it finishes, so the outcome stays knowable.
     var deleteBusy by remember { mutableStateOf(false) }
@@ -1039,7 +1053,7 @@ fun MyInterestsScreen(api2: FrianzoApi2, onBack: () -> Unit) {
             // v5.18.4 (A-H2): Save is enabled only once the current
             // selections were loaded (loadedSelected) — a blind save
             // would wipe previously saved interests. See the note above.
-            Button(enabled = !saving && loadedSelected && selected.isNotEmpty(), onClick = {
+            Button(enabled = !saving && loadedSelected, onClick = {
                 saving = true
                 scope.launch {
                     try {
