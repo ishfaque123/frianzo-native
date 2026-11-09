@@ -908,6 +908,11 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2, private 
                     if (posts.isEmpty()) {
                         error = res.error?.message ?: "Feed failed"
                         scheduleAutoRetry()
+                    } else if (refreshing || refreshAfterCache) {
+                        // v5.22: a failed refresh with posts on screen
+                        // was silent — tell the user the saved posts
+                        // are what they are seeing.
+                        toastRefreshFailed()
                     }
                     cacheSeeded = false
                 }
@@ -915,6 +920,9 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2, private 
                 if (posts.isEmpty()) {
                     error = e.message ?: "Feed failed"
                     scheduleAutoRetry()
+                } else if (refreshing || refreshAfterCache) {
+                    // v5.22: same silent-refresh Toast as above.
+                    toastRefreshFailed()
                 }
                 cacheSeeded = false
             }
@@ -922,8 +930,20 @@ class FeedViewModel(private val api: FrianzoApi, val api2: FrianzoApi2, private 
         }
     }
 
+    // v5.22: a failed refresh while posts are on screen was silent —
+    // the user saw the same cached posts with no indication. Short
+    // Toast only; the empty-list case is handled by the error UI.
+    private fun toastRefreshFailed() {
+        Toast.makeText(appContext, "Couldn't refresh — showing saved posts", Toast.LENGTH_SHORT).show()
+    }
+
     fun refresh() {
-        if (loading) return
+        // v5.22: pulling while a load is in flight used to do nothing
+        // at all. Keep the spinner up until that load finishes (its
+        // finally clears refreshing) instead — no duplicate request.
+        // Posts/offset are NOT cleared here: the in-flight load is
+        // still using them.
+        if (loading) { refreshing = true; return }
         posts = emptyList(); offset = 0; hasMore = true; error = null
         reactionByPost = emptyMap(); likedIds = emptySet()
         cacheSeeded = false; autoRetried = false

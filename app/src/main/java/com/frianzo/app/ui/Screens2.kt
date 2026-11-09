@@ -289,7 +289,13 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                         val cached = loadOfflineReels(context)
                         if (cached.isNotEmpty()) { reels = cached; offline = true; error = null }
                         else error = msg
-                    } else loadMoreError = msg
+                    } else {
+                        loadMoreError = msg
+                        // v5.22: a refresh that failed while reels are on
+                        // screen was silent — short Toast (the empty case
+                        // is handled by the error/offline UI above).
+                        if (refreshing) Toast.makeText(context, "Couldn't refresh reels — showing saved reels", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 if (res.success && res.data != null) loadMoreError = null
             } catch (e: Exception) {
@@ -298,14 +304,23 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                     val cached = loadOfflineReels(context)
                     if (cached.isNotEmpty()) { reels = cached; offline = true; error = null }
                     else error = msg
-                } else loadMoreError = msg
+                } else {
+                    loadMoreError = msg
+                    // v5.22: same silent-refresh Toast as above.
+                    if (refreshing) Toast.makeText(context, "Couldn't refresh reels — showing saved reels", Toast.LENGTH_SHORT).show()
+                }
             }
             finally { loading = false; refreshing = false }
         }
     }
     // v3.8 (F9): pull-to-refresh — reload the current tab from the top.
     fun refreshFeed() {
-        if (loading) return
+        // v5.22: pulling while a load is in flight used to do nothing
+        // at all. Keep the spinner up until that load finishes (its
+        // finally clears refreshing) instead — no duplicate request.
+        // The tab cache and reels are NOT cleared here: the in-flight
+        // load is still using them.
+        if (loading) { refreshing = true; return }
         session.tabReels = session.tabReels - feed
         session.tabOffset = session.tabOffset - feed
         session.tabHasMore = session.tabHasMore - feed
