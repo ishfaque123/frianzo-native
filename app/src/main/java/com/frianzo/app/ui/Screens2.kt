@@ -7077,15 +7077,26 @@ private fun ProfileOriginalPostCard(original: Post, onAuthor: (String) -> Unit =
 private fun ProfilePostPhoto(url: String, onClick: () -> Unit = {}) {
     var reload by remember { mutableStateOf(0) }
     key(reload) {
-        val painter = rememberAsyncImagePainter(model = ImageRequest.Builder(LocalContext.current).data(url).crossfade(true).build())
+        val context = LocalContext.current
+        val screenWidthPx = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
+        // BLUR-UP (v5.23, Facebook-style): shimmer placeholder in a reserved
+        // 4/3 box while loading (no layout jump), then the sharp image
+        // crossfades in. The request is sized to the screen width so Coil does
+        // not decode the full-resolution file.
+        val painter = rememberAsyncImagePainter(model = ImageRequest.Builder(context).data(url).size(screenWidthPx, screenWidthPx).crossfade(true).build())
         when (val s = painter.state) {
-            is AsyncImagePainter.State.Loading -> Box(Modifier.fillMaxWidth().height(200.dp).clickable { onClick() }, contentAlignment = Alignment.Center) { DotsLoading() }
+            is AsyncImagePainter.State.Loading -> SkeletonBox(Modifier.fillMaxWidth().aspectRatio(4f / 3f).clickable { onClick() })
             is AsyncImagePainter.State.Error -> Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Image failed to load", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = { reload++ }, modifier = Modifier.minimumInteractiveComponentSize()) { Text("Retry") }
             }
-            else -> Image(painter = painter, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().clickable { onClick() })
+            else -> {
+                val ratio = painter.intrinsicSize.let { size ->
+                    if (size.width > 0f && size.height > 0f) size.width / size.height else 4f / 3f
+                }
+                Image(painter = painter, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().aspectRatio(ratio).clickable { onClick() })
+            }
         }
     }
 }

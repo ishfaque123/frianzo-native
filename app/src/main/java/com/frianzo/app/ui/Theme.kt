@@ -15,6 +15,8 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -241,28 +243,66 @@ fun FrianzoLogo(size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier
     )
 }
 
+/**
+ * Avatar thumbnail (2026-11-02): the backend stores a ~96px JPEG next to
+ * every newly uploaded avatar, under the full avatar's R2 key with "-thumb"
+ * inserted before the extension (avatars/<uuid>.jpg -> avatars/<uuid>-thumb.jpg).
+ * Only R2 avatar URLs get a thumbnail candidate; external URLs (e.g. Google
+ * photos) are returned unchanged, and URLs without an extension are too.
+ * (Port of web Avatar.tsx avatarThumbUrl.)
+ */
+fun avatarThumbUrl(url: String?): String? {
+    if (url == null) return null
+    val marker = "/avatars/"
+    val idx = url.indexOf(marker)
+    if (idx < 0) return null
+    val after = url.substring(idx + marker.length)
+    val dot = after.lastIndexOf('.')
+    if (dot <= 0) return null
+    val ext = after.substring(dot)
+    if (ext.contains('/') || ext.contains('?') || ext.contains('#')) return null
+    return url.substring(0, idx + marker.length + dot) + "-thumb" + ext
+}
+
 /** Circular avatar like the web feed: photo if present, light-blue circle otherwise.
- * v5.18: optional green online dot (web chat list shows one on the avatar). */
+ * v5.18: optional green online dot (web chat list shows one on the avatar).
+ * v5.23 BLUR-UP (Facebook-style): the ~96px thumbnail loads first — at 40dp it
+ * IS the display size, so the circle appears near-instantly instead of waiting
+ * for the full file. Larger avatars (profile header, chat header) then load the
+ * full image over the thumb with a crossfade, so the circle sharpens instead of
+ * popping in. If the thumb does not exist (avatars uploaded before thumbnails),
+ * the full image loads once as a fallback — never a blank circle. */
 @Composable
 fun FrianzoAvatar(model: String?, size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, online: Boolean = false) {
-    // PERF: decode the avatar at its display size (e.g. 40dp -> ~100px)
-    // instead of decoding the full upload, and crossfade in. This cuts
-    // decode memory/time per avatar. It does NOT shrink the download
-    // itself: the backend serves no avatar-thumbnail URL to the native
-    // app (Author has only profilePictureUrl), so a smaller download
-    // needs a backend thumbnail field first.
     val context = LocalContext.current
     val px = with(LocalDensity.current) { size.roundToPx() }
+    val thumb = avatarThumbUrl(model)
+    // The thumb is ~96px: up to ~1.5x upscale it is indistinguishable from the
+    // full file, so small circles load the thumb only — loading the full file as
+    // well would re-introduce the full-size download this change exists to avoid.
+    val needsFull = px > 144
+    var thumbFailed by remember(model) { mutableStateOf(false) }
+    val showFull = model != null && thumb != null && (needsFull || thumbFailed)
+    val baseModel = thumb ?: model
     Box(
         modifier = modifier.size(size).clip(CircleShape)
             .background(FrianzoBlueTint),
     ) {
         AsyncImage(
-            model = ImageRequest.Builder(context).data(model).size(px, px).crossfade(true).build(),
+            model = ImageRequest.Builder(context).data(baseModel).size(px, px).crossfade(true).build(),
             contentDescription = null,
             modifier = Modifier.size(size).clip(CircleShape),
             contentScale = ContentScale.Crop,
+            onError = { if (thumb != null && baseModel == thumb) thumbFailed = true },
         )
+        if (showFull) {
+            AsyncImage(
+                model = ImageRequest.Builder(context).data(model).size(px, px).crossfade(true).build(),
+                contentDescription = null,
+                modifier = Modifier.size(size).clip(CircleShape),
+                contentScale = ContentScale.Crop,
+            )
+        }
         if (online) {
             Box(
                 Modifier.align(androidx.compose.ui.Alignment.BottomEnd)
