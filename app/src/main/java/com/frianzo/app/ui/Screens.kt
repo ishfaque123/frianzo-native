@@ -36,7 +36,6 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -97,7 +96,6 @@ import kotlinx.coroutines.withContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import kotlinx.coroutines.flow.collect
 import coil.request.ImageRequest
@@ -1157,7 +1155,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         }
     }
-    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val listState = rememberLazyListState()
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
             .collect { idx ->
@@ -1222,22 +1220,6 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
             }
         },
         modifier = Modifier.fillMaxSize(),
-        // FB-style refresh badge (owner order 2026-11-12): a white round
-        // badge with a blue Home icon instead of the default round
-        // spinner; while a refresh runs, a thin blue ring spins around it.
-        indicator = {
-            Box(Modifier.align(Alignment.TopCenter).padding(top = 10.dp)) {
-                Box(
-                    Modifier.size(40.dp).shadow(4.dp, CircleShape).background(Color.White, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Filled.Home, contentDescription = null, tint = FrianzoBlue, modifier = Modifier.size(22.dp))
-                    if (vm.refreshing) {
-                        CircularProgressIndicator(Modifier.size(40.dp), color = FrianzoBlue, strokeWidth = 2.dp)
-                    }
-                }
-            }
-        },
     ) {
     LazyColumn(
         state = listState,
