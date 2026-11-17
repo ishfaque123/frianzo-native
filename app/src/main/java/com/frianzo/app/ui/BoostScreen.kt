@@ -81,7 +81,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 /** What the Boost screen is opened with. Built by the feed / profile /
  *  reels call sites (from the tapped Post/Reel) and by My Boosts'
- *  "Dobara Boost" (with purpose + plan pre-selected, landing straight
+ *  "Boost Again" (with purpose + plan pre-selected, landing straight
  *  on the payment step). Plain values only — no model objects — so
  *  AppShell can hold it in simple state. */
 data class BoostChoiceItem(
@@ -221,7 +221,7 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
     val scope = rememberCoroutineScope()
     var config by remember { mutableStateOf<BoostConfigData?>(null) }
     var configError by remember { mutableStateOf<String?>(null) }
-    // Dobara Boost opens straight on the payment step (purpose + plan
+    // Boost Again opens straight on the payment step (purpose + plan
     // pre-selected); a fresh boost starts at Purpose.
     var step by remember { mutableStateOf(if (launch.startAtPayment) 2 else if (launch.contentId == null) -1 else 0) }
     // The item being boosted: preselected by the caller, or picked on
@@ -293,7 +293,7 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
             Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(88.dp))
                 Spacer(Modifier.height(16.dp))
-                Text("Request bhej di gayi hai — approve hone par boost chal jayega", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                Text("Request sent — your boost will start once it is approved", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(24.dp))
                 Button(onClick = onOpenMyBoosts, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(28.dp), modifier = Modifier.height(48.dp)) { Text("My Boosts", color = Color.White, maxLines = 1, softWrap = false) }
                 TextButton(onClick = onClose) { Text("Done", maxLines = 1, softWrap = false) }
@@ -403,7 +403,7 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                                                 Text("Rs ${boostFmt(trialPrice ?: plan.amountPkr)}", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, maxLines = 1, softWrap = false)
                                                 if (trialPrice != null) {
                                                     Spacer(Modifier.width(8.dp))
-                                                    Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("Pehla boost", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false) }
+                                                    Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("First boost", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false) }
                                                     Spacer(Modifier.width(6.dp))
                                                     Text("Rs ${boostFmt(plan.amountPkr)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                                                 }
@@ -586,7 +586,7 @@ private fun BoostRow(b: Boost, onBoostAgain: (BoostLaunch) -> Unit) {
                 "pending" -> Box(Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFFFEF3C7)).padding(horizontal = 8.dp, vertical = 3.dp)) { Text("Pending", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF92400E), maxLines = 1, softWrap = false) }
                 "approved" -> Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 8.dp, vertical = 3.dp)) { Text("Active" + (boostDateLabel(b.endsAt)?.let { " · ends $it" } ?: ""), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White, maxLines = 1, softWrap = false) }
                 "rejected" -> Box(Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFFFEE2E2)).padding(horizontal = 8.dp, vertical = 3.dp)) { Text("Rejected", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF991B1B), maxLines = 1, softWrap = false) }
-                "expired" -> Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 3.dp)) { Text("Khatam", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
+                "expired" -> Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 3.dp)) { Text("Ended", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
                 else -> Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 3.dp)) { Text(b.status ?: "", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
             }
         }
@@ -620,7 +620,7 @@ private fun BoostRow(b: Boost, onBoostAgain: (BoostLaunch) -> Unit) {
                 shape = RoundedCornerShape(28.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                 modifier = Modifier.height(44.dp),
-            ) { Text("Dobara Boost", color = FrianzoBlue, fontSize = 13.sp, maxLines = 1, softWrap = false) }
+            ) { Text("Boost Again", color = FrianzoBlue, fontSize = 13.sp, maxLines = 1, softWrap = false) }
         }
     }
 }
