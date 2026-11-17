@@ -5170,7 +5170,7 @@ private fun notificationTitle(n: NotificationItem): String {
         // v5.26 (Boost): system row (actor can be null); the reel
         // wording follows the notification's reelId. Unknown types
         // still land in the else below ("New notification").
-        "boost_approved" -> if (n.reelId != null) "Your reel boost is approved 🚀" else "Your post boost is approved 🚀"
+        "boost_approved" -> if (n.reelId != null) "Your reel boost is approved" else "Your post boost is approved"
         "verification_rejected" -> "Your verification request was rejected"
         "account_restricted" -> if (!n.detail.isNullOrEmpty()) "Your account has been restricted: ${n.detail}" else "Your account has been restricted"
         "account_banned" -> if (!n.detail.isNullOrEmpty()) "Your account has been banned: ${n.detail}" else "Your account has been banned"

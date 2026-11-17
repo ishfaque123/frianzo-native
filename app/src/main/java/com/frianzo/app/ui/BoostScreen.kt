@@ -116,12 +116,12 @@ fun isBoostCountryPk(raw: String?): Boolean {
     return t.equals("PK", ignoreCase = true) || t.equals("Pakistan", ignoreCase = true)
 }
 
-/** The "🚀 Boosted" chip, shaped like the existing Pinned chip (feed
+/** The "Boosted" chip, shaped like the existing Pinned chip (feed
  *  card) but in FrianzoBlue so a paid placement reads as sponsored. */
 @Composable
 fun BoostedBadge() {
     Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 6.dp, vertical = 2.dp)) {
-        Text("🚀 Boosted", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false)
+        Text("Boosted", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false)
     }
 }
 
