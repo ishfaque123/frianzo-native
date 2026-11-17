@@ -50,6 +50,10 @@ data class Post(
     val backgroundStyle: String? = null,
     val location: String? = null,
     val isPinned: Boolean = false,
+    // v5.26 (Boost): backend toPostDTO now returns isBoosted (live
+    // boost insertion in the feed + the Boosted badge); Gson default
+    // keeps old payloads working, same as isSaved above.
+    val isBoosted: Boolean = false,
     // v5.14 (#5 Save post): backend toPostDTO now returns isSaved
     // (POST /api/posts/{id}/favorite flips it); Gson default keeps
     // old payloads working.

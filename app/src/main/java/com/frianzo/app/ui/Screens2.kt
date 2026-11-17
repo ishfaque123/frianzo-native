@@ -216,7 +216,7 @@ private fun ReelLoadingSpinner() {
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}, onEditorOpenChange: (Boolean) -> Unit = {}, onTag: (String) -> Unit = {}) {
+fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, focusReelId: String? = null, onFocusConsumed: () -> Unit = {}, uploadUri: android.net.Uri? = null, onUploadUriConsumed: () -> Unit = {}, onEditorOpenChange: (Boolean) -> Unit = {}, onTag: (String) -> Unit = {}, myCountry: String? = null, onBoostReel: (Reel) -> Unit = {}) {
     val context = LocalContext.current
     // Hoisted session state (R2): these survive leaving Reels.
     var reels by session::reels
@@ -538,6 +538,8 @@ fun ReelsScreen(api2: FrianzoApi2, myId: String? = null, session: ReelsSession, 
                 Box(Modifier.fillParentMaxSize()) {
                 ReelPage(
                     api2 = api2, reel = reel, myId = myId,
+                    myCountry = myCountry,
+                    onBoost = onBoostReel,
                     // BUG (owner, 2026-11-07): the reel kept PLAYING (video +
                     // audio) underneath the camera/editor, so a doll video
                     // appeared in the camera by itself and kept playing while
@@ -782,7 +784,7 @@ private fun ReelCaptionText(caption: String, onAuthor: (String) -> Unit = {}, on
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, onToggleMute: () -> Unit = {}, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onLikeChange: (String, Boolean, Int) -> Unit = { _, _, _ -> }, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, dataSaver: Boolean = false, onTag: (String) -> Unit = {}, onOpenSaved: () -> Unit = {}) {
+private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boolean, muted: Boolean, onToggleMute: () -> Unit = {}, commentCount: Int, onAuthor: (String) -> Unit, onComment: () -> Unit, onLikeChange: (String, Boolean, Int) -> Unit = { _, _, _ -> }, onDeleted: () -> Unit, resumeMs: Int = 0, onPosition: (Int) -> Unit = {}, isLast: Boolean = false, onFinished: () -> Unit = {}, onHidden: () -> Unit = {}, onNotice: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, followOverride: String? = null, onFollowChange: (String, String) -> Unit = { _, _ -> }, dataSaver: Boolean = false, onTag: (String) -> Unit = {}, onOpenSaved: () -> Unit = {}, myCountry: String? = null, onBoost: (Reel) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var liked by remember(reel.id) { mutableStateOf(reel.liked) }
@@ -1318,6 +1320,11 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                         }
                     }
                     MoreSheetRow(Icons.Filled.Link, "Copy link") { moreOpen = false; val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("reel", reelLink)); showMsg("Link copied") }
+                    // v5.26 (Boost): blue Boost button in the own-reel
+                    // action area — PK users only.
+                    if (reel.author?.id == myId && isBoostCountryPk(myCountry)) {
+                        Button(onClick = { moreOpen = false; onBoost(reel) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(48.dp)) { Text("Boost", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                    }
                     if (reel.author?.id == myId) MoreSheetRow(Icons.Filled.Delete, "Delete reel", red = true) { moreOpen = false; showDeleteReel = true }
                     else MoreSheetRow(Icons.Filled.Flag, "Report reel", red = true) { moreOpen = false; reportOpen = true }
                 }
@@ -1337,6 +1344,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 Text(reel.author?.displayName ?: "@${reel.author?.username ?: ""}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 if (reel.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
                 if (!reel.createdAt.isNullOrBlank()) { Spacer(Modifier.width(4.dp)); Text("· ${reelTimeAgo(reel.createdAt)}", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, softWrap = false) }
+                if (reel.isBoosted) { Spacer(Modifier.width(6.dp)); BoostedBadge() }
                 val authorId = reel.author?.id
                 // v4.8 (owner, Facebook rule): the pill STAYS after a
                 // follow and shows the new state in place — Follow ->
@@ -5159,6 +5167,10 @@ private fun notificationTitle(n: NotificationItem): String {
         "reel_removed" -> "Your reel was removed" + if (!n.detail.isNullOrEmpty()) " for ${n.detail}" else ""
         "messaging_restricted" -> if (!n.detail.isNullOrEmpty()) "Messaging restricted: ${n.detail}" else "Messaging restricted"
         "verification_approved" -> "Your account has been verified"
+        // v5.26 (Boost): system row (actor can be null); the reel
+        // wording follows the notification's reelId. Unknown types
+        // still land in the else below ("New notification").
+        "boost_approved" -> if (n.reelId != null) "Your reel boost is approved 🚀" else "Your post boost is approved 🚀"
         "verification_rejected" -> "Your verification request was rejected"
         "account_restricted" -> if (!n.detail.isNullOrEmpty()) "Your account has been restricted: ${n.detail}" else "Your account has been restricted"
         "account_banned" -> if (!n.detail.isNullOrEmpty()) "Your account has been banned: ${n.detail}" else "Your account has been banned"
@@ -5184,6 +5196,7 @@ private val NEVER_GROUP_NOTIFICATIONS = setOf(
     "account_banned",
     "verification_approved",
     "verification_rejected",
+    "boost_approved",
 )
 
 private data class NotificationGroup(
@@ -6022,7 +6035,7 @@ private fun isoNow(): String =
 private data class ProfileAllItem(val key: String, val pinned: Boolean, val createdAt: String?, val post: Post?, val reel: Reel?)
 
 @Composable
-fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null, feedVm: FeedViewModel? = null, onUser: ((String) -> Unit)? = null, onDashboard: (() -> Unit)? = null, onOpenReel: ((String) -> Unit)? = null) {
+fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null, feedVm: FeedViewModel? = null, onUser: ((String) -> Unit)? = null, onDashboard: (() -> Unit)? = null, onOpenReel: ((String) -> Unit)? = null, myCountry: String? = null, onBoostPost: (Post) -> Unit = {}, onOpenMyBoosts: (() -> Unit)? = null, onBoostChoose: (List<BoostChoiceItem>) -> Unit = {}) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
     var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
     var postsLoading by remember { mutableStateOf(false) }
@@ -6491,11 +6504,27 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         Button(onClick = { showEdit = true }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Text("Edit Profile", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         Spacer(Modifier.width(8.dp))
                         OutlinedButton(onClick = { onDashboard?.invoke() }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Dashboard", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                        // v5.26 (Boost): blue Boost button beside Edit
+                        // Profile / Dashboard — own profile + PK only.
+                        // Opens the boost flow with NO preselected item;
+                        // the flow's first step chooses from my own posts
+                        // (originals only — reposts are not boostable)
+                        // and reels, already loaded by this screen.
+                        if (isBoostCountryPk(myCountry)) {
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = { onBoostChoose(posts.filter { it.originalPost == null }.map { BoostChoiceItem("post", it.id, it.content, it.imageUrl, it.createdAt) } + userReels.map { BoostChoiceItem("reel", it.id, it.caption, it.thumbnailUrl, it.createdAt) }) }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue)) { Text("Boost", color = Color.White, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                        }
                     }
                 }
                 // v3.2 web parity: others get ONE full-width Follow button
                 // (Message moved to the icon row, like the web). Unfollow
                 // asks first, like the web confirm dialog.
+                // v5.26 (Boost): My Boosts entry under the own-profile
+                // actions — PK users only (same gate as the Boost button).
+                if (username == null && onOpenMyBoosts != null && isBoostCountryPk(myCountry)) {
+                    OutlinedButton(onClick = { onOpenMyBoosts() }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("My Boosts", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+                    Spacer(Modifier.height(16.dp))
+                }
                 if (showUnfollowConfirm) {
                     AlertDialog(onDismissRequest = { showUnfollowConfirm = false }, title = { Text("Unfollow @${p.username ?: ""}?") }, text = { Text("You will stop seeing their posts.") },
                         confirmButton = { Button(onClick = {
@@ -6751,6 +6780,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                     posts = posts.map { if (it.id == id) it.copy(shareCount = it.shareCount + 1) else it }
                     savedPosts = savedPosts.map { if (it.id == id) it.copy(shareCount = it.shareCount + 1) else it }
                 },
+                showBoost = isBoostCountryPk(myCountry),
+                onBoost = onBoostPost,
                 onVisible = {
                     if (feedVm != null) feedVm.recordPostView(post.id)
                     else if (post.id !in profileViewedIds) {
@@ -6828,6 +6859,8 @@ private fun ProfilePostCard(
     onReactionCountsChange: (String, Map<String, Int>?) -> Unit,
     onShared: (String) -> Unit,
     onVisible: () -> Unit,
+    showBoost: Boolean = false,
+    onBoost: (Post) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -6913,6 +6946,7 @@ private fun ProfilePostCard(
                         val time = reelTimeAgo(post.createdAt)
                         Text((if (time.isNotBlank()) time else "Just now") + (post.location?.let { " · $it" } ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         if (post.isPinned) { Spacer(Modifier.width(6.dp)); Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("Pinned", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                        if (post.isBoosted) { Spacer(Modifier.width(6.dp)); BoostedBadge() }
                     }
                 }
                 if (showFollowButton && authorId != null) {
@@ -7039,6 +7073,12 @@ private fun ProfilePostCard(
             }
             Box(Modifier.weight(1f).height(48.dp).clickable { shareOpen = true }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        // v5.26 (Boost): blue Boost button on my own posts — PK only.
+        if (showBoost && myId != null && post.author?.id == myId) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Button(onClick = { onBoost(post) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), modifier = Modifier.height(44.dp)) { Text("Boost", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
             }
         }
     }

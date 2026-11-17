@@ -23,6 +23,9 @@ data class Reel(
     // durationSec and isMine unblock feed polish without extra calls.
     val durationSec: Int? = null,
     val isMine: Boolean = false,
+    // v5.26 (Boost): backend reel DTOs now carry isBoosted (live
+    // boost insertion in the For You feed + the Boosted badge).
+    val isBoosted: Boolean = false,
     val friendStatus: String? = null,
     val shareCode: String? = null,
     val createdAt: String? = null,
@@ -300,6 +303,51 @@ data class MutualFollower(val username: String?, val displayName: String? = null
 data class SearchUsersData(val users: List<PublicProfile>)
 // v5.18: GET /api/upload/chat returns {url, mediaType} ("image" | "voice").
 data class UploadChatData(val url: String? = null, val mediaType: String? = null)
+
+// ---------- Boost (v5.26) ----------
+// Manual-payment post/reel boosts (DESIGN.md §9 contract). Config is
+// the single source of truth for plans/estimates/purposes/payment
+// details — the app renders them from GET /api/boosts/config and never
+// sends an amount (the server re-derives it from planDays).
+data class BoostPlanData(val days: Int = 0, val amountPkr: Int = 0, val estViewsMin: Int = 0, val estViewsMax: Int = 0, val estClicksMin: Int = 0, val estClicksMax: Int = 0)
+data class BoostTrialData(val available: Boolean = false, val planDays: Int = 1, val amountPkr: Int = 0)
+data class BoostPurposeData(val id: String, val label: String? = null, val description: String? = null)
+data class BoostPaymentMethodData(val id: String, val label: String? = null, val accountTitle: String? = null, val accountNumber: String? = null, val instructions: String? = null)
+data class BoostConfigData(val eligible: Boolean = false, val country: String? = null, val plans: List<BoostPlanData>? = null, val firstBoostTrial: BoostTrialData? = null, val purposes: List<BoostPurposeData>? = null, val paymentMethods: List<BoostPaymentMethodData>? = null)
+data class BoostCreateRequest(val contentType: String, val postId: String? = null, val reelId: String? = null, val purpose: String, val planDays: Int, val paymentMethod: String, val transactionId: String? = null, val screenshotUrl: String)
+data class BoostPostPreview(val id: String? = null, val content: String? = null, val imageUrl: String? = null, val createdAt: String? = null)
+data class BoostReelPreview(val id: String? = null, val caption: String? = null, val thumbnailUrl: String? = null, val videoUrl: String? = null, val createdAt: String? = null)
+// results is null until a boost is approved; views can be null when the
+// content id is missing (backend getBoostResults), followers is a count.
+data class BoostResults(val views: Int? = null, val followers: Int = 0)
+data class Boost(
+    val id: String,
+    val contentType: String? = null,
+    val postId: String? = null,
+    val reelId: String? = null,
+    val userId: String? = null,
+    val purpose: String? = null,
+    val planDays: Int = 0,
+    val amountPkr: Int = 0,
+    val paymentMethod: String? = null,
+    val transactionId: String? = null,
+    val screenshotUrl: String? = null,
+    // Display status from the backend: pending | approved | rejected |
+    // expired (an approved boost past endsAt is returned as expired).
+    val status: String? = null,
+    val adminNote: String? = null,
+    val reviewedBy: String? = null,
+    val reviewedAt: String? = null,
+    val startsAt: String? = null,
+    val endsAt: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
+    val post: BoostPostPreview? = null,
+    val reel: BoostReelPreview? = null,
+    val results: BoostResults? = null,
+)
+data class BoostCreateData(val boost: Boost? = null)
+data class MyBoostsData(val boosts: List<Boost>? = null)
 // v5.18: GET /api/tags/:tag returns {tag, posts, reels, hasMore}.
 // The tag reel DTO lacks viewCount/shareCount/category/friendStatus —
 // Gson defaults on Reel cover them, no adapter change needed.
@@ -825,6 +873,13 @@ interface FrianzoApi2 {
     suspend fun updateMe(@Body body: Map<String, Any>): Envelope<Any>
     @DELETE("api/users/me")
     suspend fun deleteMe(): Envelope<Any>
+    // v5.26 (Boost): manual-payment boosts (PK only, enforced server-side).
+    @GET("api/boosts/config")
+    suspend fun boostConfig(): Envelope<BoostConfigData>
+    @POST("api/boosts")
+    suspend fun createBoost(@Body body: BoostCreateRequest): Envelope<BoostCreateData>
+    @GET("api/boosts/mine")
+    suspend fun myBoosts(): Envelope<MyBoostsData>
 }
 
 // v5.20 (M16): Boolean wrapper over hideBlockedEntriesRaw — the call site

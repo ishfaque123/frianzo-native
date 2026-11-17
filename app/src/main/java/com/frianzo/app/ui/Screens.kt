@@ -1082,7 +1082,7 @@ fun PostContentText(text: String, fontSizeSp: Int, color: Color, modifier: Modif
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenReel: (String) -> Unit = {}, onTag: (String) -> Unit = {}) {
+fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit = {}, onPickMedia: (android.net.Uri) -> Unit = { onCreatePost() }, onAuthor: (String) -> Unit = {}, onOpenChat: (String, String) -> Unit = { _, _ -> }, onOpenReel: (String) -> Unit = {}, onTag: (String) -> Unit = {}, myCountry: String? = null, onBoostPost: (Post) -> Unit = {}) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val posts = vm.posts
@@ -1376,6 +1376,7 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                             val time = feedTime(post.createdAt)
                             Text((if (time.isNotBlank()) time else "Just now") + (post.location?.let { " · $it" } ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             if (post.isPinned) { Spacer(Modifier.width(6.dp)); Box(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("Pinned", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                            if (post.isBoosted) { Spacer(Modifier.width(6.dp)); BoostedBadge() }
                         }
                     }
                     val authorId = post.author?.id
@@ -1509,6 +1510,13 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     }
                     Box(Modifier.weight(1f).height(48.dp).clickable { sharePost = post }, contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                // v5.26 (Boost): blue Boost button on my own posts —
+                // PK users only; everyone else sees the card unchanged.
+                if (myId != null && post.author?.id == myId && isBoostCountryPk(myCountry)) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Button(onClick = { onBoostPost(post) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), modifier = Modifier.height(44.dp)) { Text("Boost", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
                     }
                 }
             }
@@ -1886,6 +1894,7 @@ fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit, on
             Text(reel.author?.displayName ?: "@${reel.author?.username ?: ""}", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
             if (!reel.createdAt.isNullOrBlank()) { Spacer(Modifier.width(4.dp)); Text("· ${feedReelTimeAgo(reel.createdAt)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) }
             if (reel.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+            if (reel.isBoosted) { Spacer(Modifier.width(6.dp)); BoostedBadge() }
             IconButton(onClick = { cardMuted = !cardMuted }) { Icon(if (cardMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, contentDescription = if (cardMuted) "Unmute" else "Mute", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         if (reel.videoUrl != null) {
