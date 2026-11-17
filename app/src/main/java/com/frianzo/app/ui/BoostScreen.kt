@@ -410,8 +410,8 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                                             }
                                             Text(if (plan.days == 1) "1 day" else "${plan.days} days", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                                             Spacer(Modifier.height(6.dp))
-                                            Text("Andazan views: ${boostFmt(plan.estViewsMin)} - ${boostFmt(plan.estViewsMax)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                                            Text("Andazan clicks: ${boostFmt(plan.estClicksMin)} - ${boostFmt(plan.estClicksMax)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                            Text("Estimated views: ${boostFmt(plan.estViewsMin)} - ${boostFmt(plan.estViewsMax)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                            Text("Estimated clicks: ${boostFmt(plan.estClicksMin)} - ${boostFmt(plan.estClicksMax)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                                         }
                                         if (sel) Icon(Icons.Filled.CheckCircle, contentDescription = "Selected", tint = FrianzoBlue, modifier = Modifier.size(22.dp))
                                     }
