@@ -1371,6 +1371,15 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(post.author?.displayName ?: post.author?.username ?: "User", modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                             if (post.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+                            // v5.29 (Boost): Facebook-style — small blue
+                            // "Boost" link beside my name on my own posts
+                            // (PK only), replacing the old under-card button.
+                            if (myId != null && post.author?.id == myId && isBoostCountryPk(myCountry)) {
+                                Spacer(Modifier.width(4.dp))
+                                Text("·", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Boost", color = FrianzoBlue, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, modifier = Modifier.clickable { onBoostPost(post) })
+                            }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val time = feedTime(post.createdAt)
@@ -1510,13 +1519,6 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                     }
                     Box(Modifier.weight(1f).height(48.dp).clickable { sharePost = post }, contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                // v5.26 (Boost): blue Boost button on my own posts —
-                // PK users only; everyone else sees the card unchanged.
-                if (myId != null && post.author?.id == myId && isBoostCountryPk(myCountry)) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                        Button(onClick = { onBoostPost(post) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), modifier = Modifier.height(44.dp)) { Text("Boost", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
                     }
                 }
             }

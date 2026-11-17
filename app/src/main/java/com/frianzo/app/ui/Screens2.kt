@@ -6419,6 +6419,16 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(p.displayName ?: "", style = MaterialTheme.typography.titleLarge, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (p.isVerified) { Spacer(Modifier.width(6.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(20.dp), tint = FrianzoBlue) }
+                            // v5.29 (Boost): small blue Boost pill beside
+                            // my name — own profile + PK only. Opens the
+                            // boost flow with NO preselected item; the
+                            // flow's first step chooses from my own posts
+                            // (originals only — reposts are not boostable)
+                            // and reels, already loaded by this screen.
+                            if (username == null && isBoostCountryPk(myCountry)) {
+                                Spacer(Modifier.width(8.dp))
+                                Button(onClick = { onBoostChoose(posts.filter { it.originalPost == null }.map { BoostChoiceItem("post", it.id, it.content, it.imageUrl, it.createdAt) } + userReels.map { BoostChoiceItem("reel", it.id, it.caption, it.thumbnailUrl, it.createdAt) }) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp), modifier = Modifier.height(30.dp)) { Text("Boost", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                            }
                         }
                         // v3.3: @username is tappable — copies it, like web.
                         // v5.17: grey like the web (was FrianzoBlue).
@@ -6504,16 +6514,6 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         Button(onClick = { showEdit = true }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface)) { Text("Edit Profile", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
                         Spacer(Modifier.width(8.dp))
                         OutlinedButton(onClick = { onDashboard?.invoke() }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius)) { Text("Dashboard", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                        // v5.26 (Boost): blue Boost button beside Edit
-                        // Profile / Dashboard — own profile + PK only.
-                        // Opens the boost flow with NO preselected item;
-                        // the flow's first step chooses from my own posts
-                        // (originals only — reposts are not boostable)
-                        // and reels, already loaded by this screen.
-                        if (isBoostCountryPk(myCountry)) {
-                            Spacer(Modifier.width(8.dp))
-                            Button(onClick = { onBoostChoose(posts.filter { it.originalPost == null }.map { BoostChoiceItem("post", it.id, it.content, it.imageUrl, it.createdAt) } + userReels.map { BoostChoiceItem("reel", it.id, it.caption, it.thumbnailUrl, it.createdAt) }) }, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(FrianzoUi.ButtonRadius), colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue)) { Text("Boost", color = Color.White, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
-                        }
                     }
                 }
                 // v3.2 web parity: others get ONE full-width Follow button
@@ -6938,6 +6938,15 @@ private fun ProfilePostCard(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(post.author?.displayName ?: post.author?.username ?: "User", modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                         if (post.author?.isVerified == true) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(16.dp), tint = FrianzoBlue) }
+                        // v5.29 (Boost): Facebook-style — small blue
+                        // "Boost" link beside my name on my own posts,
+                        // replacing the old under-card button.
+                        if (showBoost && myId != null && post.author?.id == myId) {
+                            Spacer(Modifier.width(4.dp))
+                            Text("·", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Boost", color = FrianzoBlue, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, softWrap = false, modifier = Modifier.clickable { onBoost(post) })
+                        }
                     }
                     if (!post.taggedUsers.isNullOrEmpty()) {
                         Text("with " + post.taggedUsers!!.joinToString(", ") { it.displayName ?: it.username ?: "User" }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
@@ -7073,12 +7082,6 @@ private fun ProfilePostCard(
             }
             Box(Modifier.weight(1f).height(48.dp).clickable { shareOpen = true }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Outlined.Share, contentDescription = "Share", modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        // v5.26 (Boost): blue Boost button on my own posts — PK only.
-        if (showBoost && myId != null && post.author?.id == myId) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Button(onClick = { onBoost(post) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(28.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), modifier = Modifier.height(44.dp)) { Text("Boost", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
             }
         }
     }
