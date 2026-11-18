@@ -1457,6 +1457,21 @@ fun FeedScreen(vm: FeedViewModel, myId: String? = null, onCreatePost: () -> Unit
                 }
                 post.originalPost?.let { orig -> Spacer(Modifier.height(10.dp)); OriginalPostCard(orig, onAuthor = onAuthor, onDetail = { detailPostId = orig.id }) }
                 Spacer(Modifier.height(10.dp))
+                // v5.31 (Boost v2): a Business Promotion boost with a link
+                // puts its button on the post (never on your own post);
+                // tapping opens the link. A Followers Gain boost needs no
+                // extra button here — the header already carries Follow.
+                val boostBtn = post.boostButton
+                if (boostBtn?.type == "link" && !boostBtn.url.isNullOrBlank() && post.author?.id != myId) {
+                    val boostCtx = LocalContext.current
+                    Button(
+                        onClick = { try { boostCtx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(boostBtn.url))) } catch (_: Exception) {} },
+                        colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    ) { Text(boostBtn.text ?: "Learn More", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                    Spacer(Modifier.height(10.dp))
+                }
                 // Counts row, live style: up to 3 overlapping reaction icons + total, shares pill.
                 if (post.likeCount > 0 || post.commentCount > 0 || post.shareCount > 0) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1922,6 +1937,18 @@ fun FeedReelCard(api2: FrianzoApi2, reel: Reel, onOpenReel: (String) -> Unit, on
         // a plain tap opens the reel.
         reel.caption?.let {
             PostContentText(it, fontSizeSp = 14, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp), onAuthor = onAuthor, onTag = onTag, onTextClick = { onOpenReel(reel.id) })
+        }
+        // v5.31 (Boost v2): a Business Promotion boost with a link puts
+        // its button on the reel card too (never on your own reel).
+        val reelBoostBtn = reel.boostButton
+        if (reelBoostBtn?.type == "link" && !reelBoostBtn.url.isNullOrBlank() && !reel.isMine) {
+            val reelBoostCtx = LocalContext.current
+            Button(
+                onClick = { try { reelBoostCtx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(reelBoostBtn.url))) } catch (_: Exception) {} },
+                colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp),
+            ) { Text(reelBoostBtn.text ?: "Learn More", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.clickable {

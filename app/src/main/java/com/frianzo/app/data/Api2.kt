@@ -26,6 +26,9 @@ data class Reel(
     // v5.26 (Boost): backend reel DTOs now carry isBoosted (live
     // boost insertion in the For You feed + the Boosted badge).
     val isBoosted: Boolean = false,
+    // v5.31 (Boost v2): the button a live boost puts on this reel —
+    // same shape as Post.boostButton.
+    val boostButton: BoostButton? = null,
     val friendStatus: String? = null,
     val shareCode: String? = null,
     val createdAt: String? = null,
@@ -310,11 +313,19 @@ data class UploadChatData(val url: String? = null, val mediaType: String? = null
 // details — the app renders them from GET /api/boosts/config and never
 // sends an amount (the server re-derives it from planDays).
 data class BoostPlanData(val days: Int = 0, val amountPkr: Int = 0, val estViewsMin: Int = 0, val estViewsMax: Int = 0, val estClicksMin: Int = 0, val estClicksMax: Int = 0)
-data class BoostTrialData(val available: Boolean = false, val planDays: Int = 1, val amountPkr: Int = 0)
+data class BoostTrialData(val available: Boolean = false, val planDays: Int = 1, val amountPkr: Int = 0, val dailyBudget: Int = 100, val days: Int = 1)
+// v5.31 (Boost v2): the call-to-action a live boost puts on its
+// content. type "follow" = Follow button; type "link" = the user's
+// link shown as a button with `text` ("Learn More" etc.).
+data class BoostButton(val type: String? = null, val url: String? = null, val text: String? = null)
+data class BoostBudgetData(val min: Int = 100, val max: Int = 1000, val step: Int = 50)
+data class BoostEstimateFactorsData(val reachPerRupeeMin: Double = 3.5, val reachPerRupeeMax: Double = 7.0, val impressionsPerRupeeMin: Double = 5.0, val impressionsPerRupeeMax: Double = 10.0, val clicksPerReach: Double = 0.06)
 data class BoostPurposeData(val id: String, val label: String? = null, val description: String? = null)
 data class BoostPaymentMethodData(val id: String, val label: String? = null, val accountTitle: String? = null, val accountNumber: String? = null, val instructions: String? = null)
-data class BoostConfigData(val eligible: Boolean = false, val country: String? = null, val plans: List<BoostPlanData>? = null, val firstBoostTrial: BoostTrialData? = null, val purposes: List<BoostPurposeData>? = null, val paymentMethods: List<BoostPaymentMethodData>? = null)
-data class BoostCreateRequest(val contentType: String, val postId: String? = null, val reelId: String? = null, val purpose: String, val planDays: Int, val paymentMethod: String, val transactionId: String? = null, val screenshotUrl: String)
+data class BoostConfigData(val eligible: Boolean = false, val country: String? = null, val plans: List<BoostPlanData>? = null, val firstBoostTrial: BoostTrialData? = null, val budget: BoostBudgetData? = null, val durations: List<Int>? = null, val buttonTexts: List<String>? = null, val estimateFactors: BoostEstimateFactorsData? = null, val purposes: List<BoostPurposeData>? = null, val paymentMethods: List<BoostPaymentMethodData>? = null)
+// v5.31 (Boost v2): the create call sends dailyBudget + days (the
+// server derives the amount); planDays stays for older servers.
+data class BoostCreateRequest(val contentType: String, val postId: String? = null, val reelId: String? = null, val purpose: String, val planDays: Int? = null, val dailyBudget: Int? = null, val days: Int? = null, val linkUrl: String? = null, val buttonText: String? = null, val paymentMethod: String, val transactionId: String? = null, val screenshotUrl: String)
 data class BoostPostPreview(val id: String? = null, val content: String? = null, val imageUrl: String? = null, val createdAt: String? = null)
 data class BoostReelPreview(val id: String? = null, val caption: String? = null, val thumbnailUrl: String? = null, val videoUrl: String? = null, val createdAt: String? = null)
 // results is null until a boost is approved; views can be null when the
@@ -329,6 +340,10 @@ data class Boost(
     val purpose: String? = null,
     val planDays: Int = 0,
     val amountPkr: Int = 0,
+    // v5.31 (Boost v2): daily budget + business link/button, when set.
+    val dailyBudget: Int? = null,
+    val linkUrl: String? = null,
+    val buttonText: String? = null,
     val paymentMethod: String? = null,
     val transactionId: String? = null,
     val screenshotUrl: String? = null,

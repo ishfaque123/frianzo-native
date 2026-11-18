@@ -1408,6 +1408,17 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             }
             // v3.9 (audit #2): one line + ellipsis, no expander; #tag / @user links.
             reel.caption?.let { Spacer(Modifier.height(8.dp)); ReelCaptionText(it, onAuthor = { u -> onAuthor(u) }, onTag = onTag) }
+            // v5.31 (Boost v2): a Business Promotion boost with a link
+            // puts its button under the caption (never on your own
+            // reel); tapping opens the link.
+            val pageBoostBtn = reel.boostButton
+            if (pageBoostBtn?.type == "link" && !pageBoostBtn.url.isNullOrBlank() && !reel.isMine) {
+                val pageBoostCtx = LocalContext.current
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).noRippleClickable { try { pageBoostCtx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pageBoostBtn.url))) } catch (_: Exception) {} }.padding(horizontal = 16.dp, vertical = 9.dp)) {
+                    Text(pageBoostBtn.text ?: "Learn More", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                }
+            }
             // v3.9 (live-web audit #2): NO category chip on the reel
             // screen — no chip was seen on any live reel. The category
             // is still stored and sent on upload; only its display
@@ -6427,7 +6438,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             // and reels, already loaded by this screen.
                             if (username == null && isBoostCountryPk(myCountry)) {
                                 Spacer(Modifier.width(8.dp))
-                                Button(onClick = { onBoostChoose(posts.filter { it.originalPost == null }.map { BoostChoiceItem("post", it.id, it.content, it.imageUrl, it.createdAt) } + userReels.map { BoostChoiceItem("reel", it.id, it.caption, it.thumbnailUrl, it.createdAt) }) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp), modifier = Modifier.height(30.dp)) { Text("Boost", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                                Button(onClick = { onBoostChoose(posts.filter { it.originalPost == null }.map { BoostChoiceItem("post", it.id, it.content, it.imageUrl, it.createdAt, authorName = it.author?.displayName, authorAvatar = it.author?.profilePictureUrl, authorVerified = it.author?.isVerified == true, likeCount = it.likeCount, commentCount = it.commentCount, shareCount = it.shareCount, backgroundStyle = it.backgroundStyle) } + userReels.map { BoostChoiceItem("reel", it.id, it.caption, it.thumbnailUrl, it.createdAt, authorName = it.author?.displayName, authorAvatar = it.author?.profilePictureUrl, authorVerified = it.author?.isVerified == true, likeCount = it.likeCount, commentCount = it.commentCount, shareCount = it.shareCount) }) }, colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue), shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp), modifier = Modifier.height(30.dp)) { Text("Boost", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
                             }
                         }
                         // v3.3: @username is tappable — copies it, like web.

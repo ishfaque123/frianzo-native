@@ -54,6 +54,10 @@ data class Post(
     // boost insertion in the feed + the Boosted badge); Gson default
     // keeps old payloads working, same as isSaved above.
     val isBoosted: Boolean = false,
+    // v5.31 (Boost v2): the button a live boost puts on this post —
+    // { type: "follow" } or { type: "link", url, text }; null when the
+    // boost has no button (Views Gain) or there is no live boost.
+    val boostButton: BoostButton? = null,
     // v5.14 (#5 Save post): backend toPostDTO now returns isSaved
     // (POST /api/posts/{id}/favorite flips it); Gson default keeps
     // old payloads working.

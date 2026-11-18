@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,6 +37,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -57,54 +61,78 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.frianzo.app.data.Boost
+import com.frianzo.app.data.BoostBudgetData
 import com.frianzo.app.data.BoostConfigData
 import com.frianzo.app.data.BoostCreateRequest
+import com.frianzo.app.data.BoostEstimateFactorsData
 import com.frianzo.app.data.BoostPaymentMethodData
-import com.frianzo.app.data.BoostPlanData
 import com.frianzo.app.data.BoostPurposeData
 import com.frianzo.app.data.FrianzoApi2
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import kotlin.math.roundToInt
 
-// ---------- Boost (v5.26) ----------
+// ---------- Boost (v5.26, v2 page v5.31) ----------
 // The whole Boost UI lives in this one file so the feature's diff stays
 // contained: the launch payload, the country gate, the "Boosted" badge,
-// the stepped Boost checkout (Purpose -> Budget -> Payment, sticky
-// bottom action button) and the My Boosts list. Prices, estimates,
-// purposes and payment details are NEVER hardcoded here — they come
-// from GET /api/boosts/config (DESIGN.md §9); the local fallbacks below
-// only keep the flow usable if a payload list ever arrives empty, and
-// mirror the contract exactly. Amounts are never sent by the app: the
-// server re-derives the charged amount from the chosen plan.
+// the Boost page and the My Boosts list. The page is the owner-approved
+// Facebook-style design (2026-11-18): ONE scrolling page — real preview
+// (with the goal's button on it), goal choices, a daily-budget slider
+// with the duration picked separately, an Analysis card (post insights
+// + Estimated daily results with range bars), then the payment summary
+// and manual payment. Prices and estimate factors are NEVER hardcoded
+// here — they come from GET /api/boosts/config; the local fallbacks
+// below only keep the flow usable if a payload list ever arrives
+// empty, and mirror the contract exactly. Amounts are never sent by
+// the app: the server re-derives the charged amount from
+// dailyBudget × days.
 
-/** What the Boost screen is opened with. Built by the feed / profile /
- *  reels call sites (from the tapped Post/Reel) and by My Boosts'
- *  "Boost Again" (with purpose + plan pre-selected, landing straight
- *  on the payment step). Plain values only — no model objects — so
- *  AppShell can hold it in simple state. */
+/** What one chooser row / launch carries about the content: the small
+ *  preview fields plus everything the full Boost-page preview needs
+ *  (author, counts, background style). Plain values only. */
 data class BoostChoiceItem(
     val contentType: String, // "post" | "reel"
     val contentId: String,
     val previewText: String? = null,
     val previewImageUrl: String? = null, // post imageUrl / reel thumbnailUrl
     val createdAt: String? = null,
+    val authorName: String? = null,
+    val authorAvatar: String? = null,
+    val authorVerified: Boolean = false,
+    val likeCount: Int = 0,
+    val commentCount: Int = 0,
+    val shareCount: Int = 0,
+    val backgroundStyle: String? = null,
 )
 
+/** What the Boost screen is opened with. Built by the feed / profile /
+ *  reels call sites (from the tapped Post/Reel) and by My Boosts'
+ *  "Boost Again" (with purpose + budget + duration pre-selected).
+ *  Plain values only — no model objects — so AppShell can hold it in
+ *  simple state. */
 data class BoostLaunch(
     // Null contentType/contentId = choose-item mode (the profile Boost
-    // button): the flow opens on a "Choose a post or reel" step listing
-    // `choices`. The per-post / per-reel Boost buttons pass a preselected
-    // item instead and skip that step.
+    // button): the screen opens on a "Choose a post or reel" list.
+    // The per-post / per-reel Boost buttons pass a preselected item
+    // instead and skip that list.
     val contentType: String? = null, // "post" | "reel"
     val contentId: String? = null,
     val previewText: String? = null,
     val previewImageUrl: String? = null, // post imageUrl / reel thumbnailUrl
     val presetPurpose: String? = null,
     val presetPlanDays: Int? = null,
+    val presetBudget: Int? = null,
     val startAtPayment: Boolean = false,
     val choices: List<BoostChoiceItem> = emptyList(),
+    val previewAuthorName: String? = null,
+    val previewAuthorAvatar: String? = null,
+    val previewAuthorVerified: Boolean = false,
+    val previewLikeCount: Int = 0,
+    val previewCommentCount: Int = 0,
+    val previewShareCount: Int = 0,
+    val previewBackgroundStyle: String? = null,
 )
 
 /** PK gate for every Boost UI element (owner rule, DESIGN.md §9.1):
@@ -127,6 +155,12 @@ fun BoostedBadge() {
 
 private fun boostFmt(n: Int): String = java.text.NumberFormat.getNumberInstance(java.util.Locale.US).format(n)
 
+private fun boostKfmt(n: Int): String {
+    if (n < 1000) return "$n"
+    val v = Math.round(n / 100.0) / 10.0
+    return if (v == Math.floor(v)) "${v.toInt()}K" else "${v}K"
+}
+
 private fun boostDateLabel(iso: String?): String? {
     if (iso.isNullOrBlank()) return null
     return try {
@@ -143,8 +177,9 @@ private fun boostPurposeLabel(id: String?): String = when (id) {
     else -> "Boost"
 }
 
-// Fallbacks mirroring DESIGN.md §9.2 exactly — used only if the config
-// payload ever returns an empty list, so the screen never dead-ends.
+// Fallbacks mirroring the boost config contract exactly — used only if
+// the config payload ever returns an empty list, so the screen never
+// dead-ends.
 private val FALLBACK_PURPOSES = listOf(
     BoostPurposeData("followers_gain", "Followers Gain", "Grow your profile followers."),
     BoostPurposeData("views_gain", "Views Gain", "Get more views on this post or reel."),
@@ -154,6 +189,21 @@ private val FALLBACK_METHODS = listOf(
     BoostPaymentMethodData("easypaisa", "EasyPaisa", "SHAHI COMMUNICATION", "990001988", "Send the amount to this EasyPaisa Till ID, then upload the payment screenshot below."),
     BoostPaymentMethodData("jazzcash", "JazzCash", "ISHFAQ Shop", "984580283", "Send the amount to this JazzCash business number, then upload the payment screenshot below."),
 )
+private val FALLBACK_DURATIONS = listOf(1, 3, 7, 14)
+private val FALLBACK_BUTTON_TEXTS = listOf("Learn More", "Shop Now", "Order Now")
+
+// Same gradient set as the feed's postBackgroundBrush (Screens.kt).
+private fun boostBackgroundBrush(style: String): Brush = when (style) {
+    "sunset" -> Brush.linearGradient(listOf(Color(0xFFFB923C), Color(0xFFEC4899), Color(0xFF9333EA)))
+    "ocean" -> Brush.linearGradient(listOf(Color(0xFF22D3EE), Color(0xFF3B82F6), Color(0xFF6366F1)))
+    "violet" -> Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFFD946EF), Color(0xFFEC4899)))
+    "mint" -> Brush.linearGradient(listOf(Color(0xFF6EE7B7), Color(0xFF2DD4BF), Color(0xFF22D3EE)))
+    "peach" -> Brush.linearGradient(listOf(Color(0xFFFDE68A), Color(0xFFFB923C), Color(0xFFF43F5E)))
+    "night" -> Brush.linearGradient(listOf(Color(0xFF475569), Color(0xFF0F172A), Color(0xFF000000)))
+    "rose" -> Brush.linearGradient(listOf(Color(0xFFFB7185), Color(0xFFEF4444), Color(0xFFEC4899)))
+    "sky" -> Brush.linearGradient(listOf(Color(0xFF7DD3FC), Color(0xFF60A5FA), Color(0xFF6366F1)))
+    else -> Brush.linearGradient(listOf(Color(0xFF2563EB), Color(0xFF1D4ED8)))
+}
 
 @Composable
 private fun BoostHeader(title: String, onClose: () -> Unit) {
@@ -164,54 +214,101 @@ private fun BoostHeader(title: String, onClose: () -> Unit) {
     HorizontalDivider(color = FrianzoBorder)
 }
 
-/** Purpose -> Budget -> Payment indicator. Completed steps show a blue
- *  check, the current step a blue number, upcoming steps stay grey.
- *  Tapping a completed step jumps back to it. */
+/** The full preview: the content as people will see it in the feed.
+ *  Only a Business Promotion boost puts a button on the content (the
+ *  link button, when a link is added) — Views Gain and Followers Gain
+ *  boosts look completely normal (owner rule, 2026-11-18). */
 @Composable
-private fun BoostStepIndicator(step: Int, onStep: (Int) -> Unit) {
-    val labels = listOf("Purpose", "Budget", "Payment")
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        labels.forEachIndexed { i, label ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = if (i < step) Modifier.clickable { onStep(i) } else Modifier,
-            ) {
-                Box(
-                    Modifier.size(26.dp).clip(CircleShape).background(if (i <= step) FrianzoBlue else MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (i < step) Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                    else Text("${i + 1}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (i == step) Color.White else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+private fun BoostFullPreview(
+    contentType: String,
+    text: String?,
+    imageUrl: String?,
+    backgroundStyle: String?,
+    authorName: String?,
+    authorAvatar: String?,
+    authorVerified: Boolean,
+    likeCount: Int,
+    commentCount: Int,
+    shareCount: Int,
+    purpose: String,
+    buttonText: String,
+    hasLink: Boolean,
+) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, FrianzoBorder, RoundedCornerShape(12.dp)).padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FrianzoAvatar(authorAvatar, 38.dp)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(authorName ?: "You", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (authorVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(15.dp), tint = FrianzoBlue) }
+                    Spacer(Modifier.width(4.dp))
+                    Text("· Boost", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = FrianzoBlue, maxLines = 1, softWrap = false)
                 }
-                Spacer(Modifier.width(6.dp))
-                Text(label, fontSize = 13.sp, fontWeight = if (i == step) FontWeight.SemiBold else FontWeight.Normal, color = if (i <= step) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                Text("Boosted · Public", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
             }
-            if (i < labels.size - 1) {
-                Spacer(Modifier.width(8.dp))
-                Box(Modifier.weight(1f).height(2.dp).background(if (i < step) FrianzoBlue else FrianzoBorder))
-                Spacer(Modifier.width(8.dp))
+        }
+        Spacer(Modifier.height(10.dp))
+        when {
+            contentType == "reel" -> {
+                Box(Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
+                    if (imageUrl != null) AsyncImage(model = imageUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    else Text("Your reel", color = Color.White, fontSize = 14.sp)
+                    Box(Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 8.dp, vertical = 2.dp)) {
+                        Text("Reel", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false)
+                    }
+                }
+                if (!text.isNullOrBlank()) { Spacer(Modifier.height(8.dp)); Text(text, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+            }
+            imageUrl != null -> AsyncImage(model = imageUrl, contentDescription = null, modifier = Modifier.fillMaxWidth().height(260.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+            !backgroundStyle.isNullOrBlank() && !text.isNullOrBlank() -> Box(
+                Modifier.fillMaxWidth().heightIn(min = 130.dp).clip(RoundedCornerShape(8.dp)).background(boostBackgroundBrush(backgroundStyle)),
+                contentAlignment = Alignment.Center,
+            ) { Text(text, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.padding(20.dp)) }
+            !text.isNullOrBlank() -> Text(text, fontSize = 15.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+            Text("${boostFmt(likeCount)} Likes", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+            Text("${boostFmt(commentCount)} Comments", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+            Text("${boostFmt(shareCount)} Shares", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+        }
+        // Owner rule (2026-11-18): only a Business Promotion boost puts
+        // a button on the content. Views Gain and Followers Gain boosts
+        // show no button — the content looks completely normal.
+        if (purpose == "business_promotion" && hasLink) {
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = FrianzoBorder)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Your link", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 14.dp, vertical = 6.dp)) {
+                    Text(buttonText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White, maxLines = 1, softWrap = false)
+                }
             }
         }
     }
 }
 
-/** The content being boosted, as a proper card (owner UI direction). */
+/** One Estimated-daily-results row: label, range, and the blue range
+ *  bar positioned inside the full scale (the approved design). */
 @Composable
-private fun BoostPreviewCard(contentType: String, previewText: String?, previewImageUrl: String?) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, FrianzoBorder, RoundedCornerShape(12.dp)).padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (previewImageUrl != null) {
-            AsyncImage(model = previewImageUrl, contentDescription = null, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
-            Spacer(Modifier.width(12.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            Text(if (contentType == "reel") "REEL" else "POST", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, maxLines = 1, softWrap = false)
-            Spacer(Modifier.height(2.dp))
-            Text(previewText?.takeIf { it.isNotBlank() } ?: if (contentType == "reel") "Your reel" else "Your post", fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        }
+private fun BoostEstimateBar(label: String, min: Int, max: Int, scaleMax: Int) {
+    val left = (min.toFloat() / scaleMax).coerceIn(0f, 1f)
+    val width = ((max - min).toFloat() / scaleMax).coerceIn(0.02f, 1f - left)
+    val rest = (1f - left - width).coerceAtLeast(0f)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+        Text("${boostKfmt(min)} – ${boostKfmt(max)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+    }
+    Spacer(Modifier.height(4.dp))
+    Row(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(FrianzoBorder)) {
+        if (left > 0f) Spacer(Modifier.weight(left))
+        Box(Modifier.weight(width).fillMaxHeight().background(FrianzoBlue))
+        if (rest > 0f) Spacer(Modifier.weight(rest))
     }
 }
 
@@ -221,17 +318,24 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
     val scope = rememberCoroutineScope()
     var config by remember { mutableStateOf<BoostConfigData?>(null) }
     var configError by remember { mutableStateOf<String?>(null) }
-    // Boost Again opens straight on the payment step (purpose + plan
-    // pre-selected); a fresh boost starts at Purpose.
-    var step by remember { mutableStateOf(if (launch.startAtPayment) 2 else if (launch.contentId == null) -1 else 0) }
-    // The item being boosted: preselected by the caller, or picked on
-    // the choose step (step -1) in choose-item mode.
+    // The item being boosted: preselected by the caller, or picked from
+    // the choose list in choose-item mode (chosenId == null there).
     var chosenType by remember { mutableStateOf(launch.contentType) }
     var chosenId by remember { mutableStateOf(launch.contentId) }
     var chosenText by remember { mutableStateOf(launch.previewText) }
     var chosenImage by remember { mutableStateOf(launch.previewImageUrl) }
-    var purpose by remember { mutableStateOf(launch.presetPurpose) }
-    var planDays by remember { mutableStateOf(launch.presetPlanDays) }
+    var chosenBg by remember { mutableStateOf(launch.previewBackgroundStyle) }
+    var chosenAuthorName by remember { mutableStateOf(launch.previewAuthorName) }
+    var chosenAuthorAvatar by remember { mutableStateOf(launch.previewAuthorAvatar) }
+    var chosenAuthorVerified by remember { mutableStateOf(launch.previewAuthorVerified) }
+    var chosenLikes by remember { mutableStateOf(launch.previewLikeCount) }
+    var chosenComments by remember { mutableStateOf(launch.previewCommentCount) }
+    var chosenShares by remember { mutableStateOf(launch.previewShareCount) }
+    var purpose by remember { mutableStateOf(launch.presetPurpose ?: "views_gain") }
+    var budget by remember { mutableStateOf(launch.presetBudget ?: 200) }
+    var days by remember { mutableStateOf(launch.presetPlanDays ?: 3) }
+    var linkUrl by remember { mutableStateOf("") }
+    var buttonText by remember { mutableStateOf("Learn More") }
     var methodId by remember { mutableStateOf<String?>(null) }
     var txnId by remember { mutableStateOf("") }
     var shotUri by remember { mutableStateOf<android.net.Uri?>(null) }
@@ -282,7 +386,7 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
     val pickGate = rememberPermissionGate(galleryPermissions(), onGranted = { picker.launch("image/*") })
 
     val title = when {
-        step == -1 -> "Boost"
+        chosenId == null -> "Boost"
         chosenType == "reel" -> "Boost Reel"
         else -> "Boost Post"
     }
@@ -303,7 +407,12 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
     }
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        BoostHeader(title, onClose = { if (step > 0) step -= 1 else if (step == 0 && launch.contentId == null) step = -1 else onClose() })
+        BoostHeader(title, onClose = {
+            if (launch.contentId == null && chosenId != null) {
+                // Back from a picked item returns to the choose list.
+                chosenId = null; chosenType = null
+            } else onClose()
+        })
         val cfg = config
         when {
             cfg == null && configError == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { DotsLoading() }
@@ -319,15 +428,21 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
             }
             cfg != null -> {
                 val purposes = cfg.purposes?.takeIf { it.isNotEmpty() } ?: FALLBACK_PURPOSES
-                val plans = cfg.plans ?: emptyList()
                 val methods = cfg.paymentMethods?.takeIf { it.isNotEmpty() } ?: FALLBACK_METHODS
+                val budgetCfg = cfg.budget ?: BoostBudgetData()
+                val durations = cfg.durations?.takeIf { it.isNotEmpty() } ?: FALLBACK_DURATIONS
+                val factors = cfg.estimateFactors ?: BoostEstimateFactorsData()
+                val buttonTexts = cfg.buttonTexts?.takeIf { it.isNotEmpty() } ?: FALLBACK_BUTTON_TEXTS
                 val trial = cfg.firstBoostTrial
                 val selectedMethod = methods.firstOrNull { it.id == methodId } ?: methods.first()
-                val selectedPlan = plans.firstOrNull { it.days == planDays }
-                fun planPrice(plan: BoostPlanData): Int = trial?.takeIf { it.available && it.planDays == plan.days }?.amountPkr ?: plan.amountPkr
-                if (step == -1) {
+                val isBusiness = purpose == "business_promotion"
+                val trimmedLink = linkUrl.trim()
+                val linkValid = trimmedLink.isEmpty() || Regex("^https?://.+", RegexOption.IGNORE_CASE).containsMatchIn(trimmedLink)
+                val trialApplies = trial?.available == true && budget == (trial?.dailyBudget ?: 100) && days == (trial?.days ?: 1)
+                val total = if (trialApplies) trial?.amountPkr ?: budget * days else budget * days
+                if (chosenId == null) {
                     // Choose-item mode (profile Boost button): pick one of
-                    // my own posts/reels, then the normal steps follow.
+                    // my own posts/reels, then the Boost page follows.
                     Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
                         Spacer(Modifier.height(16.dp))
                         Text("Choose a post or reel", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
@@ -340,7 +455,13 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                                     Row(
                                         Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
                                             .border(1.dp, FrianzoBorder, RoundedCornerShape(12.dp))
-                                            .clickable { chosenType = item.contentType; chosenId = item.contentId; chosenText = item.previewText; chosenImage = item.previewImageUrl; step = 0 }
+                                            .clickable {
+                                                chosenType = item.contentType; chosenId = item.contentId
+                                                chosenText = item.previewText; chosenImage = item.previewImageUrl
+                                                chosenBg = item.backgroundStyle; chosenAuthorName = item.authorName
+                                                chosenAuthorAvatar = item.authorAvatar; chosenAuthorVerified = item.authorVerified
+                                                chosenLikes = item.likeCount; chosenComments = item.commentCount; chosenShares = item.shareCount
+                                            }
                                             .padding(12.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
@@ -359,73 +480,186 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                         }
                     }
                 } else {
-                BoostStepIndicator(step, onStep = { step = it })
-                Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-                    BoostPreviewCard(chosenType ?: "post", chosenText, chosenImage)
-                    Spacer(Modifier.height(20.dp))
-                    when (step) {
-                        0 -> {
-                            Text("Why are you boosting?", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                            Spacer(Modifier.height(10.dp))
-                            purposes.forEach { p ->
-                                val sel = purpose == p.id
-                                Box(
-                                    Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(12.dp))
-                                        .background(if (sel) FrianzoBlueTint else MaterialTheme.colorScheme.surface)
-                                        .border(1.dp, if (sel) FrianzoBlue else FrianzoBorder, RoundedCornerShape(12.dp))
-                                        .clickable { purpose = p.id }.padding(16.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(p.label ?: boostPurposeLabel(p.id), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                                            p.description?.let { Spacer(Modifier.height(2.dp)); Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                                        }
-                                        if (sel) Icon(Icons.Filled.CheckCircle, contentDescription = "Selected", tint = FrianzoBlue, modifier = Modifier.size(22.dp))
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                        Spacer(Modifier.height(12.dp))
+                        Text("PREVIEW — HOW PEOPLE WILL SEE IT", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        Spacer(Modifier.height(8.dp))
+                        BoostFullPreview(
+                            contentType = chosenType ?: "post",
+                            text = chosenText,
+                            imageUrl = chosenImage,
+                            backgroundStyle = chosenBg,
+                            authorName = chosenAuthorName,
+                            authorAvatar = chosenAuthorAvatar,
+                            authorVerified = chosenAuthorVerified,
+                            likeCount = chosenLikes,
+                            commentCount = chosenComments,
+                            shareCount = chosenShares,
+                            purpose = purpose,
+                            buttonText = buttonText,
+                            hasLink = trimmedLink.isNotEmpty(),
+                        )
+
+                        // Goal
+                        Spacer(Modifier.height(20.dp))
+                        Text("Choose your goal", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(10.dp))
+                        purposes.forEach { p ->
+                            val sel = purpose == p.id
+                            Box(
+                                Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(12.dp))
+                                    .background(if (sel) FrianzoBlueTint else MaterialTheme.colorScheme.surface)
+                                    .border(1.dp, if (sel) FrianzoBlue else FrianzoBorder, RoundedCornerShape(12.dp))
+                                    .clickable { purpose = p.id }.padding(14.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        Modifier.size(18.dp).clip(CircleShape).border(2.dp, if (sel) FrianzoBlue else MaterialTheme.colorScheme.onSurfaceVariant, CircleShape),
+                                        contentAlignment = Alignment.Center,
+                                    ) { if (sel) Box(Modifier.size(9.dp).clip(CircleShape).background(FrianzoBlue)) }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(p.label ?: boostPurposeLabel(p.id), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                        p.description?.let { Spacer(Modifier.height(2.dp)); Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     }
                                 }
                             }
                         }
-                        1 -> {
-                            Text("Choose your budget", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                            Spacer(Modifier.height(10.dp))
-                            plans.forEach { plan ->
-                                val sel = planDays == plan.days
-                                val trialPrice = trial?.takeIf { it.available && it.planDays == plan.days }?.amountPkr
-                                Box(
-                                    Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(12.dp))
-                                        .background(if (sel) FrianzoBlueTint else MaterialTheme.colorScheme.surface)
-                                        .border(1.dp, if (sel) FrianzoBlue else FrianzoBorder, RoundedCornerShape(12.dp))
-                                        .clickable { planDays = plan.days }.padding(16.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text("Rs ${boostFmt(trialPrice ?: plan.amountPkr)}", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, maxLines = 1, softWrap = false)
-                                                if (trialPrice != null) {
-                                                    Spacer(Modifier.width(8.dp))
-                                                    Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("First boost", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false) }
-                                                    Spacer(Modifier.width(6.dp))
-                                                    Text("Rs ${boostFmt(plan.amountPkr)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                                                }
-                                            }
-                                            Text(if (plan.days == 1) "1 day" else "${plan.days} days", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                                            Spacer(Modifier.height(6.dp))
-                                            Text("Estimated views: ${boostFmt(plan.estViewsMin)} - ${boostFmt(plan.estViewsMax)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                                            Text("Estimated clicks: ${boostFmt(plan.estClicksMin)} - ${boostFmt(plan.estClicksMax)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                                        }
-                                        if (sel) Icon(Icons.Filled.CheckCircle, contentDescription = "Selected", tint = FrianzoBlue, modifier = Modifier.size(22.dp))
-                                    }
-                                }
-                            }
-                        }
-                        else -> {
-                            // Payment step: chosen purpose + plan summary.
-                            Text(
-                                "${boostPurposeLabel(purpose)} · ${selectedPlan?.let { if (it.days == 1) "1 day" else "${it.days} days" } ?: ""} · Rs ${selectedPlan?.let { boostFmt(planPrice(it)) } ?: ""}",
-                                fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = FrianzoBlue, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                        if (isBusiness) {
+                            OutlinedTextField(
+                                value = linkUrl,
+                                onValueChange = { linkUrl = it },
+                                placeholder = { Text("Your website or WhatsApp link (optional)") },
+                                singleLine = true,
+                                isError = !linkValid,
+                                modifier = Modifier.fillMaxWidth(),
                             )
+                            if (!linkValid) { Spacer(Modifier.height(4.dp)); Text("Enter a valid link starting with http:// or https://.", fontSize = 12.sp, color = Color.Red) }
                             Spacer(Modifier.height(12.dp))
-                            Text("Pay with", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Button text", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                buttonTexts.forEach { t ->
+                                    val sel = buttonText == t
+                                    Box(
+                                        Modifier.weight(1f).clip(RoundedCornerShape(8.dp))
+                                            .background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surface)
+                                            .border(1.dp, if (sel) FrianzoBlue else FrianzoBorder, RoundedCornerShape(8.dp))
+                                            .clickable { buttonText = t }.padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) { Text(t, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false) }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text("The button will appear on your boosted ${if (chosenType == "reel") "reel" else "post"} with your link. Without a link, no button will show.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+
+                        // Budget + duration
+                        Spacer(Modifier.height(16.dp))
+                        Column(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
+                                .border(1.dp, FrianzoBorder, RoundedCornerShape(12.dp)).padding(14.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Daily budget", fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                                Text("Rs ${boostFmt(budget)}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = FrianzoBlue, maxLines = 1, softWrap = false)
+                            }
+                            Slider(
+                                value = budget.coerceIn(budgetCfg.min, budgetCfg.max).toFloat(),
+                                onValueChange = { budget = (it / budgetCfg.step).roundToInt() * budgetCfg.step },
+                                valueRange = budgetCfg.min.toFloat()..budgetCfg.max.toFloat(),
+                                steps = ((budgetCfg.max - budgetCfg.min) / budgetCfg.step - 1).coerceAtLeast(0),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Row(Modifier.fillMaxWidth()) {
+                                Text("Rs ${boostFmt(budgetCfg.min)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                                Text("Rs ${boostFmt(budgetCfg.max)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            }
+                            Spacer(Modifier.height(14.dp))
+                            Text("Duration", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                durations.forEach { d ->
+                                    val sel = days == d
+                                    Box(
+                                        Modifier.weight(1f).clip(RoundedCornerShape(8.dp))
+                                            .background(if (sel) FrianzoBlue else MaterialTheme.colorScheme.surface)
+                                            .border(1.dp, if (sel) FrianzoBlue else FrianzoBorder, RoundedCornerShape(8.dp))
+                                            .clickable { days = d }.padding(vertical = 8.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) { Text("$d ${if (d == 1) "day" else "days"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = if (sel) Color.White else MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false) }
+                                }
+                            }
+                        }
+
+                        // Analysis + Estimated daily results
+                        Spacer(Modifier.height(12.dp))
+                        Column(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
+                                .border(1.dp, FrianzoBorder, RoundedCornerShape(12.dp)).padding(14.dp)
+                        ) {
+                            Text("Analysis", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(6.dp))
+                            Text("${if (chosenType == "reel") "Reel" else "Post"} insights so far", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            Spacer(Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                Text("${boostFmt(chosenLikes)} Likes", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Text("${boostFmt(chosenComments)} Comments", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                Text("${boostFmt(chosenShares)} Shares", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            HorizontalDivider(color = FrianzoBorder)
+                            Spacer(Modifier.height(12.dp))
+                            Text("Estimated daily results", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(8.dp))
+                            val reachMin = (budget * factors.reachPerRupeeMin).roundToInt()
+                            val reachMax = (budget * factors.reachPerRupeeMax).roundToInt()
+                            val impMin = (budget * factors.impressionsPerRupeeMin).roundToInt()
+                            val impMax = (budget * factors.impressionsPerRupeeMax).roundToInt()
+                            val clickMin = (reachMin * factors.clicksPerReach).roundToInt()
+                            val clickMax = (reachMax * factors.clicksPerReach).roundToInt()
+                            BoostEstimateBar("People reached", reachMin, reachMax, (budgetCfg.max * factors.reachPerRupeeMax).roundToInt())
+                            Spacer(Modifier.height(10.dp))
+                            BoostEstimateBar("Impressions", impMin, impMax, (budgetCfg.max * factors.impressionsPerRupeeMax).roundToInt())
+                            Spacer(Modifier.height(10.dp))
+                            BoostEstimateBar("Link clicks", clickMin, clickMax, (budgetCfg.max * factors.reachPerRupeeMax * factors.clicksPerReach).roundToInt())
+                            Spacer(Modifier.height(8.dp))
+                            Text("Estimated per day — actual results depend on how many people are online.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        Text("Your ${if (chosenType == "reel") "reel" else "post"} will appear in: Home feed · Reels feed · Search", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                        // Payment
+                        Spacer(Modifier.height(12.dp))
+                        Column(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
+                                .border(1.dp, FrianzoBorder, RoundedCornerShape(12.dp)).padding(14.dp)
+                        ) {
+                            Text("Payment summary", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth()) {
+                                Text("Daily budget", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                                Text("Rs ${boostFmt(budget)}", fontSize = 13.sp, maxLines = 1, softWrap = false)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Row(Modifier.fillMaxWidth()) {
+                                Text("Duration", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                                Text("$days ${if (days == 1) "day" else "days"}", fontSize = 13.sp, maxLines = 1, softWrap = false)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Total", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, softWrap = false)
+                                if (trialApplies) {
+                                    Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 6.dp, vertical = 2.dp)) { Text("First boost", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false) }
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Rs ${boostFmt(budget * days)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                Text("Rs ${boostFmt(total)}", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            Text("Pay with", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(10.dp))
                             methods.forEach { m ->
                                 val sel = selectedMethod.id == m.id
@@ -461,7 +695,6 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                                     }
                                 }
                             }
-                            Spacer(Modifier.height(4.dp))
                             if (shotUri != null) {
                                 AsyncImage(model = shotUri, contentDescription = "Payment screenshot", modifier = Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
                                 TextButton(onClick = { pickGate() }, enabled = !uploading, contentPadding = PaddingValues(horizontal = 4.dp)) { Text(if (uploading) "Uploading…" else "Change screenshot", maxLines = 1, softWrap = false) }
@@ -472,27 +705,15 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                             OutlinedTextField(value = txnId, onValueChange = { txnId = it }, label = { Text("Transaction ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                             formError?.let { Spacer(Modifier.height(10.dp)); Text(it, color = Color.Red, fontSize = 13.sp) }
                         }
+                        Spacer(Modifier.height(16.dp))
                     }
-                    Spacer(Modifier.height(16.dp))
-                }
-                // Sticky bottom action: Continue between steps, Submit on
-                // the payment step; disabled until the step is valid.
-                HorizontalDivider(color = FrianzoBorder)
-                Box(Modifier.fillMaxWidth().padding(16.dp)) {
-                    if (step < 2) {
+                    // Sticky bottom action (Boost v2 design): one button —
+                    // the whole page above is a single scroll.
+                    HorizontalDivider(color = FrianzoBorder)
+                    Box(Modifier.fillMaxWidth().padding(16.dp)) {
                         Button(
-                            enabled = if (step == 0) purpose != null else planDays != null,
-                            onClick = { step += 1 },
-                            colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue),
-                            shape = RoundedCornerShape(28.dp),
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                        ) { Text("Continue", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
-                    } else {
-                        Button(
-                            enabled = shotUrl != null && !uploading && !submitting,
+                            enabled = shotUrl != null && !uploading && !submitting && linkValid,
                             onClick = {
-                                val p = purpose ?: return@Button
-                                val d = planDays ?: return@Button
                                 val shot = shotUrl ?: return@Button
                                 submitting = true
                                 formError = null
@@ -503,8 +724,11 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                                                 contentType = chosenType ?: "post",
                                                 postId = if (chosenType == "post") chosenId else null,
                                                 reelId = if (chosenType == "reel") chosenId else null,
-                                                purpose = p,
-                                                planDays = d,
+                                                purpose = purpose,
+                                                dailyBudget = budget,
+                                                days = days,
+                                                linkUrl = if (isBusiness && trimmedLink.isNotEmpty()) trimmedLink else null,
+                                                buttonText = if (isBusiness && trimmedLink.isNotEmpty()) buttonText else null,
                                                 paymentMethod = selectedMethod.id,
                                                 transactionId = txnId.trim().ifBlank { null },
                                                 screenshotUrl = shot,
@@ -519,9 +743,8 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                             colors = ButtonDefaults.buttonColors(containerColor = FrianzoBlue),
                             shape = RoundedCornerShape(28.dp),
                             modifier = Modifier.fillMaxWidth().height(52.dp),
-                        ) { Text(if (submitting) "Sending…" else "Submit Boost Request", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
+                        ) { Text(if (submitting) "Sending…" else "Boost Post Now", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) }
                     }
-                }
                 }
             }
         }
@@ -579,7 +802,14 @@ private fun BoostRow(b: Boost, onBoostAgain: (BoostLaunch) -> Unit) {
             }
             Column(Modifier.weight(1f)) {
                 Text(text, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("${if (b.planDays == 1) "1 day" else "${b.planDays} days"} · Rs ${boostFmt(b.amountPkr)} · ${boostPurposeLabel(b.purpose)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (b.dailyBudget != null) "Rs ${boostFmt(b.dailyBudget)} /day · ${if (b.planDays == 1) "1 day" else "${b.planDays} days"} · Rs ${boostFmt(b.amountPkr)} · ${boostPurposeLabel(b.purpose)}"
+                    else "${if (b.planDays == 1) "1 day" else "${b.planDays} days"} · Rs ${boostFmt(b.amountPkr)} · ${boostPurposeLabel(b.purpose)}",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                )
+                if (!b.linkUrl.isNullOrBlank()) {
+                    Text("Button: ${b.buttonText ?: "Learn More"} · ${b.linkUrl}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                }
             }
             Spacer(Modifier.width(8.dp))
             when (b.status) {
@@ -613,7 +843,7 @@ private fun BoostRow(b: Boost, onBoostAgain: (BoostLaunch) -> Unit) {
                             previewImageUrl = thumb,
                             presetPurpose = b.purpose,
                             presetPlanDays = b.planDays,
-                            startAtPayment = true,
+                            presetBudget = b.dailyBudget,
                         )
                     )
                 },
