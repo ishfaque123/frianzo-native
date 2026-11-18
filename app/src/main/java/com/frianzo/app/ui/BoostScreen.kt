@@ -469,7 +469,7 @@ fun BoostScreen(api2: FrianzoApi2, launch: BoostLaunch, onClose: () -> Unit, onO
                                 OutlinedButton(onClick = { pickGate() }, enabled = !uploading, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(28.dp)) { Text(if (uploading) "Uploading…" else "Upload payment screenshot", maxLines = 1, softWrap = false) }
                             }
                             Spacer(Modifier.height(12.dp))
-                            OutlinedTextField(value = txnId, onValueChange = { txnId = it }, label = { Text("Transaction ID (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = txnId, onValueChange = { txnId = it }, label = { Text("Transaction ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                             formError?.let { Spacer(Modifier.height(10.dp)); Text(it, color = Color.Red, fontSize = 13.sp) }
                         }
                     }
