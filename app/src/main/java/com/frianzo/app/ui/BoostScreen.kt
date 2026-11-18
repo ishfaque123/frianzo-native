@@ -144,12 +144,12 @@ fun isBoostCountryPk(raw: String?): Boolean {
     return t.equals("PK", ignoreCase = true) || t.equals("Pakistan", ignoreCase = true)
 }
 
-/** The "Boosted" chip, shaped like the existing Pinned chip (feed
+/** The "Sponsored" chip (owner, 2026-11-18: boosted content is labelled Sponsored, like Facebook), shaped like the existing Pinned chip (feed
  *  card) but in FrianzoBlue so a paid placement reads as sponsored. */
 @Composable
 fun BoostedBadge() {
     Box(Modifier.clip(RoundedCornerShape(8.dp)).background(FrianzoBlue).padding(horizontal = 6.dp, vertical = 2.dp)) {
-        Text("Boosted", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false)
+        Text("Sponsored", fontSize = 11.sp, color = Color.White, maxLines = 1, softWrap = false)
     }
 }
 
@@ -245,10 +245,8 @@ private fun BoostFullPreview(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(authorName ?: "You", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (authorVerified) { Spacer(Modifier.width(4.dp)); Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", modifier = Modifier.size(15.dp), tint = FrianzoBlue) }
-                    Spacer(Modifier.width(4.dp))
-                    Text("· Boost", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = FrianzoBlue, maxLines = 1, softWrap = false)
                 }
-                Text("Boosted · Public", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                Text("Sponsored · Public", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
             }
         }
         Spacer(Modifier.height(10.dp))
