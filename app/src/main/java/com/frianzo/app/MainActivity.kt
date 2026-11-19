@@ -440,7 +440,6 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                             "Your Activity" to Icons.Filled.History,
                             "Professional Dashboard" to Icons.Filled.BarChart,
                             "Close Friends" to Icons.Filled.Star,
-                            "AI Video Generator" to Icons.Filled.AutoAwesome,
                             "ISAI Assistant" to Icons.Filled.ChatBubble,
                         )
                         navItems.forEachIndexed { index, (label, icon) ->
