@@ -1941,6 +1941,13 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
 }
 
 // ---------- REEL COMMENTS (v2.9): bottom sheet like the WEB reel comments ----------
+// Quick emoji row (post + reel comments): one tap posts the emoji as a
+// comment. These emojis are COMMENT TEXT, not reactions — the "never flat
+// system emojis" rule in the reactions section governs reaction icons
+// (ReactionIcons.kt) and does not apply here. Do not delete this row in
+// a reaction cleanup.
+private val QUICK_COMMENT_EMOJIS = listOf("❤️", "🙌", "🔥", "👏", "😢", "😍", "😮", "😂")
+
 // Web reel comments are DIFFERENT from post comments: 78vh sheet, true-total
 // header count, plain-text rows (no bubble), no Follow pill, no sort, 500-char
 // limit, infinite scroll (cursor pagination). Rows: 32px avatar, name +
@@ -1995,6 +2002,37 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
             } catch (e: Exception) { error = friendlyReelsError(e, "Couldn't load comments — try again") }
             loadingMore = false
             loadingFirst = false
+        }
+    }
+    // Quick emoji row: one tap posts the emoji as a comment through the
+    // same text-only send path as the Send button. The draft is left
+    // untouched — only the reply target is consumed on success, exactly
+    // like a normal send.
+    fun sendQuickEmoji(emoji: String) {
+        if (sending) return
+        val parent = replyTo?.id
+        sending = true; sendError = null
+        scope.launch {
+            try {
+                val res = api2.addReelComment(reel.id, CommentCreateRequest(emoji, parent))
+                if (res.success) {
+                    // v3.8 (F16): short send sound (web rule).
+                    try { val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60); tg.startTone(ToneGenerator.TONE_PROP_BEEP, 120); scope.launch { delay(300); try { tg.release() } catch (_: Exception) {} } } catch (_: Exception) {}
+                    total += 1; onCommentAdded(); justSent = true; if (parent != null) expandedIds = expandedIds + parent; load()
+                    replyTo = null
+                } else sendError = friendlyReelsError(res.error?.message, "Could not send comment")
+            } catch (e: Exception) {
+                if (Outbox.isNetworkError(e)) {
+                    // v5.12: offline — queue the comment; the flush
+                    // replays it when back online. The draft stays
+                    // untouched and the reply target is consumed so the
+                    // queued emoji cannot be sent twice.
+                    Outbox.enqueueJson(context, "COMMENT_REEL", reel.id, mapOf("text" to emoji, "parent" to (parent ?: "")))
+                    replyTo = null
+                    sendError = "Waiting for connection…"
+                } else sendError = friendlyReelsError(e, "Could not send comment")
+            }
+            sending = false
         }
     }
     LaunchedEffect(reel.id) { load() }
@@ -2118,6 +2156,15 @@ private fun ReelCommentsDialog(api2: FrianzoApi2, reel: Reel, myId: String? = nu
             }
             // U-B8: divider above the input so it does not blend into the list.
             HorizontalDivider(color = FrianzoBorder)
+            // Quick emoji row, directly above the comment input. Tapping an
+            // emoji posts it at once as a comment (or as a reply while the
+            // reply banner is showing). Clickable Text requests no focus, so
+            // the keyboard stays down. Disabled while a send is in flight.
+            Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                QUICK_COMMENT_EMOJIS.forEach { emoji ->
+                    Text(text = emoji, fontSize = 28.sp, modifier = Modifier.clickable(enabled = !sending) { sendQuickEmoji(emoji) })
+                }
+            }
             Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 FrianzoAvatar(myAvatar, 32.dp)
                 Spacer(Modifier.width(8.dp))

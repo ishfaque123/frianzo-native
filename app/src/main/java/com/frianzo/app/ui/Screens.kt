@@ -2074,6 +2074,13 @@ private fun flattenReplies(replies: List<Comment>, parentAuthor: Author?): List<
     return flat.sortedBy { it.first.createdAt ?: "" }
 }
 
+// Quick emoji row (post + reel comments): one tap posts the emoji as a
+// comment. These emojis are COMMENT TEXT, not reactions — the "never flat
+// system emojis" rule in the reactions section governs reaction icons
+// (ReactionIcons.kt) and does not apply here. Do not delete this row in
+// a reaction cleanup.
+private val QUICK_COMMENT_EMOJIS = listOf("❤️", "🙌", "🔥", "👏", "😢", "😍", "😮", "😂")
+
 @Composable
 // v2.9: dead sortBy param removed (it was never read — the web has a
 // Top/Newest sort, but the owner ordered native to keep NO sort).
@@ -2103,6 +2110,31 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
                 // A-B3: a later successful load clears an earlier error.
                 if (res.success && res.data != null) { comments = res.data.comments; error = null } else error = res.error?.message
             } catch (e: Exception) { error = e.message }
+        }
+    }
+    // Quick emoji row: one tap posts the emoji as a comment through the
+    // same text-only send path as the Send button. The draft and any
+    // attached photo are left untouched — only the reply target is
+    // consumed on success, exactly like a normal send.
+    fun sendQuickEmoji(emoji: String) {
+        if (sending) return
+        val parent = replyTo?.id
+        sending = true; error = null
+        scope.launch {
+            try {
+                val ok = api2.addPostComment(postId, CommentCreateRequest(emoji, parent)).success
+                if (ok) { replyTo = null; load(); count += 1; onCountChange(count) }
+                else if (error == null) error = "Could not send comment"
+            } catch (e: Exception) {
+                if (Outbox.isNetworkError(e)) {
+                    // v5.12: offline text comment — queue it (same as the
+                    // Send button) and consume the reply target so the
+                    // queued emoji cannot be sent twice.
+                    Outbox.enqueueJson(context, "COMMENT_POST", postId, mapOf("text" to emoji, "parent" to (parent ?: "")))
+                    replyTo = null
+                    error = "Waiting for connection…"
+                } else error = e.message ?: "Could not send comment"
+            } finally { sending = false }
         }
     }
     LaunchedEffect(postId) { load() }
@@ -2213,6 +2245,15 @@ private fun ColumnScope.CommentSection(api2: FrianzoApi2, postId: String, initia
             Spacer(Modifier.height(8.dp))
         }
         if (error != null) { Text(error!!, fontSize = 13.sp, color = Color.Red); Spacer(Modifier.height(4.dp)) }
+        // Quick emoji row, directly above the comment input. Tapping an
+        // emoji posts it at once as a comment (or as a reply while the
+        // reply banner is showing). Clickable Text requests no focus, so
+        // the keyboard stays down. Disabled while a send is in flight.
+        Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+            QUICK_COMMENT_EMOJIS.forEach { emoji ->
+                Text(text = emoji, fontSize = 28.sp, modifier = Modifier.clickable(enabled = !sending) { sendQuickEmoji(emoji) })
+            }
+        }
         Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             FrianzoAvatar(myAvatar, 32.dp)
             Spacer(Modifier.width(8.dp))
