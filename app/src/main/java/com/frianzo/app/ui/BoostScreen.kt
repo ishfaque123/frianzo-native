@@ -802,7 +802,7 @@ private fun BoostRow(b: Boost, onBoostAgain: (BoostLaunch) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (thumb != null) {
-                AsyncImage(model = thumb, contentDescription = null, modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+                GatedImage(url = thumb, contentDescription = null, modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)), placeholder = { SkeletonBox(Modifier.fillMaxSize()) }, errorContent = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant)) })
                 Spacer(Modifier.width(12.dp))
             }
             Column(Modifier.weight(1f)) {

@@ -1095,7 +1095,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                     }
                 }
             } else if (!prepared) {
-                reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+                GatedImage(url = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), placeholder = {}, errorContent = {})
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { ReelLoadingSpinner() }
             } else if (buffering) {
                 // v4.3 (black screen): the prepared player is waiting for
@@ -1110,7 +1110,7 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                 }
             }
         } else {
-            reel.thumbnailUrl?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+            GatedImage(url = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), placeholder = {}, errorContent = {})
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Video unavailable", color = Color.White, fontSize = 15.sp) }
         }
         // v3.8 (F12): Data Saver shows the poster + a tap-to-play pill.
@@ -1924,7 +1924,7 @@ private fun SavedReelsScreen(api2: FrianzoApi2, onOpenReel: (String) -> Unit, on
                 LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
                     items(reels, key = { it.id }) { reel ->
                         Box(Modifier.aspectRatio(9f / 16f).clip(RoundedCornerShape(4.dp)).background(Color(0xFF1E293B)).noRippleClickable { onOpenReel(reel.id) }) {
-                            if (reel.thumbnailUrl != null) AsyncImage(model = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                            GatedImage(url = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), placeholder = {}, errorContent = {})
                             Icon(Icons.Filled.PlayArrow, contentDescription = "Reel", tint = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(20.dp))
                             Row(Modifier.align(Alignment.BottomStart).padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Filled.Visibility, contentDescription = "Views", tint = Color.White, modifier = Modifier.size(12.dp))
@@ -5914,8 +5914,7 @@ fun SearchScreen(api2: FrianzoApi2, onUser: (String) -> Unit, onTag: (String) ->
                         supportingContent = { Text(r.author?.displayName ?: r.author?.username ?: "User", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         leadingContent = {
                             Box(Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)).background(FrianzoBlueTint), contentAlignment = Alignment.Center) {
-                                if (r.thumbnailUrl != null) AsyncImage(model = r.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                                else Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = FrianzoBlue)
+                                GatedImage(url = r.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), placeholder = {}, errorContent = { Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = FrianzoBlue) })
                             }
                         },
                         colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
@@ -6765,8 +6764,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                         // back to a video frame with no thumbnail, play
                         // icon only — no caption, no view count.
                         Box(Modifier.weight(1f).aspectRatio(9f / 16f).background(Color(0xFFE2E8F0)).clickable { onOpenReel?.invoke(reel.id) }) {
-                            if (reel.thumbnailUrl != null) AsyncImage(model = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                            else ReelTileVideoFrame(reel.videoUrl)
+                            GatedImage(url = reel.thumbnailUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), placeholder = {}, errorContent = { ReelTileVideoFrame(reel.videoUrl) })
                             Icon(Icons.Filled.PlayArrow, contentDescription = "Reel", tint = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(16.dp))
                         }
                     }
@@ -7170,7 +7168,7 @@ private fun ProfileOriginalPostCard(original: Post, onAuthor: (String) -> Unit =
             }
         }
         original.content?.let { Spacer(Modifier.height(8.dp)); Text(it, fontSize = 14.sp) }
-        original.imageUrl?.let { Spacer(Modifier.height(8.dp)); AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).clip(RoundedCornerShape(8.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+        original.imageUrl?.let { Spacer(Modifier.height(8.dp)); GatedImage(url = it, contentDescription = null, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).clip(RoundedCornerShape(8.dp)), successModifier = Modifier.fillMaxWidth().heightIn(max = 240.dp), placeholder = { SkeletonBox(Modifier.fillMaxSize()) }, errorContent = {}) }
     }
 }
 
@@ -7180,25 +7178,26 @@ private fun ProfilePostPhoto(url: String, onClick: () -> Unit = {}) {
     key(reload) {
         val context = LocalContext.current
         val screenWidthPx = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
-        // BLUR-UP (v5.23, Facebook-style): shimmer placeholder in a reserved
-        // 4/3 box while loading (no layout jump), then the sharp image
-        // crossfades in. The request is sized to the screen width so Coil does
-        // not decode the full-resolution file.
-        val painter = rememberAsyncImagePainter(model = ImageRequest.Builder(context).data(url).size(screenWidthPx, screenWidthPx).crossfade(true).build())
-        when (val s = painter.state) {
-            is AsyncImagePainter.State.Loading -> SkeletonBox(Modifier.fillMaxWidth().aspectRatio(4f / 3f).clickable { onClick() })
-            is AsyncImagePainter.State.Error -> Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("Image failed to load", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = { reload++ }, modifier = Modifier.minimumInteractiveComponentSize()) { Text("Retry") }
-            }
-            else -> {
-                val ratio = painter.intrinsicSize.let { size ->
-                    if (size.width > 0f && size.height > 0f) size.width / size.height else 4f / 3f
+        // FEED FIX (2026-11-26): thin delegate to the shared GatedImage
+        // (Theme.kt) — same behaviour as before (4/3 skeleton, intrinsic
+        // ratio, Retry, screen-width sized request); the load-state
+        // machine lives in ONE place.
+        GatedImage(
+            url = url,
+            contentDescription = null,
+            modifier = Modifier.fillMaxWidth(),
+            useIntrinsicRatio = true,
+            requestSizePx = screenWidthPx,
+            successModifier = Modifier.clickable { onClick() },
+            placeholder = { SkeletonBox(Modifier.fillMaxWidth().aspectRatio(4f / 3f).clickable { onClick() }) },
+            errorContent = {
+                Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Image failed to load", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { reload++ }, modifier = Modifier.minimumInteractiveComponentSize()) { Text("Retry") }
                 }
-                Image(painter = painter, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().aspectRatio(ratio).clickable { onClick() })
-            }
-        }
+            },
+        )
     }
 }
 

@@ -2608,7 +2608,7 @@ private fun OriginalPostCard(original: Post, onAuthor: (String) -> Unit = {}, on
             }
         }
         original.content?.let { Spacer(Modifier.height(8.dp)); Text(it, fontSize = 14.sp) }
-        original.imageUrl?.let { Spacer(Modifier.height(8.dp)); AsyncImage(model = it, contentDescription = null, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop) }
+        original.imageUrl?.let { Spacer(Modifier.height(8.dp)); GatedImage(url = it, contentDescription = null, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).clip(RoundedCornerShape(8.dp)), successModifier = Modifier.fillMaxWidth().heightIn(max = 240.dp), placeholder = { SkeletonBox(Modifier.fillMaxSize()) }, errorContent = {}) }
     }
 }
 
@@ -2618,25 +2618,26 @@ private fun PostPhoto(url: String, onClick: () -> Unit = {}) {
     key(reload) {
         val context = LocalContext.current
         val screenWidthPx = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
-        // BLUR-UP (v5.23, Facebook-style): shimmer placeholder in a reserved
-        // 4/3 box while loading (no layout jump), then the sharp image
-        // crossfades in. The request is sized to the screen width so Coil does
-        // not decode the full-resolution file.
-        val painter = rememberAsyncImagePainter(model = ImageRequest.Builder(context).data(url).size(screenWidthPx, screenWidthPx).crossfade(true).build())
-        when (val s = painter.state) {
-            is AsyncImagePainter.State.Loading -> SkeletonBox(Modifier.fillMaxWidth().aspectRatio(4f / 3f).clickable { onClick() })
-            is AsyncImagePainter.State.Error -> Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("Image failed to load", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = { reload++ }) { Text("Retry") }
-            }
-            else -> {
-                val ratio = painter.intrinsicSize.let { size ->
-                    if (size.width > 0f && size.height > 0f) size.width / size.height else 4f / 3f
+        // FEED FIX (2026-11-26): thin delegate to the shared GatedImage
+        // (Theme.kt) — same BLUR-UP behaviour as before (4/3 skeleton while
+        // loading, intrinsic ratio on success, Retry on error, screen-width
+        // sized request), but the load-state machine lives in ONE place.
+        GatedImage(
+            url = url,
+            contentDescription = null,
+            modifier = Modifier.fillMaxWidth(),
+            useIntrinsicRatio = true,
+            requestSizePx = screenWidthPx,
+            successModifier = Modifier.clickable { onClick() },
+            placeholder = { SkeletonBox(Modifier.fillMaxWidth().aspectRatio(4f / 3f).clickable { onClick() }) },
+            errorContent = {
+                Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Image failed to load", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { reload++ }) { Text("Retry") }
                 }
-                Image(painter = painter, contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().aspectRatio(ratio).clickable { onClick() })
-            }
-        }
+            },
+        )
     }
 }
 
@@ -3113,7 +3114,7 @@ private fun StoryViewerDialog(api2: FrianzoApi2, group: StatusGroup, myId: Strin
                         } }, modifier = Modifier.fillMaxSize(), update = { view -> try { storyPlayer?.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f) } catch (_: Exception) {}; if (paused) view.pause() else view.start() }, onRelease = { storyPlayer = null; try { it.stopPlayback() } catch (_: Exception) {} })
                     }
                 }
-                !item.mediaUrl.isNullOrBlank() -> AsyncImage(model = item.mediaUrl, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                !item.mediaUrl.isNullOrBlank() -> GatedImage(url = item.mediaUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit, placeholder = { Box(Modifier.fillMaxSize().background(Color(0xFF111827))) }, errorContent = { LaunchedEffect(Unit) { advance() }; Box(Modifier.fillMaxSize().background(Color.Black)) })
                 else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(item.textContent ?: "", color = Color.White) }
             }
             // Tap zones: left 30% back, right 70% next; hold anywhere pauses.

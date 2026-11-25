@@ -54,7 +54,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import coil.compose.AsyncImage
 import com.frianzo.app.data.*
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
@@ -1690,7 +1689,7 @@ fun DashboardScreen(api2: FrianzoApi2, onBack: () -> Unit) {
                         if (top != null && !top.id.isNullOrBlank()) {
                             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { openTopContent(context, top) }.padding(4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 if (!top.mediaUrl.isNullOrBlank()) {
-                                    AsyncImage(model = top.mediaUrl, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)))
+                                    GatedImage(url = top.mediaUrl, contentDescription = null, modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)), placeholder = { SkeletonBox(Modifier.fillMaxSize()) }, errorContent = { Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) { Text(if (top.type == "reel") "Reel" else "Post", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false) } })
                                 } else {
                                     Box(Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
                                         Text(if (top.type == "reel") "Reel" else "Post", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)

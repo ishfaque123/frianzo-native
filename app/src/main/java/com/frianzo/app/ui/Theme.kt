@@ -4,6 +4,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -32,6 +37,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import com.frianzo.app.R
 
 /**
@@ -315,3 +322,63 @@ fun FrianzoAvatar(model: String?, size: androidx.compose.ui.unit.Dp, modifier: M
     }
 }
 
+/**
+ * GatedImage — PERMANENT fix for half-loaded photos (owner rule: a photo
+ * shows ONLY when COMPLETELY loaded, never half).
+ * ONE shared load-state machine for every photo on every screen: the photo
+ * renders only when Coil reports State.Success. While loading, the caller's
+ * placeholder shows (usually a SkeletonBox in the same frame, so nothing
+ * jumps); on error the caller's error content shows. A null/blank URL
+ * renders the error content — never a crash, never a blank hole.
+ * Call sites pass ONLY presentation (frame, placeholder, error UI); the
+ * gating itself lives ONLY here, so a new screen cannot re-introduce a
+ * half-loaded photo by forgetting a check.
+ * successModifier is the success Image's FULL modifier (default: fill the
+ * frame). Pass your own when the image must size itself, e.g. a repost
+ * image keeps its intrinsic height (fillMaxWidth + heightIn(max)).
+ * useIntrinsicRatio is the PostPhoto/ProfilePostPhoto shape: the loaded
+ * image keeps its true aspect ratio (FillWidth). When it is true,
+ * successModifier must NOT set a size — pass only tap/click modifiers.
+ * requestSizePx sizes the Coil request (feed photos use the screen width
+ * so Coil never decodes the full-resolution file).
+ */
+@Composable
+fun GatedImage(
+    url: String?,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    useIntrinsicRatio: Boolean = false,
+    requestSizePx: Int? = null,
+    successModifier: Modifier = Modifier.fillMaxSize(),
+    placeholder: @Composable BoxScope.() -> Unit = {},
+    errorContent: @Composable BoxScope.() -> Unit = {}
+) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        if (url.isNullOrBlank()) {
+            errorContent()
+        } else {
+            val context = LocalContext.current
+            val request = remember(url, requestSizePx) {
+                val b = ImageRequest.Builder(context).data(url).crossfade(true)
+                if (requestSizePx != null) b.size(requestSizePx, requestSizePx)
+                b.build()
+            }
+            val painter = rememberAsyncImagePainter(model = request, contentScale = contentScale)
+            when (painter.state) {
+                is AsyncImagePainter.State.Success -> {
+                    if (useIntrinsicRatio) {
+                        val ratio = painter.intrinsicSize.let { size ->
+                            if (size.width > 0f && size.height > 0f) size.width / size.height else 4f / 3f
+                        }
+                        Image(painter = painter, contentDescription = contentDescription, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth().aspectRatio(ratio).then(successModifier))
+                    } else {
+                        Image(painter = painter, contentDescription = contentDescription, modifier = successModifier, contentScale = contentScale)
+                    }
+                }
+                is AsyncImagePainter.State.Error -> errorContent()
+                else -> placeholder()
+            }
+        }
+    }
+}
