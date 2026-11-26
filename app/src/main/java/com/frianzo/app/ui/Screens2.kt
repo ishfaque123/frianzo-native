@@ -67,6 +67,7 @@ import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.ThumbUp
@@ -6092,7 +6093,7 @@ private fun isoNow(): String =
 private data class ProfileAllItem(val key: String, val pinned: Boolean, val createdAt: String?, val post: Post?, val reel: Reel?)
 
 @Composable
-fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null, feedVm: FeedViewModel? = null, onUser: ((String) -> Unit)? = null, onDashboard: (() -> Unit)? = null, onOpenReel: ((String) -> Unit)? = null, myCountry: String? = null, onBoostPost: (Post) -> Unit = {}, onOpenMyBoosts: (() -> Unit)? = null, onBoostChoose: (List<BoostChoiceItem>) -> Unit = {}) {
+fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout: (() -> Unit)? = null, onBack: (() -> Unit)? = null, onOpenChat: ((String, String) -> Unit)? = null, feedVm: FeedViewModel? = null, onUser: ((String) -> Unit)? = null, onDashboard: (() -> Unit)? = null, onOpenReel: ((String) -> Unit)? = null, myCountry: String? = null, onBoostPost: (Post) -> Unit = {}, onOpenMyBoosts: (() -> Unit)? = null, onBoostChoose: (List<BoostChoiceItem>) -> Unit = {}, onFollowListOpen: (Boolean) -> Unit = {}) {
     var profile by remember { mutableStateOf<PublicProfile?>(null) }
     var posts by remember { mutableStateOf<List<Post>>(emptyList()) }
     var postsLoading by remember { mutableStateOf(false) }
@@ -6102,6 +6103,13 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     var showEdit by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var followList by remember { mutableStateOf<String?>(null) }
+    // Final5 (owner 2026-11-26): while the follow list is open the
+    // MainActivity chrome (Frianzo logo bar + nav icons row) is hidden,
+    // so the list page starts with its own back/name/search row.
+    // The dispose resets it if the profile screen leaves composition
+    // while the list is open.
+    LaunchedEffect(followList) { onFollowListOpen(followList != null) }
+    DisposableEffect(Unit) { onDispose { onFollowListOpen(false) } }
     var detailPostId by remember { mutableStateOf<String?>(null) }
     var photoMsg by remember { mutableStateOf<String?>(null) }
     // v2.9: real follow counts, highlights, per-post like state.
@@ -6852,7 +6860,7 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
     // LazyColumn, same pattern as the v5.18.3 Edit fix —
     // FollowListScreen is a plain full-size Column, so emitted
     // before the list it was painted over and untappable.
-    followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }, myId = myId) }
+    followList?.let { dir -> FollowListScreen(api2, profile?.id ?: "", dir, ownerName = profile?.displayName, onUser = { u -> followList = null; onUser?.invoke(u) }, onClose = { followList = null }, myId = myId) }
     // v5.18.3 (B-H1 fix): the edit page MUST be emitted AFTER the
     // LazyColumn — both are direct children of MainActivity's Box, so the
     // later child draws on top. Before v5.18.3 it was emitted first and the
@@ -7988,7 +7996,7 @@ private fun EditProfileSelectField(label: String, value: String, placeholder: St
 
 // ---------- FOLLOWERS / FOLLOWING LIST (GET /api/follows/{id}/{direction}) ----------
 @Composable
-private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: String, onUser: (String) -> Unit, onClose: () -> Unit, myId: String? = null) {
+private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: String, ownerName: String? = null, onUser: (String) -> Unit, onClose: () -> Unit, myId: String? = null) {
     val context = LocalContext.current
     var users by remember { mutableStateOf<List<FollowListUser>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -8002,6 +8010,11 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
     var total by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(false) }
     var q by rememberSaveable { mutableStateOf("") }
+    // Final5 (owner 2026-11-26): search lives behind the search icon in
+    // the top row only — the field is hidden until the icon is tapped.
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+    LaunchedEffect(searchOpen) { if (searchOpen) { delay(100); searchFocus.requestFocus() } }
     // B-B28: all pages combined, for searching (the backend has no
     // search param on this endpoint, so extra pages are fetched on demand).
     var allUsers by remember { mutableStateOf<List<FollowListUser>?>(null) }
@@ -8046,11 +8059,27 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
         (it.displayName ?: "").contains(q, ignoreCase = true) || (it.username ?: "").contains(q, ignoreCase = true)
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text("Back", maxLines = 1, softWrap = false) }
-            Text(if (direction == "followers") "Followers" else "Following", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Final5 (owner 2026-11-26, approved example final5.png): top row
+        // is back chevron '<' left, the user's FULL NAME (displayName
+        // passed in — never hardcoded, never the @username) centred,
+        // search icon right. The back action is unchanged (onClose).
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onClose) { Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Back", tint = MaterialTheme.colorScheme.onSurface) }
+            Text(ownerName ?: "", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            IconButton(onClick = { if (searchOpen) q = ""; searchOpen = !searchOpen }) { Icon(Icons.Outlined.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.onSurface) }
         }
-        OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, shape = RoundedCornerShape(28.dp))
+        if (searchOpen) {
+            OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).focusRequester(searchFocus), singleLine = true, shape = RoundedCornerShape(28.dp))
+        }
+        // Count row (owner 2026-11-26, approved example 3b, kept as built):
+        // label on the left, total count on the right, directly below the
+        // top row (the search field only appears above it while open).
+        // `total` comes from the list API pagination — the same total the
+        // profile's Followers/Following numbers use.
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(if (direction == "followers") "Followers" else "Following", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(formatCount(total), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+        }
         LazyColumn(Modifier.weight(1f)) {
             items(shown, key = { it.id ?: it.username ?: "" }) { u ->
                 // v5.20 (M8): web parity — verified badge next to the name

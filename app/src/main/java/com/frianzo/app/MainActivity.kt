@@ -209,6 +209,11 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
     var tab by rememberSaveable { mutableStateOf(Tab.FEED) }
     var openChat by rememberSaveable { mutableStateOf<Pair<String, String>?>(null) }
     var openProfile by rememberSaveable { mutableStateOf<String?>(null) }
+    // Final5 (owner 2026-11-26): true while a Followers/Following list is
+    // open inside a profile overlay — the Scaffold chrome (Frianzo logo
+    // bar + nav icons row) is hidden so the list page starts with its
+    // own back/name/search row. Set via ProfileScreen's onFollowListOpen.
+    var followListOpen by remember { mutableStateOf(false) }
     var pendingMedia by remember { mutableStateOf<android.net.Uri?>(null) }
     var unread by remember { mutableStateOf(0) }
     var unreadMessages by remember { mutableStateOf(0) }
@@ -488,7 +493,11 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
         // The full chrome returns when an overlay opens (profile, chat,
         // drawer screen, post detail), because those need it.
         topBar = {
-            if (!reelsEditorOpen) {
+            // Final5 (owner 2026-11-26): no chrome at all while a
+            // Followers/Following list is open — no logo bar, no nav row,
+            // not even the reels-only bar. The list screen has its own
+            // top row (back chevron + full name + search icon).
+            if (!reelsEditorOpen && !followListOpen) {
             val overlayOpen = drawerScreen != null || openChat != null || openProfile != null || openPostId != null || openTag != null || boostLaunch != null || myBoostsOpen
             if (overlayOpen || tab != Tab.REELS) {
             Column {
@@ -597,7 +606,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
             when {
                 drawerScreen != null -> DrawerScreenRouter(api2, drawerScreen!!, onBack = { drawerScreen = null }, onLogout = { drawerScreen = null; logout() }, onSwitched = { drawerScreen = null; session.refresh() }, onPostAsReel = { uri -> drawerScreen = null; pendingReelUri = uri; tab = Tab.REELS }, onOpenDrawerScreen = { drawerScreen = it }, initialSubScreen = drawerSubScreen, onInitialSubScreenConsumed = { drawerSubScreen = null }, api = api)
                 openChat != null -> ChatThreadScreen(api2, openChat!!.first, openChat!!.second, myId, onBack = { openChat = null }, onOpenProfile = { username -> openChat = null; openProfile = username })
-                openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS }, myCountry = myProfile?.country, onBoostPost = { post -> openProfile = null; boostLaunch = BoostLaunch(contentType = "post", contentId = post.id, previewText = post.content, previewImageUrl = post.imageUrl, previewAuthorName = post.author?.displayName, previewAuthorAvatar = post.author?.profilePictureUrl, previewAuthorVerified = post.author?.isVerified == true, previewLikeCount = post.likeCount, previewCommentCount = post.commentCount, previewShareCount = post.shareCount, previewBackgroundStyle = post.backgroundStyle) }, onOpenMyBoosts = { openProfile = null; myBoostsOpen = true }, onBoostChoose = { choices -> openProfile = null; boostLaunch = BoostLaunch(choices = choices) })
+                openProfile != null -> ProfileScreen(api2, openProfile, myId, null, onBack = { openProfile = null }, onOpenChat = { id, name -> openProfile = null; openChat = id to name }, feedVm = feedVm, onUser = { openProfile = it }, onOpenReel = { id -> openProfile = null; focusReelId = id; tab = Tab.REELS }, myCountry = myProfile?.country, onBoostPost = { post -> openProfile = null; boostLaunch = BoostLaunch(contentType = "post", contentId = post.id, previewText = post.content, previewImageUrl = post.imageUrl, previewAuthorName = post.author?.displayName, previewAuthorAvatar = post.author?.profilePictureUrl, previewAuthorVerified = post.author?.isVerified == true, previewLikeCount = post.likeCount, previewCommentCount = post.commentCount, previewShareCount = post.shareCount, previewBackgroundStyle = post.backgroundStyle) }, onOpenMyBoosts = { openProfile = null; myBoostsOpen = true }, onBoostChoose = { choices -> openProfile = null; boostLaunch = BoostLaunch(choices = choices) }, onFollowListOpen = { followListOpen = it })
                 openPostId != null -> PostDetailScreen(feedVm, openPostId!!, myId, onClose = { openPostId = null }, onAuthor = { username -> openPostId = null; openProfile = username }, onOpenChat = { id, name -> openPostId = null; openChat = id to name })
                 // v5.18: tag page overlay (hashtag taps + /tag/{tag} links).
                 openTag != null -> TagScreen(api2, openTag!!, myId, onBack = { openTag = null }, onOpenProfile = { username -> openTag = null; openProfile = username }, onOpenReel = { id -> openTag = null; focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openTag = null; openChat = id to name }, onOpenPost = { id -> openTag = null; openPostId = id }, onTag = { t -> openTag = t })
@@ -615,7 +624,7 @@ private fun AppShell(api: FrianzoApi, api2: FrianzoApi2, myId: String?, cookieJa
                 // sub-screen ("Verification" router label, DrawerScreens).
                 tab == Tab.NOTIFS -> NotificationsScreen(api2, onAuthor = { username -> openProfile = username }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, onOpenChat = { id, name -> openChat = id to name }, onOpenOwnProfile = { openChat = null; openProfile = null; openPostId = null; openTag = null; tab = Tab.PROFILE }, onOpenVerification = { openChat = null; openProfile = null; openPostId = null; openTag = null; drawerScreen = "Verification" })
                 tab == Tab.SEARCH -> SearchScreen(api2, onUser = { username -> openProfile = username }, onTag = { tag -> openTag = tag }, onOpenPost = { id -> openPostId = id }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS })
-                tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it }, onDashboard = { drawerScreen = "Professional Dashboard" }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, myCountry = myProfile?.country, onBoostPost = { post -> boostLaunch = BoostLaunch(contentType = "post", contentId = post.id, previewText = post.content, previewImageUrl = post.imageUrl, previewAuthorName = post.author?.displayName, previewAuthorAvatar = post.author?.profilePictureUrl, previewAuthorVerified = post.author?.isVerified == true, previewLikeCount = post.likeCount, previewCommentCount = post.commentCount, previewShareCount = post.shareCount, previewBackgroundStyle = post.backgroundStyle) }, onOpenMyBoosts = { myBoostsOpen = true }, onBoostChoose = { choices -> boostLaunch = BoostLaunch(choices = choices) })
+                tab == Tab.PROFILE -> ProfileScreen(api2, null, myId, ::logout, feedVm = feedVm, onUser = { openProfile = it }, onDashboard = { drawerScreen = "Professional Dashboard" }, onOpenReel = { id -> focusReelId = id; tab = Tab.REELS }, myCountry = myProfile?.country, onBoostPost = { post -> boostLaunch = BoostLaunch(contentType = "post", contentId = post.id, previewText = post.content, previewImageUrl = post.imageUrl, previewAuthorName = post.author?.displayName, previewAuthorAvatar = post.author?.profilePictureUrl, previewAuthorVerified = post.author?.isVerified == true, previewLikeCount = post.likeCount, previewCommentCount = post.commentCount, previewShareCount = post.shareCount, previewBackgroundStyle = post.backgroundStyle) }, onOpenMyBoosts = { myBoostsOpen = true }, onBoostChoose = { choices -> boostLaunch = BoostLaunch(choices = choices) }, onFollowListOpen = { followListOpen = it })
             }
         }
         }
