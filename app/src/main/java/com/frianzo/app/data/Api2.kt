@@ -375,7 +375,7 @@ const val SEARCH_API_READY = true
 data class FollowData(val following: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String?)
 /** Backend GET /api/follows/{id}/status returns { status: "none"|"following"|"follow_back"|"friends"|"self" }. */
 data class FollowStatusData(val status: String?)
-data class FollowListUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val isVerified: Boolean = false, val isFollowing: Boolean = false)
+data class FollowListUser(val id: String?, val username: String?, val displayName: String?, val profilePictureUrl: String?, val isVerified: Boolean = false, val isFollowing: Boolean = false, val friendStatus: String? = null)
 data class FollowListData(val users: List<FollowListUser>? = null, val pagination: FollowPagination? = null)
 // v3.4: GET /api/follows/{id}/{direction}?page=&limit= returns this pagination block.
 data class FollowPagination(val page: Int = 1, val limit: Int = 20, val total: Int = 0, val pages: Int = 1, val hasNext: Boolean = false, val hasPrevious: Boolean = false)

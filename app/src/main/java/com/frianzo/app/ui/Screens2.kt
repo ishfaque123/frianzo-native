@@ -8021,10 +8021,33 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
     val scope = rememberCoroutineScope()
     // v5.20 (M8): flip a row's Follow state in both lists (the paged
     // page and the all-pages search list) after a successful toggle.
-    fun setFollowing(id: String, isFollowing: Boolean) {
-        val update: (FollowListUser) -> FollowListUser = { if (it.id == id) it.copy(isFollowing = isFollowing) else it }
+    // Follow Back fix: carry the four-state friend status (not just the
+    // boolean), so a toggle flips follow_back <-> friends and rolls back
+    // cleanly on failure.
+    fun setFriendStatus(id: String, status: String, isFollowing: Boolean) {
+        val update: (FollowListUser) -> FollowListUser = { if (it.id == id) it.copy(friendStatus = status, isFollowing = isFollowing) else it }
         users = users.map(update)
         allUsers = allUsers?.map(update)
+    }
+    // The server's friendStatus, or the old boolean while an older backend
+    // is still serving this screen.
+    fun effectiveStatus(u: FollowListUser): String = u.friendStatus ?: if (u.isFollowing) "following" else "none"
+    // The toggle flips exactly one edge (viewer -> row person), so the next
+    // state follows from the previous one — same table as the profile
+    // follow pill (Screens2.kt:1383): follow_back -> friends, friends ->
+    // follow_back (they still follow me), following -> none, none ->
+    // following.
+    fun nextStatus(prev: String): String = when (prev) {
+        "following" -> "none"
+        "friends" -> "follow_back"
+        "follow_back" -> "friends"
+        else -> "following"
+    }
+    fun statusLabel(status: String): String = when (status) {
+        "friends" -> "Friend"
+        "following" -> "Following"
+        "follow_back" -> "Follow Back"
+        else -> "Follow"
     }
     fun load(p: Int) {
         loading = true
@@ -8104,19 +8127,46 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
                                 onClick = {
                                     if (busy) return@OutlinedButton
                                     busyIds = busyIds + uid
+                                    // Optimistic flip from the previous state
+                                    // (same table as the profile follow pill):
+                                    // none -> following, follow_back ->
+                                    // friends, following -> none, friends ->
+                                    // follow_back (they still follow me).
+                                    val prev = effectiveStatus(u)
+                                    val optimistic = nextStatus(prev)
+                                    setFriendStatus(uid, optimistic, optimistic == "following" || optimistic == "friends")
                                     scope.launch {
                                         try {
                                             val r = api2.toggleFollow(uid)
-                                            if (r.success && r.data != null) setFollowing(uid, r.data.following || r.data.isFollowing)
-                                            else toast(r.error?.message ?: "Could not change follow status")
-                                        } catch (e: Exception) { toast(e.message ?: "Could not change follow status") }
+                                            if (r.success && r.data != null) {
+                                                // The toggle returns only
+                                                // { following: Boolean } (no
+                                                // friendStatus yet), so the
+                                                // new state is reconciled
+                                                // from prev + the boolean.
+                                                val st = r.data.friendStatus ?: if (r.data.following || r.data.isFollowing) {
+                                                    if (prev == "follow_back") "friends" else "following"
+                                                } else {
+                                                    if (prev == "friends") "follow_back" else "none"
+                                                }
+                                                setFriendStatus(uid, st, r.data.following || r.data.isFollowing)
+                                            } else {
+                                                // Roll back: restore the
+                                                // exact previous row.
+                                                setFriendStatus(uid, prev, prev == "following" || prev == "friends")
+                                                toast(r.error?.message ?: "Could not change follow status")
+                                            }
+                                        } catch (e: Exception) {
+                                            setFriendStatus(uid, prev, prev == "following" || prev == "friends")
+                                            toast(e.message ?: "Could not change follow status")
+                                        }
                                         finally { busyIds = busyIds - uid }
                                     }
                                 },
                                 modifier = Modifier.height(36.dp),
                                 shape = RoundedCornerShape(28.dp),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                            ) { Text(if (u.isFollowing) "Following" else "Follow", fontSize = 13.sp, color = FrianzoBlue) }
+                            ) { Text(statusLabel(effectiveStatus(u)), fontSize = 13.sp, color = FrianzoBlue) }
                         }
                     },
                     modifier = Modifier.clickable { if (u.username != null) onUser(u.username!!) },
