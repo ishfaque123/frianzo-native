@@ -8094,14 +8094,15 @@ private fun FollowListScreen(api2: FrianzoApi2, userId: String, direction: Strin
         if (searchOpen) {
             OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("Search") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).focusRequester(searchFocus), singleLine = true, shape = RoundedCornerShape(28.dp))
         }
-        // Count row (owner 2026-11-26, approved example 3b, kept as built):
+        // Count row (owner correction 2026-11-26 14:53 PKT: FULL number here,
+        // never K/M/B — e.g. 10,119 not 10.1k):
         // label on the left, total count on the right, directly below the
         // top row (the search field only appears above it while open).
         // `total` comes from the list API pagination — the same total the
         // profile's Followers/Following numbers use.
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text(if (direction == "followers") "Followers" else "Following", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(formatCount(total), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+            Text(java.text.NumberFormat.getNumberInstance(java.util.Locale.US).format(total), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
         }
         LazyColumn(Modifier.weight(1f)) {
             items(shown, key = { it.id ?: it.username ?: "" }) { u ->
