@@ -6550,8 +6550,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                             // v5.18.4 (B-M5): web always renders all
                             // four columns (0 fallback); a failed
                             // counts call used to shrink the row.
-                            countCol("${fc ?: 0}", "Followers") { if (p.id != null) followList = "followers" }
-                            countCol("${fg ?: 0}", "Following") { if (p.id != null) followList = "following" }
+                            countCol(formatCount(fc ?: 0), "Followers") { if (p.id != null) followList = "followers" }
+                            countCol(formatCount(fg ?: 0), "Following") { if (p.id != null) followList = "following" }
                         }
                         Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                     }

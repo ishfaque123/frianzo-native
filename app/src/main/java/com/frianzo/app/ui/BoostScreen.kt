@@ -159,9 +159,10 @@ fun BoostedBadge() {
 private fun boostFmt(n: Int): String = java.text.NumberFormat.getNumberInstance(java.util.Locale.US).format(n)
 
 private fun boostKfmt(n: Int): String {
-    if (n < 1000) return "$n"
-    val v = Math.round(n / 100.0) / 10.0
-    return if (v == Math.floor(v)) "${v.toInt()}K" else "${v}K"
+    if (n < 10000) return java.text.NumberFormat.getNumberInstance(java.util.Locale.US).format(n)
+    if (n < 1000000) { val k = Math.round(n / 100.0) / 10.0; return if (k >= 1000.0) "1M" else if (k % 1.0 == 0.0) "${k.toInt()}K" else "${k}K" }
+    if (n < 1000000000) { val m = Math.round(n / 100000.0) / 10.0; return if (m >= 1000.0) "1B" else if (m % 1.0 == 0.0) "${m.toInt()}M" else "${m}M" }
+    val b = Math.round(n / 100000000.0) / 10.0; return if (b % 1.0 == 0.0) "${b.toInt()}B" else "${b}B"
 }
 
 private fun boostDateLabel(iso: String?): String? {

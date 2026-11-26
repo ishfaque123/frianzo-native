@@ -2057,10 +2057,11 @@ private fun commentTimeAgo(createdAt: String?): String {
     }
 }
 
-private fun formatCount(n: Int): String {
-    if (n < 1000) return "$n"
-    if (n < 1000000) { val k = n / 1000.0; return if (k % 1.0 == 0.0) "${k.toInt()}k" else "%.1fk".format(k) }
-    val m = n / 1000000.0; return if (m % 1.0 == 0.0) "${m.toInt()}M" else "%.1fM".format(m)
+internal fun formatCount(n: Int): String {
+    if (n < 10000) return java.text.NumberFormat.getNumberInstance(java.util.Locale.US).format(n)
+    if (n < 1000000) { val k = Math.round(n / 100.0) / 10.0; return if (k >= 1000.0) "1M" else if (k % 1.0 == 0.0) "${k.toInt()}k" else "%.1fk".format(k) }
+    if (n < 1000000000) { val m = Math.round(n / 100000.0) / 10.0; return if (m >= 1000.0) "1B" else if (m % 1.0 == 0.0) "${m.toInt()}M" else "%.1fM".format(m) }
+    val b = Math.round(n / 100000000.0) / 10.0; return if (b % 1.0 == 0.0) "${b.toInt()}B" else "%.1fB".format(b)
 }
 
 // Web CommentsModal.flattenReplies: replies flattened recursively, sorted
