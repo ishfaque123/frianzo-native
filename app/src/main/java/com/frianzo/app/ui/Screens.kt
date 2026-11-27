@@ -108,6 +108,13 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
+// Report limits: when the reason is "Other" the server requires written
+// details (400 VALIDATION_ERROR otherwise); each user may file at most one
+// report per calendar month across all report types (429
+// MONTHLY_REPORT_LIMIT otherwise). The message below is the exact server
+// wording, shown inline in every report dialog while details are missing.
+private const val REPORT_DETAILS_REQUIRED_MESSAGE = "Please describe the issue when you choose 'Other'."
+
 /** Step 1 screens only: Login (Google + email OTP) and Feed (read-only).
  *  No posting, liking, commenting, reels or chat yet — those are later steps. */
 
@@ -2547,6 +2554,8 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
         // reel report dialog (Screens2.kt). The dialog stays open on
         // failure so the error is visible (A-D11: a failed report
         // used to close the menu with no confirmation and no error).
+        // Report limits: reason "other" needs written details.
+        val detailsRequired = reportReason == "other" && reportDetails.isBlank()
         AlertDialog(
             onDismissRequest = { if (!reportBusy) showReport = false },
             title = { Text("Report comment") },
@@ -2560,14 +2569,15 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text(if (reportReason == "other") "Details (required)" else "Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    if (detailsRequired) { Spacer(Modifier.height(8.dp)); Text(REPORT_DETAILS_REQUIRED_MESSAGE, fontSize = 13.sp, color = Color.Red) }
                     if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (reportBusy) return@Button
+                        if (reportBusy || detailsRequired) return@Button
                         reportBusy = true; reportError = null
                         scope.launch {
                             try {
@@ -2579,7 +2589,7 @@ private fun CommentRow(api2: FrianzoApi2, c: Comment, myId: String?, postOwnerId
                             finally { reportBusy = false }
                         }
                     },
-                    enabled = !reportBusy,
+                    enabled = !reportBusy && !detailsRequired,
                     colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
                     shape = RoundedCornerShape(28.dp),
                 ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
@@ -2779,6 +2789,8 @@ fun PostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, followStatus: St
         // v5.21 (M5): same 7-reason picker + optional details as the
         // reel report dialog (Screens2.kt). The dialog stays open on
         // failure so the error is visible; the sheet closes on success.
+        // Report limits: reason "other" needs written details.
+        val detailsRequired = reportReason == "other" && reportDetails.isBlank()
         AlertDialog(
             onDismissRequest = { if (!reportBusy) showReport = false },
             title = { Text("Report post") },
@@ -2792,14 +2804,15 @@ fun PostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, followStatus: St
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text(if (reportReason == "other") "Details (required)" else "Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    if (detailsRequired) { Spacer(Modifier.height(8.dp)); Text(REPORT_DETAILS_REQUIRED_MESSAGE, fontSize = 13.sp, color = Color.Red) }
                     if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (reportBusy) return@Button
+                        if (reportBusy || detailsRequired) return@Button
                         reportBusy = true; reportError = null
                         scope.launch {
                             try {
@@ -2811,7 +2824,7 @@ fun PostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, followStatus: St
                             finally { reportBusy = false }
                         }
                     },
-                    enabled = !reportBusy,
+                    enabled = !reportBusy && !detailsRequired,
                     colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
                     shape = RoundedCornerShape(28.dp),
                 ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }

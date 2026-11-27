@@ -130,6 +130,13 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import kotlin.math.roundToInt
 
+// Report limits: when the reason is "Other" the server requires written
+// details (400 VALIDATION_ERROR otherwise); each user may file at most one
+// report per calendar month across all report types (429
+// MONTHLY_REPORT_LIMIT otherwise). The message below is the exact server
+// wording, shown inline in every report dialog while details are missing.
+private const val REPORT_DETAILS_REQUIRED_MESSAGE = "Please describe the issue when you choose 'Other'."
+
 // v3.6 (U2): never show raw exception / DNS text to users in reels.
 // Map any failure to a short friendly sentence; the raw message stays
 // in logs only. Short server messages are already friendly, so they
@@ -1450,6 +1457,8 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
             ReelShareSheet(api2, reel, reelLink, onClose = { shareOpen = false }, onShared = { shares += 1 }, onOpenChat = onOpenChat)
         }
         if (reportOpen) {
+            // Report limits: reason "other" needs written details.
+            val detailsRequired = reportReason == "other" && reportDetails.isBlank()
             AlertDialog(
                 onDismissRequest = { reportOpen = false },
                 title = { Text("Report reel", maxLines = 1, softWrap = false) },
@@ -1462,25 +1471,28 @@ private fun ReelPage(api2: FrianzoApi2, reel: Reel, myId: String?, isActive: Boo
                                 Text(label, fontSize = 15.sp)
                             }
                         }
-                        // v3.8 (F17): optional details (500 chars, web rule).
+                        // v3.8 (F17): details (500 chars, web rule) —
+                        // required when the reason is "Other".
                         Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                        OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text(if (reportReason == "other") "Details (required)" else "Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                        if (detailsRequired) { Spacer(Modifier.height(8.dp)); Text(REPORT_DETAILS_REQUIRED_MESSAGE, fontSize = 13.sp, color = Color.Red) }
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
-                            if (reportBusy) return@Button
+                            if (reportBusy || detailsRequired) return@Button
                             reportBusy = true
                             scope.launch {
                                 try {
                                     val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
-                                    if (api2.reportReel(reel.id, body).success) { reportDetails = ""; reportOpen = false; showMsg("Reported. Thanks for letting us know.") } else showMsg("Couldn't report — try again")
-                                } catch (_: Exception) { showMsg("Couldn't report — try again") }
+                                    val r = api2.reportReel(reel.id, body)
+                                    if (r.success) { reportDetails = ""; reportOpen = false; showMsg("Reported. Thanks for letting us know.") } else showMsg(friendlyReelsError(r.error?.message, "Couldn't report — try again"))
+                                } catch (e: Exception) { showMsg(friendlyReelsError(e, "Couldn't report — try again")) }
                                 finally { reportBusy = false }
                             }
                         },
-                        enabled = !reportBusy,
+                        enabled = !reportBusy && !detailsRequired,
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.inverseOnSurface),
                         shape = RoundedCornerShape(28.dp),
                     ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
@@ -2260,6 +2272,9 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
     // reports used to always file reason "other".
     var showReport by remember { mutableStateOf(false) }
     var reportReason by remember { mutableStateOf("other") }
+    // Report limits: the reel-comment dialog had no details field at all —
+    // added here so reason "other" can carry the required details.
+    var reportDetails by remember { mutableStateOf("") }
     var reportError by remember { mutableStateOf<String?>(null) }
     var reported by remember { mutableStateOf(false) }
     var deleteError by remember { mutableStateOf<String?>(null) }
@@ -2390,7 +2405,7 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                             if (isOwner) DropdownMenuItem(text = { Text("Edit") }, onClick = { menuOpen = false; releasePopup(); editDraft = c.content ?: ""; editing = true })
                             DropdownMenuItem(text = { Text("Reply") }, onClick = { menuOpen = false; releasePopup(); onReply(c) })
                             DropdownMenuItem(text = { Text("Copy") }, onClick = { menuOpen = false; releasePopup(); clipboard.setText(AnnotatedString(c.content ?: "")); copied = true; scope.launch { delay(2000); copied = false } })
-                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = { menuOpen = false; releasePopup(); showReport = true })
+                            DropdownMenuItem(text = { Text(if (reported) "Reported" else "Report") }, onClick = { menuOpen = false; releasePopup(); reportReason = "other"; reportDetails = ""; reportError = null; showReport = true })
                             if (canDelete) DropdownMenuItem(text = { Text("Delete", color = FrianzoBadgeRed) }, onClick = { menuOpen = false; releasePopup(); showDelete = true })
                         }
                     }
@@ -2403,6 +2418,8 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
         }
     }
     if (showReport) {
+        // Report limits: reason "other" needs written details.
+        val detailsRequired = reportReason == "other" && reportDetails.isBlank()
         AlertDialog(
             onDismissRequest = { showReport = false },
             title = { Text("Report comment") },
@@ -2415,19 +2432,25 @@ private fun ReelCommentRow(api2: FrianzoApi2, c: ReelComment, reel: Reel, myId: 
                             Text(label, fontSize = 15.sp)
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text(if (reportReason == "other") "Details (required)" else "Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    if (detailsRequired) { Spacer(Modifier.height(8.dp)); Text(REPORT_DETAILS_REQUIRED_MESSAGE, fontSize = 13.sp, color = Color.Red) }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
+                        if (detailsRequired) return@Button
                         showReport = false
                         scope.launch {
                             try {
-                                val r = api2.reportReelComment(c.id, mapOf("reason" to reportReason))
-                                if (r.success) { reported = true; reportError = null } else reportError = friendlyReelsError(r.error?.message, "Could not report comment")
+                                val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
+                                val r = api2.reportReelComment(c.id, body)
+                                if (r.success) { reported = true; reportError = null; reportDetails = "" } else reportError = friendlyReelsError(r.error?.message, "Could not report comment")
                             } catch (e: Exception) { reportError = friendlyReelsError(e, "Could not report comment") }
                         }
                     },
+                    enabled = !detailsRequired,
                     colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
                     shape = RoundedCornerShape(28.dp),
                 ) { Text("Report", maxLines = 1, softWrap = false) }
@@ -4509,6 +4532,8 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
             }
         }
         if (showReport) {
+            // Report limits: reason "other" needs written details.
+            val detailsRequired = reportReason == "other" && reportDetails.isBlank()
             AlertDialog(onDismissRequest = { showReport = false }, title = { Text("Report user") },
                 text = {
                     Column {
@@ -4521,23 +4546,26 @@ fun ChatThreadScreen(api2: FrianzoApi2, conversationId: String, title: String, m
                             }
                         }
                         Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text(if (reportReason == "other") "Details (required)" else "Details (optional)") }, modifier = Modifier.fillMaxWidth())
+                        if (detailsRequired) { Spacer(Modifier.height(8.dp)); Text(REPORT_DETAILS_REQUIRED_MESSAGE, fontSize = 13.sp, color = Color.Red) }
                         if (reportDone) { Spacer(Modifier.height(8.dp)); Text("Report sent. Thanks for letting us know.", fontSize = 13.sp, color = FrianzoSuccess) }
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
+                            if (detailsRequired) return@Button
                             val uid = otherUserId
                             if (uid != null) scope.launch {
                                 try {
                                     val body = mutableMapOf("reason" to reportReason)
                                     if (reportDetails.isNotBlank()) body["details"] = reportDetails
-                                    if (api2.reportUser(uid, body).success) reportDone = true else sendError = "Could not send report"
-                                } catch (e: Exception) { sendError = e.message }
+                                    val r = api2.reportUser(uid, body)
+                                    if (r.success) reportDone = true else sendError = friendlyReelsError(r.error?.message, "Could not send report")
+                                } catch (e: Exception) { sendError = friendlyReelsError(e, "Could not send report") }
                             }
                         },
-                        enabled = reportReason.isNotBlank(),
+                        enabled = reportReason.isNotBlank() && !detailsRequired,
                         colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
                         shape = RoundedCornerShape(28.dp),
                     ) { Text("Submit", maxLines = 1, softWrap = false) }
@@ -6405,6 +6433,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                 // optional details as the reel report
                                 // dialog; wires to the existing
                                 // POST /api/users/{userId}/report.
+                                // Report limits: reason "other" needs written details.
+                                val detailsRequired = reportReason == "other" && reportDetails.isBlank()
                                 AlertDialog(
                                     onDismissRequest = { if (!reportBusy) showReport = false },
                                     title = { Text("Report user", maxLines = 1, softWrap = false) },
@@ -6418,7 +6448,8 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                                 }
                                             }
                                             Spacer(Modifier.height(8.dp))
-                                            OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                                            OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text(if (reportReason == "other") "Details (required)" else "Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                                            if (detailsRequired) { Spacer(Modifier.height(8.dp)); Text(REPORT_DETAILS_REQUIRED_MESSAGE, fontSize = 13.sp, color = Color.Red) }
                                             if (reportDone) { Spacer(Modifier.height(8.dp)); Text("Report sent. Thanks for letting us know.", fontSize = 13.sp, color = FrianzoSuccess) }
                                             if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
                                         }
@@ -6426,18 +6457,19 @@ fun ProfileScreen(api2: FrianzoApi2, username: String?, myId: String?, onLogout:
                                     confirmButton = {
                                         Button(
                                             onClick = {
-                                                if (reportBusy) return@Button
+                                                if (reportBusy || detailsRequired) return@Button
                                                 val uid = p.id ?: return@Button
                                                 reportBusy = true; reportError = null
                                                 scope.launch {
                                                     try {
                                                         val body = mapOf("reason" to reportReason) + if (reportDetails.isNotBlank()) mapOf("details" to reportDetails) else emptyMap()
-                                                        if (api2.reportUser(uid, body).success) { reportDone = true; reportDetails = "" } else reportError = "Could not send report"
-                                                    } catch (e: Exception) { reportError = e.message ?: "Could not send report" }
+                                                        val r = api2.reportUser(uid, body)
+                                                        if (r.success) { reportDone = true; reportDetails = "" } else reportError = friendlyReelsError(r.error?.message, "Could not send report")
+                                                    } catch (e: Exception) { reportError = friendlyReelsError(e, "Could not send report") }
                                                     finally { reportBusy = false }
                                                 }
                                             },
-                                            enabled = !reportBusy,
+                                            enabled = !reportBusy && !detailsRequired,
                                             colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
                                             shape = RoundedCornerShape(28.dp),
                                         ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
@@ -7319,6 +7351,8 @@ private fun ProfilePostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, f
         // v5.21 (M5): same 7-reason picker + optional details as the
         // reel report dialog. The dialog stays open on failure so the
         // error is visible; the sheet closes on success.
+        // Report limits: reason "other" needs written details.
+        val detailsRequired = reportReason == "other" && reportDetails.isBlank()
         AlertDialog(
             onDismissRequest = { if (!reportBusy) showReport = false },
             title = { Text("Report post") },
@@ -7332,14 +7366,15 @@ private fun ProfilePostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, f
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text("Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    OutlinedTextField(value = reportDetails, onValueChange = { if (it.length <= 500) reportDetails = it }, label = { Text(if (reportReason == "other") "Details (required)" else "Details (optional)") }, modifier = Modifier.fillMaxWidth(), maxLines = 4, shape = RoundedCornerShape(10.dp))
+                    if (detailsRequired) { Spacer(Modifier.height(8.dp)); Text(REPORT_DETAILS_REQUIRED_MESSAGE, fontSize = 13.sp, color = Color.Red) }
                     if (reportError != null) { Spacer(Modifier.height(8.dp)); Text(reportError!!, fontSize = 13.sp, color = Color.Red) }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (reportBusy) return@Button
+                        if (reportBusy || detailsRequired) return@Button
                         reportBusy = true; reportError = null
                         scope.launch {
                             try {
@@ -7351,7 +7386,7 @@ private fun ProfilePostMenuSheet(api2: FrianzoApi2, post: Post, myId: String?, f
                             finally { reportBusy = false }
                         }
                     },
-                    enabled = !reportBusy,
+                    enabled = !reportBusy && !detailsRequired,
                     colors = ButtonDefaults.buttonColors(containerColor = FrianzoBadgeRed, contentColor = Color.White),
                     shape = RoundedCornerShape(28.dp),
                 ) { Text(if (reportBusy) "Reporting…" else "Report", maxLines = 1, softWrap = false) }
